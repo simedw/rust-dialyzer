@@ -42,6 +42,7 @@ fn main() -> Result<(), String> {
         let prior = serde_json::json!({"version":4,"profile":row["core"]["profile"],"source":{"kind":"classic_plt","path":"cold-empty","sha256":"empty","files":[]},"modules":[],"summaries":[],"contracts":[],"raw_callback_groups":{"root":0,"terms":[{"kind":"nil"}]},"type_tables":{"root":0,"terms":[{"kind":"map","entries":[]}]},"exported_types":{"root":0,"terms":[{"kind":"nil"}]}});
         let prior = row.get("prior").or(imported.as_ref()).unwrap_or(&prior);
         let output = compiled_analysis::analyze(AnalysisInput {
+            report_modules: None,
             mode: compiled_analysis::AnalysisMode::PltBuild,
             core: &core,
             prior: &prior.to_string(),

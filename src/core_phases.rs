@@ -338,6 +338,75 @@ impl AnalysisPhases for CorePhases<'_> {
         self.publish_state(signatures, contracts);
     }
     fn analyze_scc(&mut self, request: SccRequest<'_>) -> Result<FunctionTypes, Self::Error> {
+        self.analyze_scc_shared(&request)
+    }
+    fn refine_module(&mut self, request: ModuleRequest<'_>) -> Result<FunctionTypes, Self::Error> {
+        self.refine_module_shared(&request)
+    }
+    fn parallel(&self) -> bool {
+        std::env::var_os("RUST_DIALYZER_SEQUENTIAL").is_none_or(|v| v != "1")
+    }
+    fn analyze_scc_batch(
+        &mut self,
+        requests: Vec<SccRequest<'_>>,
+    ) -> Vec<Result<FunctionTypes, Self::Error>> {
+        let this = &*self;
+        parallel_map(&requests, |request| this.analyze_scc_shared(request))
+    }
+    fn refine_module_batch(
+        &mut self,
+        requests: Vec<ModuleRequest<'_>>,
+    ) -> Vec<Result<FunctionTypes, Self::Error>> {
+        let this = &*self;
+        parallel_map(&requests, |request| this.refine_module_shared(request))
+    }
+}
+
+/// Stack for analysis workers: guard analysis recurses up to MAX_GUARD_DEPTH.
+const WORKER_STACK_BYTES: usize = 1 << 30;
+
+/// Applies `f` to every item on all cores; results keep input order.
+fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(items.len());
+    if workers <= 1 {
+        return items.iter().map(f).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<Option<R>> = (0..items.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                std::thread::Builder::new()
+                    .stack_size(WORKER_STACK_BYTES)
+                    .spawn_scoped(scope, || {
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(item) = items.get(i) else { break };
+                            done.push((i, f(item)));
+                        }
+                        done
+                    })
+                    .expect("spawn analysis worker")
+            })
+            .collect();
+        for handle in handles {
+            for (i, r) in handle.join().expect("analysis worker panicked") {
+                results[i] = Some(r);
+            }
+        }
+    });
+    results.into_iter().map(|r| r.expect("every item analyzed")).collect()
+}
+
+impl CorePhases<'_> {
+    fn refine_module_shared(&self, request: &ModuleRequest<'_>) -> Result<FunctionTypes, CorePhaseError> {
+        self.module_bodies().module_body(request.module, request.previous, false)
+            .map(|(signatures, _)| signatures)
+    }
+    fn analyze_scc_shared(&self, request: &SccRequest<'_>) -> Result<FunctionTypes, CorePhaseError> {
         let mut timings = crate::phase_timings::PhaseTimings::new("scc_analysis");
         let propagated = PropagatedTypes(
             request
@@ -396,10 +465,6 @@ impl AnalysisPhases for CorePhases<'_> {
             .collect()
     }
 
-    fn refine_module(&mut self, request: ModuleRequest<'_>) -> Result<FunctionTypes, Self::Error> {
-        self.module_bodies().module_body(request.module, request.previous, false)
-            .map(|(signatures, _)| signatures)
-    }
 }
 
 #[cfg(test)]

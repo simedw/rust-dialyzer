@@ -40,6 +40,7 @@ fn run(row: &Value, library: &str, profile: &ClosureCodeProfile) -> Result<Value
         .map_err(|error| error.to_string())?
         .unwrap_or_default();
     let output = compiled_analysis::analyze(AnalysisInput {
+        report_modules: None,
         mode: if row["analysis_mode"] == "plt_build" {
             rust_dialyzer_poc::compiled_analysis::AnalysisMode::PltBuild
         } else {

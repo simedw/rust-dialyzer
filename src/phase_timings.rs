@@ -7,6 +7,7 @@ pub struct PhaseTimings {
 
 struct Active {
     scope: &'static str,
+    label: Option<String>,
     started: Instant,
     checkpoint: Instant,
     phases: Vec<(&'static str, f64)>,
@@ -20,6 +21,7 @@ impl PhaseTimings {
             let started = Instant::now();
             Some(Active {
                 scope,
+                label: None,
                 started,
                 checkpoint: started,
                 phases: Vec::new(),
@@ -28,6 +30,14 @@ impl PhaseTimings {
             None
         };
         Self { active }
+    }
+
+    /// Identifies this scope instance (an SCC, a module) in the emitted record.
+    /// The closure only runs when timings are enabled.
+    pub fn label(&mut self, label: impl FnOnce() -> String) {
+        if let Some(active) = &mut self.active {
+            active.label = Some(label());
+        }
     }
 
     pub fn mark(&mut self, name: &'static str) {
@@ -49,6 +59,7 @@ impl Drop for PhaseTimings {
         };
         let record = serde_json::json!({
             "scope": active.scope,
+            "label": active.label,
             "build_mode": if cfg!(debug_assertions) { "debug" } else { "release" },
             "total_ms": active.checkpoint.duration_since(active.started).as_secs_f64() * 1000.0,
             "phases": active.phases.iter().map(|(name, ms)| serde_json::json!({"name": name, "ms": ms})).collect::<Vec<_>>(),
@@ -73,6 +84,7 @@ mod tests {
         let started = Instant::now();
         let mut timings = PhaseTimings {
             active: Some(Active {
+                label: None,
                 scope: "test",
                 started,
                 checkpoint: started,

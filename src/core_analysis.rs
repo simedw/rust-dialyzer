@@ -55,6 +55,26 @@ pub trait AnalysisPhases {
     );
     fn analyze_scc(&mut self, request: SccRequest<'_>) -> Result<FunctionTypes, Self::Error>;
     fn refine_module(&mut self, request: ModuleRequest<'_>) -> Result<FunctionTypes, Self::Error>;
+    /// Whether batches may hold several independent SCCs or modules. When
+    /// false, every batch has exactly one element and the analysis is the
+    /// original sequential traversal.
+    fn parallel(&self) -> bool {
+        false
+    }
+    /// Analyzes SCCs that do not call each other. Results are in input order.
+    fn analyze_scc_batch(
+        &mut self,
+        requests: Vec<SccRequest<'_>>,
+    ) -> Vec<Result<FunctionTypes, Self::Error>> {
+        requests.into_iter().map(|r| self.analyze_scc(r)).collect()
+    }
+    /// Refines modules against the same state. Results are in input order.
+    fn refine_module_batch(
+        &mut self,
+        requests: Vec<ModuleRequest<'_>>,
+    ) -> Vec<Result<FunctionTypes, Self::Error>> {
+        requests.into_iter().map(|r| self.refine_module(r)).collect()
+    }
 }
 #[derive(Debug)]
 pub enum AnalysisError<P, S> {
@@ -149,6 +169,63 @@ impl CoreAnalyzer<'_> {
         })?;
         Ok(self.previous(&functions, state))
     }
+    /// SCC names, skipping anonymous vertices.
+    fn scc_mfas(scc: &OrderedScc) -> Result<Vec<Mfa>, String> {
+        scc.members
+            .iter()
+            .filter_map(|vertex| match vertex {
+                GraphVertex::Named {
+                    module,
+                    function,
+                    arity,
+                } => Some(
+                    arity
+                        .to_string()
+                        .parse::<usize>()
+                        .map(|arity| Mfa {
+                            module: module.clone(),
+                            function: function.clone(),
+                            arity,
+                        })
+                        .map_err(|_| "SCC arity outside platform range".to_owned()),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+    /// Groups SCCs (callees first) into waves: no SCC calls another SCC in
+    /// the same wave, so a wave can be analyzed in parallel against the state
+    /// left by earlier waves. Falls back to one SCC per wave if the order is
+    /// not callees-first.
+    fn waves(&self, sccs: &[OrderedScc]) -> Vec<Vec<usize>> {
+        let sequential = || (0..sccs.len()).map(|i| vec![i]).collect();
+        let mut index = BTreeMap::new();
+        for (i, scc) in sccs.iter().enumerate() {
+            for member in &scc.members {
+                index.insert(member, i);
+            }
+        }
+        let mut level = vec![0usize; sccs.len()];
+        for (i, scc) in sccs.iter().enumerate() {
+            for member in &scc.members {
+                for caller in self.graph.in_neighbours(member).unwrap_or(&[]) {
+                    match index.get(caller) {
+                        Some(&j) if j > i => level[j] = level[j].max(level[i] + 1),
+                        Some(&j) if j < i => return sequential(),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let mut waves: Vec<Vec<usize>> = Vec::new();
+        for (i, l) in level.into_iter().enumerate() {
+            if waves.len() <= l {
+                waves.resize(l + 1, Vec::new());
+            }
+            waves[l].push(i);
+        }
+        waves
+    }
     pub fn run<P: AnalysisPhases, S: PhaseSchedule>(
         &self,
         mut state: AnalysisState,
@@ -162,94 +239,81 @@ impl CoreAnalyzer<'_> {
             state.signatures.iter().map(|(label, signature)| (*label, signature)),
             state.contracts.active_names(),
         );
+        let mut iteration = 0usize;
         loop {
+            iteration += 1;
             let mut scc_changed = Vec::new();
-            for scc in sccs {
-                let mut timings = crate::phase_timings::PhaseTimings::new("scc_orchestration");
-                let mfas = scc
-                    .members
-                    .iter()
-                    .filter_map(|vertex| match vertex {
-                        GraphVertex::Named {
-                            module,
-                            function,
-                            arity,
-                        } => Some(
-                            arity
-                                .to_string()
-                                .parse::<usize>()
-                                .map(|arity| Mfa {
-                                    module: module.clone(),
-                                    function: function.clone(),
-                                    arity,
-                                })
-                                .map_err(|_| {
-                                    AnalysisError::Boundary(
-                                        "SCC arity outside platform range".into(),
-                                    )
-                                }),
-                        ),
-                        _ => None,
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let all = self.scc_functions(&mfas).map_err(AnalysisError::Boundary)?;
-                let previous = self.previous(&all, &state);
+            let waves = if phases.parallel() {
+                self.waves(&sccs)
+            } else {
+                (0..sccs.len()).map(|i| vec![i]).collect()
+            };
+            for wave in waves {
+                let mut timings = crate::phase_timings::PhaseTimings::new("scc_wave");
+                timings.label(|| format!("iter{iteration} wave of {}", wave.len()));
+                let mut prepared = Vec::with_capacity(wave.len());
+                for &i in &wave {
+                    let mfas = Self::scc_mfas(&sccs[i]).map_err(AnalysisError::Boundary)?;
+                    let all = self.scc_functions(&mfas).map_err(AnalysisError::Boundary)?;
+                    let previous = self.previous(&all, &state);
+                    prepared.push((mfas, all, previous));
+                }
                 timings.mark("function_info_and_previous");
-                let generated = phases
-                    .analyze_scc(SccRequest {
+                let requests = prepared
+                    .iter()
+                    .map(|(mfas, _, previous)| SccRequest {
                         runtime: schedule.runtime(),
-                        ordered_mfas: &mfas,
+                        ordered_mfas: mfas,
                         next_core_label: self.next_core_label,
-                        previous: &previous,
+                        previous,
                         state: &state,
                     })
-                    .map_err(AnalysisError::Phase)?;
-                timings.mark("scc_phase");
-                let filtered: FunctionTypes = generated
-                    .into_iter()
-                    .filter(|(label, _)| previous.contains_key(label))
                     .collect();
-                timings.mark("filter_bindings");
-                let named = filtered
-                    .iter()
-                    .filter_map(|(label, signature)| {
-                        self.graph.function_name(*label).map(|name| {
-                            (
-                                name,
-                                Type::function(
-                                    Some(signature.arguments.clone()),
-                                    signature.result.clone(),
-                                ),
-                            )
+                let results = phases.analyze_scc_batch(requests);
+                timings.mark("scc_phase");
+                for ((_, all, previous), generated) in prepared.into_iter().zip(results) {
+                    let generated = generated.map_err(AnalysisError::Phase)?;
+                    let filtered: FunctionTypes = generated
+                        .into_iter()
+                        .filter(|(label, _)| previous.contains_key(label))
+                        .collect();
+                    let named = filtered
+                        .iter()
+                        .filter_map(|(label, signature)| {
+                            self.graph.function_name(*label).map(|name| {
+                                (
+                                    name,
+                                    Type::function(
+                                        Some(signature.arguments.clone()),
+                                        signature.result.clone(),
+                                    ),
+                                )
+                            })
                         })
-                    })
-                    .collect::<BTreeMap<_, _>>();
-                timings.mark("named_signatures");
-                let validated = state
-                    .contracts
-                    .validate(&named, self.bifs)
-                    .map_err(AnalysisError::Lattice)?;
-                timings.mark("validate_contracts");
-                for (label, signature) in &filtered {
-                    state.signatures.insert(
-                        *label,
-                        persisted_signature(signature).map_err(AnalysisError::Lattice)?,
-                    );
-                }
-                timings.mark("persist_signatures");
-                let newly_activated = state.contracts.commit(validated);
-                phases.publish(
-                    filtered.keys().map(|label| (*label, &state.signatures[label])),
-                    newly_activated.iter(),
-                );
-                timings.mark("commit_and_publish");
-                let changed = !newly_activated.is_empty()
-                    || !reached_fixpoint_strict(&previous, &filtered)
+                        .collect::<BTreeMap<_, _>>();
+                    let validated = state
+                        .contracts
+                        .validate(&named, self.bifs)
                         .map_err(AnalysisError::Lattice)?;
-                timings.mark("fixpoint");
-                if changed {
-                    scc_changed.extend(all.into_iter().map(|function| function.label));
+                    for (label, signature) in &filtered {
+                        state.signatures.insert(
+                            *label,
+                            persisted_signature(signature).map_err(AnalysisError::Lattice)?,
+                        );
+                    }
+                    let newly_activated = state.contracts.commit(validated);
+                    phases.publish(
+                        filtered.keys().map(|label| (*label, &state.signatures[label])),
+                        newly_activated.iter(),
+                    );
+                    let changed = !newly_activated.is_empty()
+                        || !reached_fixpoint_strict(&previous, &filtered)
+                            .map_err(AnalysisError::Lattice)?;
+                    if changed {
+                        scc_changed.extend(all.into_iter().map(|function| function.label));
+                    }
                 }
+                timings.mark("commit_and_publish");
             }
             if scc_changed.is_empty() {
                 return Ok(state);
@@ -257,37 +321,55 @@ impl CoreAnalyzer<'_> {
             let modules = schedule
                 .modules_from_functions(self.graph, &scc_changed)
                 .map_err(AnalysisError::Schedule)?;
+            // In parallel mode all modules are refined against the state at the
+            // start of the pass (OTP's coordinator also refines concurrently);
+            // the enclosing fixpoint loop absorbs the difference.
+            let batches: Vec<Vec<ModuleId>> = if phases.parallel() {
+                vec![modules]
+            } else {
+                modules.into_iter().map(|m| vec![m]).collect()
+            };
             let mut module_changed = Vec::new();
-            for module in modules {
-                let mut timings = crate::phase_timings::PhaseTimings::new("module_orchestration");
-                let previous = self
-                    .module_previous(module, &state)
+            for batch in batches {
+                let mut timings = crate::phase_timings::PhaseTimings::new("module_batch");
+                timings.label(|| format!("iter{iteration} modules {}", batch.len()));
+                let previous = batch
+                    .iter()
+                    .map(|module| self.module_previous(*module, &state))
+                    .collect::<Result<Vec<_>, _>>()
                     .map_err(AnalysisError::Boundary)?;
-                timings.mark("previous");
-                let next = phases
-                    .refine_module(ModuleRequest {
+                let requests = batch
+                    .iter()
+                    .zip(&previous)
+                    .map(|(module, previous)| ModuleRequest {
                         runtime: schedule.runtime(),
-                        module,
-                        previous: &previous,
+                        module: *module,
+                        previous,
                         state: &state,
                     })
-                    .map_err(AnalysisError::Phase)?;
+                    .collect();
+                let results = phases.refine_module_batch(requests);
                 timings.mark("module_phase");
-                let changed_start = module_changed.len();
-                for (label, signature) in
-                    updated_types(&previous, &next).map_err(AnalysisError::Lattice)?
-                {
-                    state.signatures.insert(
-                        label,
-                        persisted_signature(&signature).map_err(AnalysisError::Lattice)?,
+                for (previous, next) in previous.into_iter().zip(results) {
+                    let next = next.map_err(AnalysisError::Phase)?;
+                    let changed_start = module_changed.len();
+                    for (label, signature) in
+                        updated_types(&previous, &next).map_err(AnalysisError::Lattice)?
+                    {
+                        state.signatures.insert(
+                            label,
+                            persisted_signature(&signature).map_err(AnalysisError::Lattice)?,
+                        );
+                        module_changed.push(label);
+                    }
+                    phases.publish(
+                        module_changed[changed_start..]
+                            .iter()
+                            .map(|label| (*label, &state.signatures[label])),
+                        std::iter::empty(),
                     );
-                    module_changed.push(label);
                 }
                 timings.mark("updated_types_and_persist");
-                phases.publish(
-                    module_changed[changed_start..].iter().map(|label| (*label, &state.signatures[label])),
-                    std::iter::empty(),
-                );
             }
             if module_changed.is_empty() {
                 return Ok(state);

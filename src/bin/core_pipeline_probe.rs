@@ -155,6 +155,7 @@ fn run(row: &Value, library: &str, profile: &ClosureCodeProfile) -> Result<Value
         } else {
             core_pipeline::AnalysisMode::SuccessTypings
         },
+        None,
     )
     .map_err(|error| format!("{error:?}"))?;
     let raw = NativeWarning::list(&result.raw_warnings);

@@ -68,6 +68,12 @@ pub fn analyze(
         } else {
             LocationOption::Column
         },
+        report_modules: row["report_modules"].as_array().map(|names| {
+            names
+                .iter()
+                .filter_map(|n| n.as_str().map(str::to_owned))
+                .collect()
+        }),
     })?;
     timings.mark("analysis");
     let raw = NativeWarning::list(

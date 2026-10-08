@@ -362,14 +362,14 @@ pub trait RecordTableCaptures {
 pub struct CoreCaptureStore<'a> {
     core: &'a CoreProgram,
     labels: &'a Labels,
-    modules: Vec<OnceCell<std::result::Result<crate::core_capture::CoreCaptures, String>>>,
+    modules: Vec<std::sync::OnceLock<std::result::Result<crate::core_capture::CoreCaptures, String>>>,
 }
 impl<'a> CoreCaptureStore<'a> {
     pub fn new(core: &'a CoreProgram, labels: &'a Labels) -> Self {
         Self {
             core,
             labels,
-            modules: (0..core.modules.len()).map(|_| OnceCell::new()).collect(),
+            modules: (0..core.modules.len()).map(|_| std::sync::OnceLock::new()).collect(),
         }
     }
     fn matches(&self, core: &CoreProgram, labels: &Labels) -> bool {
@@ -2168,10 +2168,10 @@ mod capture_store_tests {
         let mut new = make(&cached_inputs);
         old.phase_entries = vec![(ModuleId(0), NodeId(1), NodeId(3))];
         new.phase_entries = old.phase_entries.clone();
-        let initial = new.capture_state().unwrap();
+        let initial = new.capture_state_exact().unwrap();
         assert!(
             initial
-                .compare(&old.capture_state().unwrap())
+                .compare(&old.capture_state_exact().unwrap())
                 .unwrap()
                 .is_eq()
         );
@@ -2180,10 +2180,10 @@ mod capture_store_tests {
             new.state.in_guard = flag;
             old.state.next_label = label;
             new.state.next_label = label;
-            let current = new.capture_state().unwrap();
+            let current = new.capture_state_exact().unwrap();
             assert!(
                 current
-                    .compare(&old.capture_state().unwrap())
+                    .compare(&old.capture_state_exact().unwrap())
                     .unwrap()
                     .is_eq()
             );
@@ -2193,17 +2193,17 @@ mod capture_store_tests {
         let new_constraint = new.arena.group(GroupKind::Conjunction, vec![]).unwrap();
         old.state.context.push(old_constraint);
         new.state.context.push(new_constraint);
-        let changed_constraints = new.capture_state().unwrap();
+        let changed_constraints = new.capture_state_exact().unwrap();
         assert!(
             changed_constraints
-                .compare(&old.capture_state().unwrap())
+                .compare(&old.capture_state_exact().unwrap())
                 .unwrap()
                 .is_eq()
         );
         new.state.context.clear();
         assert!(
             !changed_constraints
-                .compare(&new.capture_state().unwrap())
+                .compare(&new.capture_state_exact().unwrap())
                 .unwrap()
                 .is_eq()
         );
@@ -2217,7 +2217,7 @@ mod capture_store_tests {
         };
         let mut other = make(&other_inputs);
         other.phase_entries = old.phase_entries.clone();
-        let other_state = other.capture_state().unwrap();
+        let other_state = other.capture_state_exact().unwrap();
         assert_ne!(other_state.to_value(), initial.to_value());
         assert_eq!(
             other_state.compare(&initial).unwrap_err(),

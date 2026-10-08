@@ -38,6 +38,8 @@ pub struct AnalysisInput<'a> {
     pub contracts: TargetContracts,
     pub solvers: SolverSelection,
     pub location: LocationOption,
+    /// Modules whose warnings are reported; `None` reports every module.
+    pub report_modules: Option<std::collections::BTreeSet<String>>,
 }
 
 pub struct AnalysisOutput {
@@ -108,11 +110,14 @@ fn analyze_phases(
     *phase = "policy_and_cleanup/cleanup_callgraph";
     let cleanup = callgraph_cleanup::cleanup_callgraph(&mut graph, &context)
         .map_err(|error| error.to_string())?;
-    let calls = if input.legal_warnings.contains(Tag::WarnUnknown) {
+    let mut calls = if input.legal_warnings.contains(Tag::WarnUnknown) {
         context.unknown_functions(&cleanup.external_calls)
     } else {
         Vec::new()
     };
+    if let Some(report) = &input.report_modules {
+        calls.retain(|(module, _)| report.contains(module));
+    }
     timings.mark("policy_and_cleanup");
     *phase = "prepare_definitions";
     let definitions = prior
@@ -153,6 +158,7 @@ fn analyze_phases(
         format!("rust-analysis/{}", layout.scope),
         input.solvers,
         input.mode,
+        input.report_modules.as_ref(),
     )
     .map_err(|error| format!("{error:?}"))?;
     timings.mark("core_pipeline");

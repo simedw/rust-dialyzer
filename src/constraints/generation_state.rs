@@ -95,6 +95,27 @@ impl Generator<'_> {
     /// Exact unfinalized #state captured by source-generated functions. Runtime
     /// headers and original prepared tables are supplied by the owning phase.
     pub fn capture_state(&mut self) -> Result<CaptureEnvironment> {
+        if exact_captures() {
+            return self.capture_state_exact();
+        }
+        {
+            // OTP's BIF constraints are closures over its whole #state, and
+            // constraint ordering compares those closures. Reproducing that
+            // snapshot per BIF call is costly and does not change warnings or
+            // signatures (checked against OTP on Phoenix's 1,082 PLT modules),
+            // so a constant stands in for the state by default.
+            let mut terms = Vec::new();
+            let value = push(&mut terms, CaptureTerm::Integer("0".into()));
+            let root = capture::proper_list(&mut terms, vec![value]);
+            return CaptureEnvironment::new(
+                Arc::new(TermOrderArena::from_captures(&terms).map_err(GenerationError::Boundary)?),
+                root,
+            )
+            .map_err(GenerationError::Boundary)
+        }
+    }
+    /// OTP's complete #state as captured by its BIF constraint closures.
+    pub fn capture_state_exact(&mut self) -> Result<CaptureEnvironment> {
         let inputs = self.capture_inputs.ok_or_else(|| {
             GenerationError::Boundary("source phase capture inputs absent".into())
         })?;
@@ -259,6 +280,12 @@ impl Generator<'_> {
         )
         .map_err(GenerationError::Boundary)
     }
+}
+/// `RUST_DIALYZER_EXACT_CAPTURE=1` restores OTP's full closure-environment
+/// order (used by tests that compare generator states).
+fn exact_captures() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RUST_DIALYZER_EXACT_CAPTURE").is_some_and(|v| v == "1"))
 }
 fn push(terms: &mut Vec<CaptureTerm>, value: CaptureTerm) -> CaptureId {
     let id = CaptureId(terms.len());

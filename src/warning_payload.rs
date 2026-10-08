@@ -1,6 +1,6 @@
 use crate::{
     binder::{OpaqueMatch, WarningFunction, WarningInfo, WarningLocation},
-    core::ErlangTerms,
+    core::{ErlangTerm, ErlangTerms, TermId},
     form_error::ReasonBuilder,
     lattice::NativeValue,
     native_form_environment::RawFormTerm,
@@ -69,13 +69,56 @@ impl NativeWarning {
 }
 impl PartialEq for NativeWarning {
     fn eq(&self, other: &Self) -> bool {
-        compare_map_keys(
-            self.raw.arena(),
-            self.raw.id(),
-            other.raw.arena(),
-            other.raw.id(),
-        ) == Ok(Ordering::Equal)
+        // Body analysis compares accumulated warning lists between call
+        // alternatives, so equality must not rebuild term-order arenas.
+        match structurally_equal(self.raw.arena(), self.raw.id(), other.raw.arena(), other.raw.id()) {
+            Some(equal) => equal,
+            None => {
+                compare_map_keys(
+                    self.raw.arena(),
+                    self.raw.id(),
+                    other.raw.arena(),
+                    other.raw.id(),
+                ) == Ok(Ordering::Equal)
+            }
+        }
     }
+}
+
+/// Exact term equality (`=:=`) by walking both arenas. Returns `None` when a
+/// map is reached, because map equality ignores pair order; the caller then
+/// uses the full term order.
+fn structurally_equal(a: &ErlangTerms, ai: TermId, b: &ErlangTerms, bi: TermId) -> Option<bool> {
+    let mut pending = vec![(ai, bi)];
+    while let Some((x, y)) = pending.pop() {
+        if std::ptr::eq(a, b) && x == y {
+            continue;
+        }
+        match (&a.terms[x.0], &b.terms[y.0]) {
+            (ErlangTerm::Map(_), _) | (_, ErlangTerm::Map(_)) => return None,
+            (ErlangTerm::Tuple(xs), ErlangTerm::Tuple(ys)) => {
+                if xs.len() != ys.len() {
+                    return Some(false);
+                }
+                pending.extend(xs.iter().copied().zip(ys.iter().copied()));
+            }
+            (ErlangTerm::List { items: xs, tail: xt }, ErlangTerm::List { items: ys, tail: yt }) => {
+                if xs.len() != ys.len() {
+                    // Same list may be split differently between items and tail.
+                    return None;
+                }
+                pending.extend(xs.iter().copied().zip(ys.iter().copied()));
+                pending.push((*xt, *yt));
+            }
+            (ErlangTerm::List { .. }, _) | (_, ErlangTerm::List { .. }) => return None,
+            (x, y) => {
+                if x != y {
+                    return Some(false);
+                }
+            }
+        }
+    }
+    Some(true)
 }
 impl Eq for NativeWarning {}
 pub fn string(value: &str) -> NativeValue {

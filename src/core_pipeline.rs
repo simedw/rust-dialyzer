@@ -45,6 +45,7 @@ pub fn analyze<'a>(
     scope: String,
     solvers: SolverSelection,
     mode: AnalysisMode,
+    report_modules: Option<&BTreeSet<String>>,
 ) -> Result<CollectedAnalysis, PipelineError> {
     let mut timings = crate::phase_timings::PhaseTimings::new("core_pipeline");
     let analyzer = CoreAnalyzer {
@@ -92,6 +93,7 @@ pub fn analyze<'a>(
     let allocator = ScopedReferenceAllocator::new(scope)
         .map_err(|error| PipelineError::Boundary(format!("{error:?}")))?;
     let mut schedule = SourceSchedule::new(runtime, allocator).map_err(PipelineError::Schedule)?;
+    let graph = inputs.graph;
     let mut phases = CorePhases::new(inputs, library, solvers).map_err(PipelineError::Phase)?;
     timings.mark("setup");
     let state = analyzer
@@ -112,6 +114,15 @@ pub fn analyze<'a>(
             raw_warnings: Vec::new(),
         });
     }
+    // Warnings are only produced for reported modules (dialyxir reports none
+    // for PLT modules); inference above still covers every module.
+    let modules = match report_modules {
+        Some(report) => modules
+            .into_iter()
+            .filter(|m| report.contains(&graph.module_names[m.0]))
+            .collect(),
+        None => modules,
+    };
     let mut diagnostic_timings = crate::phase_timings::PhaseTimings::new("diagnostic_components");
     let diagnostics = DiagnosticInputs {
         nodes: phases.nodes,
@@ -131,11 +142,12 @@ pub fn analyze<'a>(
     diagnostic_timings.mark("contract_warnings");
     let mut documentation = FunctionTypes::new();
     let bodies = phases.module_bodies();
-    let workers = std::thread::available_parallelism().map(usize::from).unwrap_or(1).min(8);
+    let workers = std::thread::available_parallelism().map(usize::from).unwrap_or(1);
     crate::ordered_parallel::ordered_prefetch(modules.len(), workers, |index| {
         let module = modules[index];
         let mut module_timings = crate::phase_timings::PhaseTimings::new("diagnostic_module_components");
         let name = &phases.program.modules[module.0].name;
+        module_timings.label(|| name.clone());
         let missing = diagnostics.missing_contract_functions(module).map_err(|e| {
             PipelineError::Boundary(format!("module {name} missing_contract_functions: {e:?}"))
         })?;
