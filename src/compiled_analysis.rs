@@ -176,6 +176,7 @@ fn analyze_phases(
         calls,
         &definitions.external_types,
         input.legal_warnings,
+        input.report_modules.as_ref(),
     )
     .map_err(|error| format!("{error:?}"))?;
     let unknown_flat = unknown

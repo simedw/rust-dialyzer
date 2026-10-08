@@ -67,6 +67,7 @@ pub fn collect_unknown(
     calls: Vec<(String, NativeWarning)>,
     types: &[crate::native_form_environment::ExternalTypeEvent],
     legal: &crate::warnings::Profile,
+    report_modules: Option<&std::collections::BTreeSet<String>>,
 ) -> Result<UnknownWarnings, PublicationError> {
     if !legal.contains(Tag::WarnUnknown) {
         return Ok(UnknownWarnings {
@@ -88,6 +89,12 @@ pub fn collect_unknown(
         let [target, info] = fields::<2>(raw.arena(), raw.id())?;
         let [_, _, origin] = fields::<3>(raw.arena(), info)?;
         let [module, _, _] = fields::<3>(raw.arena(), origin)?;
+        // Unknown types are reported for the module that refers to them.
+        if let Some(report) = report_modules
+            && !matches!(&raw.arena().terms[module.0], ErlangTerm::Atom(name) if report.contains(name))
+        {
+            continue;
+        }
         let mut builder = ReasonBuilder::new();
         let tag = builder.atom("unknown_type");
         let target = builder.copy(
