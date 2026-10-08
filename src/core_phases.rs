@@ -351,54 +351,15 @@ impl AnalysisPhases for CorePhases<'_> {
         requests: Vec<SccRequest<'_>>,
     ) -> Vec<Result<FunctionTypes, Self::Error>> {
         let this = &*self;
-        parallel_map(&requests, |request| this.analyze_scc_shared(request))
+        crate::ordered_parallel::parallel_map(&requests, |request| this.analyze_scc_shared(request))
     }
     fn refine_module_batch(
         &mut self,
         requests: Vec<ModuleRequest<'_>>,
     ) -> Vec<Result<FunctionTypes, Self::Error>> {
         let this = &*self;
-        parallel_map(&requests, |request| this.refine_module_shared(request))
+        crate::ordered_parallel::parallel_map(&requests, |request| this.refine_module_shared(request))
     }
-}
-
-/// Stack for analysis workers: guard analysis recurses up to MAX_GUARD_DEPTH.
-const WORKER_STACK_BYTES: usize = 1 << 30;
-
-/// Applies `f` to every item on all cores; results keep input order.
-fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let workers = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(items.len());
-    if workers <= 1 {
-        return items.iter().map(f).collect();
-    }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let mut results: Vec<Option<R>> = (0..items.len()).map(|_| None).collect();
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                std::thread::Builder::new()
-                    .stack_size(WORKER_STACK_BYTES)
-                    .spawn_scoped(scope, || {
-                        let mut done = Vec::new();
-                        loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(item) = items.get(i) else { break };
-                            done.push((i, f(item)));
-                        }
-                        done
-                    })
-                    .expect("spawn analysis worker")
-            })
-            .collect();
-        for handle in handles {
-            for (i, r) in handle.join().expect("analysis worker panicked") {
-                results[i] = Some(r);
-            }
-        }
-    });
-    results.into_iter().map(|r| r.expect("every item analyzed")).collect()
 }
 
 impl CorePhases<'_> {

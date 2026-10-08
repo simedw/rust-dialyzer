@@ -111,6 +111,43 @@ pub fn ordered_prefetch<T: Send, U, E: Send>(
 }
 
 
+/// Applies `f` to every item on all cores; results keep input order.
+pub fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(items.len());
+    if workers <= 1 {
+        return items.iter().map(f).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<Option<R>> = (0..items.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                std::thread::Builder::new()
+                    .stack_size(WORKER_STACK_BYTES)
+                    .spawn_scoped(scope, || {
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(item) = items.get(i) else { break };
+                            done.push((i, f(item)));
+                        }
+                        done
+                    })
+                    .expect("spawn analysis worker")
+            })
+            .collect();
+        for handle in handles {
+            for (i, r) in handle.join().expect("analysis worker panicked") {
+                results[i] = Some(r);
+            }
+        }
+    });
+    results.into_iter().map(|r| r.expect("every item analyzed")).collect()
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

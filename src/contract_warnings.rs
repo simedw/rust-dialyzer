@@ -362,16 +362,25 @@ pub fn collect(
     signatures: &BTreeMap<Mfa, Signature>,
     bifs: &Registry,
 ) -> Result<Vec<NativeWarning>, FormError> {
+    // Contracts are checked independently; results keep the original order,
+    // so warnings and the first reported error match a sequential pass.
+    let work = modules
+        .iter()
+        .flat_map(|module| module.ordered_contracts.iter().map(move |entry| (module, entry)))
+        .collect::<Vec<_>>();
+    let results = crate::ordered_parallel::parallel_map(&work, |(module, entry)| {
+        let mut found = Vec::new();
+        collect_entry(module, entry, signatures, bifs, &mut found).map_err(|error| {
+            FormError::Transport(format!(
+                "contract {:?}: {error}",
+                entry.name.callable_mfa()
+            ))
+        })?;
+        Ok::<_, FormError>(found)
+    });
     let mut acc = Vec::new();
-    for module in modules {
-        for entry in module.ordered_contracts {
-            collect_entry(module, entry, signatures, bifs, &mut acc).map_err(|error| {
-                FormError::Transport(format!(
-                    "contract {:?}: {error}",
-                    entry.name.callable_mfa()
-                ))
-            })?;
-        }
+    for found in results {
+        acc.extend(found?);
     }
     acc.reverse();
     Ok(acc)
