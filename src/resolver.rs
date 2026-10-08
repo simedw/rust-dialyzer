@@ -150,6 +150,7 @@ struct RecordOverride {
     form: FormId,
     source_key: Option<crate::native_form_environment::RawFormTerm>,
 }
+#[derive(Clone)]
 pub struct Resolver<'a> {
     pub forms: std::borrow::Cow<'a, Forms>,
     pub modules: std::borrow::Cow<'a, [String]>,
@@ -159,7 +160,7 @@ pub struct Resolver<'a> {
     cache: FormCache,
     record_types: BTreeMap<(ModuleId, String), Vec<Type>>,
     source_tables: Option<BTreeMap<String, ModuleTableHandle>>,
-    ordering_inputs: Option<(Vec<crate::native_form_environment::RawFormTerm>, std::cell::OnceCell<Result<()>>)>,
+    ordering_inputs: Option<(Vec<crate::native_form_environment::RawFormTerm>, std::sync::OnceLock<Result<()>>)>,
     exported_types: Option<BTreeSet<TypeName>>,
     definitions: BTreeMap<TypeName, crate::native_form_environment::RawDefinition>,
     compiled_sources: BTreeMap<ModuleId, crate::compiled_definitions::FormSourceArena>,
@@ -179,6 +180,25 @@ impl<'a> Resolver<'a> {
             exported_types: None,
             definitions: BTreeMap::new(),
             compiled_sources: BTreeMap::new(),
+        }
+    }
+    /// A resolver for a worker thread that borrows this one's forms and module
+    /// names (owned or not) instead of copying them. Starts with no events and
+    /// a fresh cache; if it ever has to modify the forms, they become its own.
+    pub(crate) fn borrowing_worker(&self) -> Resolver<'_> {
+        Resolver {
+            forms: std::borrow::Cow::Borrowed(&*self.forms),
+            modules: std::borrow::Cow::Borrowed(&*self.modules),
+            missing: Vec::new(),
+            external_types: Vec::new(),
+            native_site: self.native_site.clone(),
+            cache: FormCache::new(),
+            record_types: self.record_types.clone(),
+            source_tables: self.source_tables.clone(),
+            ordering_inputs: self.ordering_inputs.clone(),
+            exported_types: self.exported_types.clone(),
+            definitions: self.definitions.clone(),
+            compiled_sources: self.compiled_sources.clone(),
         }
     }
     pub(crate) fn set_source_tables(&mut self, tables: BTreeMap<String, ModuleTableHandle>) {
@@ -222,7 +242,7 @@ impl<'a> Resolver<'a> {
         &mut self,
         roots: Vec<crate::native_form_environment::RawFormTerm>,
     ) {
-        self.ordering_inputs = Some((roots, std::cell::OnceCell::new()));
+        self.ordering_inputs = Some((roots, std::sync::OnceLock::new()));
     }
     fn validate_record_ordering(
         &self,

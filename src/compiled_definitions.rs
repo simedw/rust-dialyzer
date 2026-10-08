@@ -206,6 +206,7 @@ impl PreparedDefinitions {
         library: &Store,
         completion: &ModuleCompletionOrder,
     ) -> Result<Self, PreparationFailure> {
+        let mut timings = crate::phase_timings::PhaseTimings::new("prepare_definitions");
         let fail = |e: String| PreparationFailure {
             stage: PreparationStage::Import,
             site: None,
@@ -506,6 +507,7 @@ impl PreparedDefinitions {
                 );
             }
         }
+        timings.mark("forms_and_module_tables");
         let mut resolver = Resolver::new(&forms, &names);
         resolver.set_compiled_sources(sources.clone(), definitions);
         resolver.set_source_tables(tables.iter().filter(|(_,t)|!matches!(&t.arena().terms[t.root().0],ErlangTerm::Map(xs) if xs.is_empty())).map(|(n,t)|(n.clone(),t.clone())).collect());
@@ -556,6 +558,7 @@ impl PreparedDefinitions {
                 let _ = index;
             }
         }
+        timings.mark("opaque_types");
         let mut records = BTreeMap::new();
         let mut own_types = BTreeMap::new();
         for (index, module) in core.modules.iter().enumerate() {
@@ -633,6 +636,7 @@ impl PreparedDefinitions {
         resolver
             .set_record_types(all_types)
             .map_err(import_failure)?;
+        timings.mark("records");
         let alias_index = AliasIndex::new(&resolver.forms);
         for (index, module) in core.modules.iter().enumerate() {
             let mid = ModuleId(index);
@@ -679,23 +683,43 @@ impl PreparedDefinitions {
                     })?;
             }
         }
-        let mut staged_contracts = BTreeMap::<ModuleId, Vec<PreparedDeclaration>>::new();
-        let mut staged_callbacks = BTreeMap::<ModuleId, Vec<PreparedDeclaration>>::new();
-        for module in &core.modules {
+        timings.mark("record_checks");
+        // Contracts are compiled per module with a fresh resolver cache, so
+        // modules are independent; OTP runs this as one parallel job per
+        // module (dialyzer_contracts:process_contract_remote_types).
+        let mut by_target: BTreeMap<usize, Vec<&Contract>> = BTreeMap::new();
+        for contract in &forms.contracts {
+            by_target
+                .entry(program.metadata[contract.metadata].module.0)
+                .or_default()
+                .push(contract);
+        }
+        let module_contracts: Vec<Vec<&Contract>> = core
+            .modules
+            .iter()
+            .map(|module| {
+                let target = names
+                    .iter()
+                    .position(|n| n == &module.name)
+                    .expect("target module");
+                let mut entries = by_target.get(&target).cloned().unwrap_or_default();
+                entries.sort_by_key(|c| (c.callback, c.name.clone()));
+                entries
+            })
+            .collect();
+        enum ContractFailure {
+            Ready(PreparationFailure),
+            /// Completed with the external type events seen before the failure.
+            WithEvents(PreparationStage, NativeFormSite, FormError),
+        }
+        let compile_module = |resolver: &mut Resolver<'_>,
+                              index: usize|
+         -> std::result::Result<Vec<PreparedDeclaration>, ContractFailure> {
+            let module = &core.modules[index];
             resolver.replace_cache(FormCache::new());
-            let mut entries = forms
-                .contracts
-                .iter()
-                .filter(|c| {
-                    program.metadata[c.metadata].module.0
-                        == names
-                            .iter()
-                            .position(|n| n == &module.name)
-                            .expect("target module")
-                })
-                .collect::<Vec<_>>();
-            entries.sort_by_key(|c| (c.callback, c.name.clone()));
-            for contract in entries {
+            let mut out = Vec::new();
+            for contract in &module_contracts[index] {
+                let contract: &Contract = contract;
                 let mut site = sites[&contract.metadata].clone();
                 site.kind = NativeSiteKind::Spec;
                 let ErlangTerm::Tuple(file_location) = contract.file_location.term() else {
@@ -703,7 +727,7 @@ impl PreparedDefinitions {
                 };
                 site.file =
                     RawFormTerm::new(contract.file_location.arena().clone(), file_location[0])
-                        .map_err(import_failure)?;
+                        .map_err(|e| ContractFailure::Ready(import_failure(e)))?;
                 site.scope = crate::native_form_environment::NativeFormScope::Contract(
                     contract.name.clone(),
                 );
@@ -714,40 +738,134 @@ impl PreparedDefinitions {
                         site.file.id(),
                         &module.name,
                     )
-                    .map_err(fail)?,
+                    .map_err(|e| ContractFailure::Ready(fail(e)))?,
                 );
                 resolver.set_native_site(site.clone());
-                let summary = crate::contracts::compile_at(&mut resolver, contract, Some(&origin))
-                    .map_err(|e| failure(PreparationStage::Contracts, site, e, &resolver))?;
+                let summary = crate::contracts::compile_at(resolver, contract, Some(&origin))
+                    .map_err(|e| ContractFailure::WithEvents(PreparationStage::Contracts, site, e))?;
                 let capture = contract_capture(core, &resolver.forms, &alias_index, &sources, contract, &summary)
                     .map_err(|e| {
-                        failure(
+                        ContractFailure::WithEvents(
                             PreparationStage::Contracts,
                             sites[&contract.metadata].clone(),
                             e,
-                            &resolver,
                         )
                     })?;
-                let value = PreparedContract {
-                    file_location: contract.file_location.clone(),
-                    summary: Arc::new(summary),
-                    capture,
-                    origin,
-                    callback: contract.callback,
-                    optional: contract.optional,
-                };
-                let entry = PreparedDeclaration {
+                out.push(PreparedDeclaration {
                     owner: program.metadata[contract.metadata].module,
                     key: contract.name.clone(),
-                    value,
-                };
-                if contract.callback {
+                    value: PreparedContract {
+                        file_location: contract.file_location.clone(),
+                        summary: Arc::new(summary),
+                        capture,
+                        origin,
+                        callback: contract.callback,
+                        optional: contract.optional,
+                    },
+                });
+            }
+            Ok(out)
+        };
+        // Parallel: one resolver per worker; each module's events are drained
+        // and merged in module order, which reproduces the sequential order.
+        // If any worker had to modify the shared forms, redo sequentially.
+        let parallel = std::env::var_os("RUST_DIALYZER_SEQUENTIAL").is_none_or(|v| v != "1");
+        if parallel {
+            // Forms are parsed lazily on first use, which would make workers
+            // copy them; parse everything up front so workers only read.
+            // Failures stay deferred and surface where they did before.
+            let mut id = 0;
+            while id < resolver.forms.nodes.len() {
+                let _ = resolver.materialize(crate::forms::FormId(id));
+                id += 1;
+            }
+        }
+        type ModuleResult = (
+            std::result::Result<Vec<PreparedDeclaration>, ContractFailure>,
+            Vec<ExternalTypeEvent>,
+            Vec<TypeName>,
+            bool,
+        );
+        let mut outcomes: Option<Vec<ModuleResult>> = None;
+        if parallel {
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let workers = std::thread::available_parallelism().map_or(1, usize::from).min(core.modules.len().max(1));
+            let base = &resolver;
+            let compile_module = &compile_module;
+            let mut slots: Vec<Option<ModuleResult>> = (0..core.modules.len()).map(|_| None).collect();
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..workers)
+                    .map(|_| {
+                        let next = &next;
+                        std::thread::Builder::new()
+                            .stack_size(1 << 30)
+                            .spawn_scoped(scope, move || {
+                                let mut worker = base.borrowing_worker();
+                                let mut done = Vec::new();
+                                loop {
+                                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    if i >= core.modules.len() {
+                                        break;
+                                    }
+                                    let result = compile_module(&mut worker, i);
+                                    let mutated = matches!(worker.forms, std::borrow::Cow::Owned(_));
+                                    done.push((i, (result, std::mem::take(&mut worker.external_types), std::mem::take(&mut worker.missing), mutated)));
+                                    if mutated {
+                                        break;
+                                    }
+                                }
+                                done
+                            })
+                            .expect("spawn contract worker")
+                    })
+                    .collect();
+                for handle in handles {
+                    for (i, r) in handle.join().expect("contract worker panicked") {
+                        slots[i] = Some(r);
+                    }
+                }
+            });
+            if slots.iter().all(|s| matches!(s, Some((_, _, _, false)))) {
+                outcomes = Some(slots.into_iter().map(|s| s.expect("module compiled")).collect());
+            }
+        }
+        timings.label(|| format!("contracts {}", if outcomes.is_some() { "parallel" } else { "sequential" }));
+        let mut staged_contracts = BTreeMap::<ModuleId, Vec<PreparedDeclaration>>::new();
+        let mut staged_callbacks = BTreeMap::<ModuleId, Vec<PreparedDeclaration>>::new();
+        let mut stage = |entries: Vec<PreparedDeclaration>| {
+            for entry in entries {
+                if entry.value.callback {
                     staged_callbacks.entry(entry.owner).or_default().push(entry);
                 } else {
                     staged_contracts.entry(entry.owner).or_default().push(entry);
                 }
             }
+        };
+        let to_failure = |f: ContractFailure, resolver: &Resolver<'_>| match f {
+            ContractFailure::Ready(f) => f,
+            ContractFailure::WithEvents(stage, site, error) => failure(stage, site, error, resolver),
+        };
+        match outcomes {
+            Some(outcomes) => {
+                for (result, events, missing, _) in outcomes {
+                    resolver.external_types.extend(events);
+                    resolver.missing.extend(missing);
+                    match result {
+                        Ok(entries) => stage(entries),
+                        Err(f) => return Err(to_failure(f, &resolver)),
+                    }
+                }
+            }
+            None => {
+                for index in 0..core.modules.len() {
+                    match compile_module(&mut resolver, index) {
+                        Ok(entries) => stage(entries),
+                        Err(f) => return Err(to_failure(f, &resolver)),
+                    }
+                }
+            }
         }
+        timings.mark("contracts");
         let mut contracts = PreparedContractTable::default();
         let mut callbacks = PreparedContractTable::default();
         for &owner in &completion.modules {
