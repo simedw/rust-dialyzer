@@ -247,6 +247,99 @@ impl CoreCaptures {
         }
         Ok(this)
     }
+    /// The error `build` would return for this module, without building it.
+    pub fn check_module(core: &CoreProgram, labels: &Labels, module: ModuleId) -> Result<(), String> {
+        let source = core
+            .modules
+            .get(module.0)
+            .ok_or("capture module outside Core arena")?;
+        for node in &source.nodes {
+            let reference = NodeRef {
+                module,
+                node: node.id.0,
+            };
+            if !labels.is_reannotated(reference) {
+                continue;
+            }
+            labels
+                .label(reference)
+                .ok_or("reannotated Core node has no label")?;
+            let mut cursor = node.annotations;
+            loop {
+                match &source.terms[cursor.0] {
+                    ErlangTerm::Nil => break,
+                    ErlangTerm::List { tail, .. } => cursor = *tail,
+                    _ => return Err("Core capture annotations are not a proper list".into()),
+                }
+            }
+        }
+        Ok(())
+    }
+    /// For a variable node of a module that passes `check_module`: the result of
+    /// `append_selected(&[variable])` (Err) or the conversion error
+    /// `TermOrderArena::from_captures` would raise on the copied terms (Ok).
+    /// Only source leaves can fail conversion; terms `build` adds never do.
+    pub fn selected_variable_error(
+        core: &CoreProgram,
+        labels: &Labels,
+        module: ModuleId,
+        variable: NodeId,
+    ) -> Result<Option<String>, String> {
+        let source = &core.modules[module.0];
+        let node = source
+            .nodes
+            .get(variable.0)
+            .ok_or("capture node outside Core arena")?;
+        let CoreExpr::Var(name) = node.expr else {
+            return Err("capture selection is not a variable".into());
+        };
+        let mut todo = vec![name];
+        if labels.is_reannotated(NodeRef {
+            module,
+            node: node.id.0,
+        }) {
+            let mut cursor = node.annotations;
+            while let ErlangTerm::List { items, tail } = &source.terms[cursor.0] {
+                todo.extend(items.iter().copied().filter(|item| !matches!(&source.terms[item.0], ErlangTerm::Tuple(pair) if pair.len() == 2 && matches!(&source.terms[pair[0].0], ErlangTerm::Atom(a) if a == "label"))));
+                cursor = *tail;
+            }
+        } else {
+            todo.push(node.annotations);
+        }
+        let mut visited = HashSet::new();
+        while let Some(id) = todo.pop() {
+            if !visited.insert(id.0) {
+                continue;
+            }
+            match &source.terms[id.0] {
+                ErlangTerm::Tuple(xs) => todo.extend(xs),
+                ErlangTerm::List { items, tail } => {
+                    todo.extend(items);
+                    todo.push(*tail);
+                }
+                ErlangTerm::Map(ps) => {
+                    for (k, v) in ps {
+                        todo.extend([*k, *v]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut indices = visited.into_iter().collect::<Vec<_>>();
+        indices.sort_unstable();
+        Ok(indices.into_iter().find_map(|index| match &source.terms[index] {
+            ErlangTerm::Integer(n) if n.parse::<num_bigint::BigInt>().is_err() => {
+                Some("invalid capture integer".to_owned())
+            }
+            ErlangTerm::Float(bits) if !f64::from_bits(*bits).is_finite() => {
+                Some("nonfinite capture float".to_owned())
+            }
+            ErlangTerm::Bitstring { bytes, bits } if *bits > bytes.len() as u64 * 8 => {
+                Some("capture bitstring outside bytes".to_owned())
+            }
+            _ => None,
+        }))
+    }
     fn push(&mut self, value: CaptureTerm) -> CaptureId {
         let id = CaptureId(self.terms.len());
         self.terms.push(value);

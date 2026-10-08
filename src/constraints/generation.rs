@@ -364,6 +364,7 @@ pub struct CoreCaptureStore<'a> {
     core: &'a CoreProgram,
     labels: &'a Labels,
     modules: Vec<std::sync::OnceLock<std::result::Result<crate::core_capture::CoreCaptures, String>>>,
+    checked: Vec<std::sync::OnceLock<std::result::Result<(), String>>>,
 }
 impl<'a> CoreCaptureStore<'a> {
     pub fn new(core: &'a CoreProgram, labels: &'a Labels) -> Self {
@@ -371,7 +372,22 @@ impl<'a> CoreCaptureStore<'a> {
             core,
             labels,
             modules: (0..core.modules.len()).map(|_| std::sync::OnceLock::new()).collect(),
+            checked: (0..core.modules.len()).map(|_| std::sync::OnceLock::new()).collect(),
         }
+    }
+    /// Same outcome as `get(module)` then `append_selected(&[variable])` followed
+    /// by conversion of the copied terms, without building the module's captures.
+    fn selected_variable_error(
+        &self,
+        module: ModuleId,
+        variable: NodeId,
+    ) -> std::result::Result<Option<String>, String> {
+        self.checked
+            .get(module.0)
+            .ok_or("capture module outside Core arena")?
+            .get_or_init(|| crate::core_capture::CoreCaptures::check_module(self.core, self.labels, module))
+            .clone()?;
+        crate::core_capture::CoreCaptures::selected_variable_error(self.core, self.labels, module, variable)
     }
     fn matches(&self, core: &CoreProgram, labels: &Labels) -> bool {
         std::ptr::eq(self.core, core) && std::ptr::eq(self.labels, labels)

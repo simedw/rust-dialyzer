@@ -58,26 +58,49 @@ impl Generator<'_> {
                 return Err(GenerationError::Boundary("foreign constraint capture".into()));
             }
         }
+        if let (true, Some(store)) = (crate::lattice::verify_fast_paths(), inputs.core_captures) {
+            let fast = (|| -> std::result::Result<_, String> {
+                let mut first = None;
+                for (module, variable, _) in &self.phase_entries {
+                    let error = store.selected_variable_error(*module, *variable)?;
+                    first = first.or(error);
+                }
+                Ok(first)
+            })();
+            let full = (|| -> std::result::Result<_, String> {
+                let mut names = Vec::new();
+                for (module, variable, _) in &self.phase_entries {
+                    store.get(*module)?.append_selected(&[*variable], &mut names)?;
+                }
+                Ok(TermOrderArena::from_captures(&names).err())
+            })();
+            assert_eq!(fast, full, "selected capture validation fast path diverged");
+        }
         let mut names = Vec::new();
+        let mut names_error = None;
         for (module, variable, _) in &self.phase_entries {
             self.core.modules[module.0]
                 .named_mfa(*variable)
                 .map_err(GenerationError::Boundary)?;
-            let captures = if let Some(store) = inputs.core_captures {
-                store.get(*module).map_err(GenerationError::Boundary)?
-            } else {
-                if !self.core_captures.contains_key(module) {
-                    self.core_captures.insert(*module,
-                        crate::core_capture::CoreCaptures::build(self.core, self.labels, *module)
-                            .map_err(GenerationError::Boundary)?);
-                }
-                &self.core_captures[module]
-            };
-            captures.append_selected(&[*variable], &mut names)
+            if let Some(store) = inputs.core_captures {
+                let error = store.selected_variable_error(*module, *variable)
+                    .map_err(GenerationError::Boundary)?;
+                names_error = names_error.or(error);
+                continue;
+            }
+            if !self.core_captures.contains_key(module) {
+                self.core_captures.insert(*module,
+                    crate::core_capture::CoreCaptures::build(self.core, self.labels, *module)
+                        .map_err(GenerationError::Boundary)?);
+            }
+            self.core_captures[module].append_selected(&[*variable], &mut names)
                 .map_err(GenerationError::Boundary)?;
         }
+        if inputs.core_captures.is_none() {
+            names_error = TermOrderArena::from_captures(&names).err();
+        }
         if deferred.is_none() {
-            deferred = TermOrderArena::from_captures(&names).err();
+            deferred = names_error;
         }
         for module in &self.state.record_cache {
             let _ = &self.core.modules[module.0].name;
