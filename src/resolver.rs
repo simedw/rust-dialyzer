@@ -95,11 +95,14 @@ impl ModuleTableHandle {
         &self.arena
     }
 }
-type CachedTypes = BTreeMap<(TypeName, Vec<Unfold>, i64), Vec<Cached>>;
+/// Persistent map: `named` snapshots the cache before resolving arguments and
+/// may restore it (as OTP threads its cache), so clones must be O(1) and
+/// inserts must not copy the whole table.
+type CachedTypes = im::OrdMap<(TypeName, Vec<Unfold>, i64), Vec<Cached>>;
 
 #[derive(Clone)]
 pub struct FormCache {
-    types: std::sync::Arc<CachedTypes>,
+    types: CachedTypes,
     module_tables: std::sync::Arc<BTreeMap<String, ModuleTableHandle>>,
     interop_complete: bool,
 }
@@ -1038,9 +1041,10 @@ impl<'a> Resolver<'a> {
         };
         let cost = left - remainder;
         if cost >= 0 {
-            std::sync::Arc::make_mut(&mut self.cache.types)
+            self.cache
+                .types
                 .entry(cache_key)
-                .or_default()
+                .or_insert_with(Vec::new)
                 .push(Cached {
                     arguments,
                     value: value.clone(),
@@ -1813,9 +1817,10 @@ impl FormCache {
                 });
             }
             let value = crate::type_exports::type_from_arena(&arena, value[0])?;
-            std::sync::Arc::make_mut(&mut cache.types)
+            cache
+                .types
                 .entry((name, enclosing, depth))
-                .or_default()
+                .or_insert_with(Vec::new)
                 .push(Cached {
                     arguments,
                     value,
