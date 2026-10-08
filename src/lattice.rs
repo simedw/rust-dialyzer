@@ -3510,6 +3510,41 @@ impl Type {
             _ => self.transform_children(&|t| t.structural()),
         }
     }
+    /// Whether any nominal (named, possibly opaque) type or the opaque
+    /// sentinel occurs in this type. Allocation-free.
+    pub fn contains_nominal(&self) -> bool {
+        let mut pending = vec![self];
+        while let Some(t) = pending.pop() {
+            match &t.0 {
+                Repr::Nominal(_) | Repr::NominalSet(_) | Repr::Opaque => return true,
+                Repr::Product(p) => pending.extend(p.iter()),
+                Repr::Families(slots) => {
+                    if let Some(Functions { domain, range }) = slots.functions() {
+                        pending.push(domain);
+                        pending.push(range);
+                    }
+                    if let Some(Lists::List { elements, tail, .. }) = slots.list() {
+                        pending.push(elements);
+                        pending.push(tail);
+                    }
+                    if let Some(Tuples::Set(groups)) = slots.tuple() {
+                        for variants in groups.values() {
+                            for v in variants {
+                                pending.extend(v.elements.iter());
+                            }
+                        }
+                    }
+                    if let Some(m) = slots.maps() {
+                        pending.extend(m.entries.iter().map(|e| &e.value));
+                        pending.push(&m.default_key);
+                        pending.push(&m.default_value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
     fn blind(&self, direction: &Self, module: &str) -> Result<Self, LatticeError> {
         match &self.0 {
             Repr::Nominal(n) => match &n.name {
@@ -3609,6 +3644,22 @@ impl Type {
         })
     }
     pub fn opacity_conflict(
+        &self,
+        required: &Self,
+        module: &str,
+    ) -> Result<OpacityConflict, LatticeError> {
+        // Without nominal or opaque parts, `blind` returns its input, so there
+        // is no conflict; skip the meet and both rebuilds.
+        if !self.contains_nominal() && !required.contains_nominal() {
+            if verify_fast_paths() {
+                let slow = self.opacity_conflict_full(required, module)?;
+                assert_eq!(slow, OpacityConflict::None, "opacity fast path: {self:?} vs {required:?}");
+            }
+            return Ok(OpacityConflict::None);
+        }
+        self.opacity_conflict_full(required, module)
+    }
+    fn opacity_conflict_full(
         &self,
         required: &Self,
         module: &str,
@@ -5447,9 +5498,11 @@ mod immutable_transform_tests {
                 Type::none()
             ]
         );
+        // The nominal-free fast path never rebuilds, so only the full
+        // algorithm reaches the malformed map.
         assert_eq!(
             Type::any()
-                .opacity_conflict(&malformed, "external")
+                .opacity_conflict_full(&malformed, "external")
                 .unwrap_err(),
             LatticeError::BadArg
         );
@@ -5957,4 +6010,11 @@ mod canonical_constructor_tests {
         assert!(!same_owner(a,b));
         assert_eq!(there.to_value(),here.to_value());
     }
+}
+
+/// `RUST_DIALYZER_VERIFY_FASTPATH=1` computes the full result next to each
+/// fast path and panics on any difference.
+pub(crate) fn verify_fast_paths() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RUST_DIALYZER_VERIFY_FASTPATH").is_some_and(|v| v == "1"))
 }

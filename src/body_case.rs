@@ -527,11 +527,7 @@ impl BodyFlow<'_, '_, '_> {
         successes: &[(NodeRef, Type)],
         state: &BinderState<W>,
     ) -> Result<Vec<Pending>> {
-        let distinct = successes
-            .iter()
-            .map(|(_, ty)| ty.to_native_value())
-            .collect::<std::collections::BTreeSet<_>>();
-        if distinct.len() < 2 {
+        if !has_distinct_native_returns(successes.iter().map(|(_, typ)| typ)) {
             return Ok(vec![]);
         }
         let mut flat = vec![];
@@ -570,4 +566,18 @@ impl BodyFlow<'_, '_, '_> {
             })
             .collect()
     }
+}
+
+fn has_distinct_native_returns<'a>(mut types: impl Iterator<Item = &'a Type>) -> bool {
+    let Some(first) = types.next() else {
+        return false;
+    };
+    let mut native_first = None;
+    types.any(|typ| {
+        if typ == first {
+            return false;
+        }
+        let native_first = native_first.get_or_insert_with(|| first.to_native_value());
+        typ.to_native_value() != *native_first
+    })
 }
