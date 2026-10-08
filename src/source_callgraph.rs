@@ -68,6 +68,8 @@ pub struct ModuleEdges {
 pub struct SourceCallGraph {
     pub modules: Vec<ModuleEdges>,
     pub named_labels: BTreeMap<GraphVertex, CoreLabel>,
+    /// Reverse of `named_labels`, built on first use by `function_name`.
+    label_names: std::sync::OnceLock<std::collections::HashMap<CoreLabel, Mfa>>,
     graph: crate::source_digraph::SourceDigraph<GraphVertex>,
     pub module_names: Vec<String>,
 }
@@ -311,6 +313,7 @@ impl SourceCallGraph {
         Ok(Self {
             modules,
             named_labels,
+            label_names: Default::default(),
             module_names: core.modules.iter().map(|m| m.name.clone()).collect(),
             graph,
         })
@@ -354,23 +357,30 @@ impl SourceCallGraph {
         &self.graph
     }
     pub fn function_name(&self, label: CoreLabel) -> Option<Mfa> {
-        self.named_labels.iter().find_map(|(vertex, value)| {
-            if *value != label {
-                return None;
-            }
-            match vertex {
-                GraphVertex::Named {
-                    module,
-                    function,
-                    arity,
-                } => Some(Mfa {
-                    module: module.clone(),
-                    function: function.clone(),
-                    arity: num_traits::ToPrimitive::to_usize(arity)?,
-                }),
-                _ => None,
-            }
-        })
+        // Called for every label of every SCC: index once instead of scanning
+        // all named vertices. Keeps the first vertex in map order per label.
+        self.label_names
+            .get_or_init(|| {
+                let mut index = std::collections::HashMap::new();
+                for (vertex, value) in &self.named_labels {
+                    if let GraphVertex::Named {
+                        module,
+                        function,
+                        arity,
+                    } = vertex
+                        && let Some(arity) = num_traits::ToPrimitive::to_usize(arity)
+                    {
+                        index.entry(*value).or_insert_with(|| Mfa {
+                            module: module.clone(),
+                            function: function.clone(),
+                            arity,
+                        });
+                    }
+                }
+                index
+            })
+            .get(&label)
+            .cloned()
     }
     pub fn schedule(&self) -> Result<crate::schedule::DependencyGraph<GraphVertex>, String> {
         let vertices = self

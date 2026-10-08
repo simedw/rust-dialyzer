@@ -13,11 +13,30 @@ struct Active {
     phases: Vec<(&'static str, f64)>,
 }
 
+/// `RUST_DIALYZER_TIMINGS`: unset/0 off, 1 phase scopes, 2 also per-SCC and
+/// per-publication scopes (tens of thousands of records; distorts totals).
+fn level() -> u8 {
+    static LEVEL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *LEVEL.get_or_init(|| {
+        std::env::var("RUST_DIALYZER_TIMINGS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 impl PhaseTimings {
     pub fn new(scope: &'static str) -> Self {
-        let active = if std::env::var_os("RUST_DIALYZER_TIMINGS").as_deref()
-            == Some(std::ffi::OsStr::new("1"))
-        {
+        Self::at_level(scope, 1)
+    }
+
+    /// A scope that runs once per SCC or publication; recorded only at level 2.
+    pub fn detail(scope: &'static str) -> Self {
+        Self::at_level(scope, 2)
+    }
+
+    fn at_level(scope: &'static str, required: u8) -> Self {
+        let active = if level() >= required {
             let started = Instant::now();
             Some(Active {
                 scope,

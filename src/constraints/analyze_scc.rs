@@ -94,7 +94,7 @@ impl SccAnalyzer<'_> {
         solvers: &SolverSelection,
         output: GenerationOutput,
     ) -> Result<SccAnalysis, AnalyzeSccError> {
-        let mut timings = crate::phase_timings::PhaseTimings::new("scc_components");
+        let mut timings = crate::phase_timings::PhaseTimings::detail("scc_components");
         let core = self.nodes.core();
         let mut entries = Vec::with_capacity(ordered_mfas.len());
         for mfa in ordered_mfas {

@@ -180,7 +180,7 @@ impl<'a> CorePhases<'a> {
         signatures: impl Iterator<Item = (CoreLabel, &'s Signature)>,
         contracts: impl Iterator<Item = &'s Mfa>,
     ) {
-        let mut timings = crate::phase_timings::PhaseTimings::new("state_publication");
+        let mut timings = crate::phase_timings::PhaseTimings::detail("state_publication");
         for (label, signature) in signatures {
             if let Some(name) = self.function_names.get(&label) {
                 self.world.named_signatures.insert(name.clone(), signature.clone());
@@ -368,7 +368,7 @@ impl CorePhases<'_> {
             .map(|(signatures, _)| signatures)
     }
     fn analyze_scc_shared(&self, request: &SccRequest<'_>) -> Result<FunctionTypes, CorePhaseError> {
-        let mut timings = crate::phase_timings::PhaseTimings::new("scc_analysis");
+        let mut timings = crate::phase_timings::PhaseTimings::detail("scc_analysis");
         let propagated = PropagatedTypes(
             request
                 .previous
