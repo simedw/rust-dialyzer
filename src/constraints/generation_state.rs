@@ -26,7 +26,7 @@ impl Generator<'_> {
         let mut headers = Vec::new();
         inputs.runtime.append(&mut headers);
         // Conversion errors originally surface after all structural capture checks.
-        let mut deferred = TermOrderArena::from_captures(&headers).err();
+        let mut deferred = TermOrderArena::captures_error(&headers);
         for index in 0..self.arena.len() {
             let node = self.arena.node(NativeConstraintId(index))
                 .ok_or_else(|| GenerationError::Boundary("constraint arena gap".into()))?;

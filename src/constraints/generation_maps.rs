@@ -158,20 +158,11 @@ impl Generator<'_> {
             .first()
             .ok_or_else(|| GenerationError::Boundary("pair capture root empty".into()))?;
         let module = context.origin.module;
-        let captures =
-            if let Some(store) = self.capture_inputs.and_then(|inputs| inputs.core_captures) {
-                store.get(module).map_err(GenerationError::Boundary)?
-            } else {
-                if let std::collections::btree_map::Entry::Vacant(entry) =
-                    self.core_captures.entry(module)
-                {
-                    entry.insert(
-                        crate::core_capture::CoreCaptures::build(self.core, self.labels, module)
-                            .map_err(GenerationError::Boundary)?,
-                    );
-                }
-                &self.core_captures[&module]
-            };
+        match self.capture_inputs.and_then(|inputs| inputs.core_captures) {
+            Some(store) => store.check_module(module),
+            None => crate::core_capture::CoreCaptures::check_module(self.core, self.labels, module),
+        }
+        .map_err(GenerationError::Boundary)?;
         let entries = context
             .entries
             .iter()
@@ -182,25 +173,58 @@ impl Generator<'_> {
                 )),
             })
             .collect::<Result<Vec<_>>>()?;
-        let entries = captures
-            .append_selected(&entries, &mut terms)
-            .map_err(GenerationError::Boundary)?;
-        let nil = CaptureId(terms.len());
-        terms.push(CaptureTerm::Nil);
-        let entries_root = CaptureId(terms.len());
-        terms.push(CaptureTerm::List {
-            items: entries,
-            tail: nil,
-        });
-        let root = CaptureId(terms.len());
-        terms.push(CaptureTerm::List {
-            items: vec![pairs, entries_root],
-            tail: nil,
-        });
-        CaptureEnvironment::new(
-            Arc::new(TermOrderArena::from_captures(&terms).map_err(GenerationError::Boundary)?),
-            root,
+        let full = crate::lattice::verify_fast_paths().then(|| terms.clone());
+        let environment = crate::core_capture::CoreCaptures::append_selected_from_source(
+            self.core,
+            self.labels,
+            module,
+            &entries,
+            &mut terms,
         )
-        .map_err(GenerationError::Boundary)
+        .and_then(|entries| map_argument_environment(terms, pairs, entries));
+        if let Some(mut full) = full {
+            let full = crate::core_capture::CoreCaptures::build(self.core, self.labels, module)
+                .and_then(|captures| captures.append_selected(&entries, &mut full))
+                .and_then(|entries| map_argument_environment(full, pairs, entries));
+            match (&environment, &full) {
+                (Ok(fast), Ok(full)) => assert_eq!(
+                    fast.compare(full),
+                    Ok(std::cmp::Ordering::Equal),
+                    "selected map capture environment diverged"
+                ),
+                (fast, full) => assert_eq!(
+                    fast.as_ref().err(),
+                    full.as_ref().err(),
+                    "selected map capture error diverged"
+                ),
+            }
+        }
+        environment.map_err(GenerationError::Boundary)
     }
+}
+fn map_argument_environment(
+    mut terms: Vec<CaptureTerm>,
+    pairs: CaptureId,
+    entries: Vec<CaptureId>,
+) -> std::result::Result<CaptureEnvironment, String> {
+    let nil = CaptureId(terms.len());
+    terms.push(CaptureTerm::Nil);
+    let entries_root = CaptureId(terms.len());
+    terms.push(CaptureTerm::List {
+        items: entries,
+        tail: nil,
+    });
+    let root = CaptureId(terms.len());
+    terms.push(CaptureTerm::List {
+        items: vec![pairs, entries_root],
+        tail: nil,
+    });
+    // Only about a fifth of these environments are ever compared, so conversion
+    // is deferred; its error is still raised here.
+    if let Some(error) = TermOrderArena::captures_error(&terms) {
+        return Err(error);
+    }
+    Ok(CaptureEnvironment::lazy(2, move || {
+        CaptureEnvironment::new(Arc::new(TermOrderArena::from_captures(&terms)?), root)
+    }))
 }

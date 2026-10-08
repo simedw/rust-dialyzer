@@ -382,12 +382,16 @@ impl<'a> CoreCaptureStore<'a> {
         module: ModuleId,
         variable: NodeId,
     ) -> std::result::Result<Option<String>, String> {
+        self.check_module(module)?;
+        crate::core_capture::CoreCaptures::selected_variable_error(self.core, self.labels, module, variable)
+    }
+    /// The error `get(module)` would return, without building the module.
+    pub(super) fn check_module(&self, module: ModuleId) -> std::result::Result<(), String> {
         self.checked
             .get(module.0)
             .ok_or("capture module outside Core arena")?
             .get_or_init(|| crate::core_capture::CoreCaptures::check_module(self.core, self.labels, module))
-            .clone()?;
-        crate::core_capture::CoreCaptures::selected_variable_error(self.core, self.labels, module, variable)
+            .clone()
     }
     fn matches(&self, core: &CoreProgram, labels: &Labels) -> bool {
         std::ptr::eq(self.core, core) && std::ptr::eq(self.labels, labels)
@@ -2092,6 +2096,42 @@ mod capture_store_tests {
             term_count: 6,
             kinds: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn source_selection_matches_full_module_records() {
+        let core = program();
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let full = crate::core_capture::CoreCaptures::build(&core, &labels, ModuleId(0)).unwrap();
+        let selections = (0..5)
+            .map(|n| vec![NodeId(n)])
+            .chain([vec![NodeId(4), NodeId(1), NodeId(4)], vec![]]);
+        for selected in selections {
+            let environment = |terms: Vec<CaptureTerm>, items| {
+                let mut terms = terms;
+                let nil = CaptureId(terms.len());
+                terms.push(CaptureTerm::Nil);
+                let root = CaptureId(terms.len());
+                terms.push(CaptureTerm::List { items, tail: nil });
+                assert_eq!(TermOrderArena::captures_error(&terms), None);
+                CaptureEnvironment::new(Arc::new(TermOrderArena::from_captures(&terms).unwrap()), root)
+                    .unwrap()
+            };
+            let mut old = vec![CaptureTerm::Atom("existing".into())];
+            let mut new = old.clone();
+            let old_items = full.append_selected(&selected, &mut old).unwrap();
+            let new_items = crate::core_capture::CoreCaptures::append_selected_from_source(
+                &core, &labels, ModuleId(0), &selected, &mut new,
+            )
+            .unwrap();
+            assert!(environment(old, old_items).compare(&environment(new, new_items)).unwrap().is_eq());
+        }
+        assert_eq!(
+            crate::core_capture::CoreCaptures::append_selected_from_source(
+                &core, &labels, ModuleId(0), &[NodeId(5)], &mut Vec::new(),
+            ),
+            full.append_selected(&[NodeId(5)], &mut Vec::new())
+        );
     }
 
     #[test]

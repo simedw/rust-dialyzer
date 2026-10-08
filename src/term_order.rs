@@ -690,6 +690,57 @@ impl TermOrderArena {
         }
         Ok(out)
     }
+    /// The error `from_captures(source)` would return, without building the arena.
+    pub fn captures_error(source: &[CaptureTerm]) -> Option<String> {
+        fn late<'a>(index: usize, mut ids: impl Iterator<Item = &'a CaptureId>) -> Option<&'static str> {
+            ids.any(|id| id.0 >= index)
+                .then_some("capture children must precede parents")
+        }
+        let error = source.iter().enumerate().find_map(|(index, term)| {
+            match term {
+                CaptureTerm::Integer(n) => n
+                    .parse::<BigInt>()
+                    .is_err()
+                    .then_some("invalid capture integer"),
+                CaptureTerm::Float(bits) => (!f64::from_bits(*bits).is_finite())
+                    .then_some("nonfinite capture float"),
+                CaptureTerm::Atom(_) | CaptureTerm::Nil | CaptureTerm::Binary(_) => None,
+                CaptureTerm::Tuple(xs) => late(index, xs.iter()),
+                CaptureTerm::Map(xs) => late(index, xs.iter().flat_map(|(k, v)| [k, v])),
+                CaptureTerm::List { items, tail } => {
+                    late(index, std::iter::once(tail).chain(items))
+                }
+                CaptureTerm::Bitstring { bytes, bits } => (*bits > bytes.len() as u64 * 8)
+                    .then_some("capture bitstring outside bytes"),
+                CaptureTerm::Function(CapturedFunction::Local {
+                    arity,
+                    environment,
+                    ..
+                }) => {
+                    if *arity > 255 {
+                        Some("capture local function arity outside native range")
+                    } else {
+                        late(index, environment.iter())
+                    }
+                }
+                CaptureTerm::Function(CapturedFunction::External { arity, .. }) => (*arity > 255)
+                    .then_some("capture external function arity outside native range"),
+                CaptureTerm::Runtime { identity, .. } => {
+                    (identity.scope.is_empty() || identity.object.is_empty())
+                        .then_some("opaque runtime identities require a scope and object")
+                }
+            }
+        });
+        let error = error.map(str::to_owned);
+        if crate::lattice::verify_fast_paths() {
+            assert_eq!(
+                error,
+                Self::from_captures(source).err(),
+                "capture conversion check diverged"
+            );
+        }
+        error
+    }
     pub fn compare_captures(
         &self,
         a: CaptureId,
