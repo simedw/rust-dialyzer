@@ -5,7 +5,7 @@ use crate::{
     dataflow_nodes::DataflowNodes,
     labels::{CoreLabel, Labels},
     native_dict::{NativeDictOrder, PinnedPhashKey, pinned_hash_atom, pinned_hash_integer},
-    program::{FunctionIdentity, ModuleId, NodeRef, Program},
+    program::{FunctionId, FunctionIdentity, ModuleId, NodeRef, Program},
 };
 use num_bigint::BigInt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,6 +70,8 @@ pub struct SourceCallGraph {
     pub named_labels: BTreeMap<GraphVertex, CoreLabel>,
     /// Reverse of `named_labels`, built on first use by `function_name`.
     label_names: std::sync::OnceLock<std::collections::HashMap<CoreLabel, Mfa>>,
+    /// Function ids per module, in `program.functions` order.
+    module_functions: Vec<Vec<FunctionId>>,
     graph: crate::source_digraph::SourceDigraph<GraphVertex>,
     pub module_names: Vec<String>,
 }
@@ -146,18 +148,19 @@ impl SourceCallGraph {
             }
             vertices.push(vertex);
         }
+        let module_functions = module_function_index(program);
         let mut modules = Vec::new();
         for (index, m) in core.modules.iter().enumerate() {
             let module = ModuleId(index);
             let mut order = NativeDictOrder::<DependencyCaller>::default();
             let mut by_label = BTreeMap::new();
-            for f in &program.functions {
-                if f.module == module {
-                    by_label.insert(
-                        labels.label(site(module, f.node)).ok_or("function label")?,
-                        f.id,
-                    );
-                }
+            for id in module_functions.get(index).into_iter().flatten() {
+                by_label.insert(
+                    labels
+                        .label(site(module, program.functions[id.0].node))
+                        .ok_or("function label")?,
+                    *id,
+                );
             }
             for caller in &deps.module_callers[index] {
                 order.store(match caller {
@@ -314,6 +317,7 @@ impl SourceCallGraph {
             modules,
             named_labels,
             label_names: Default::default(),
+            module_functions,
             module_names: core.modules.iter().map(|m| m.name.clone()).collect(),
             graph,
         })
@@ -418,11 +422,48 @@ impl SourceCallGraph {
         program: &Program,
         labels: &Labels,
     ) -> Result<BTreeMap<CoreLabel, Vec<CoreLabel>>, String> {
+        let functions = self
+            .module_functions
+            .get(module.0)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let local = self.local_callers(
+            module,
+            program,
+            labels,
+            functions.iter().map(|id| &program.functions[id.0]),
+            false,
+        )?;
+        if crate::lattice::verify_fast_paths() {
+            let slow = self.local_callers(
+                module,
+                program,
+                labels,
+                program.functions.iter().filter(|f| f.module == module),
+                true,
+            )?;
+            assert_eq!(local, slow, "indexed ordered_local_callers diverged");
+        }
+        Ok(local)
+    }
+    fn local_callers<'a>(
+        &self,
+        module: ModuleId,
+        program: &'a Program,
+        labels: &Labels,
+        functions: impl Iterator<Item = &'a crate::program::Function> + Clone,
+        scan: bool,
+    ) -> Result<BTreeMap<CoreLabel, Vec<CoreLabel>>, String> {
+        let local_labels = functions
+            .clone()
+            .map(|f| {
+                labels
+                    .label(site(module, f.node))
+                    .ok_or("local function label")
+            })
+            .collect::<Result<std::collections::HashSet<_>, _>>()?;
         let mut local = BTreeMap::new();
-        for f in &program.functions {
-            if f.module != module {
-                continue;
-            }
+        for f in functions {
             let label = labels
                 .label(site(module, f.node))
                 .ok_or("local function label")?;
@@ -445,15 +486,31 @@ impl SourceCallGraph {
                     GraphVertex::Top => None,
                 })
                 .filter(|label| {
-                    program.functions.iter().any(|f| {
-                        f.module == module && labels.label(site(module, f.node)) == Some(*label)
-                    })
+                    if scan {
+                        program.functions.iter().any(|f| {
+                            f.module == module
+                                && labels.label(site(module, f.node)) == Some(*label)
+                        })
+                    } else {
+                        local_labels.contains(label)
+                    }
                 })
                 .collect();
             local.insert(label, callers);
         }
         Ok(local)
     }
+}
+
+fn module_function_index(program: &Program) -> Vec<Vec<FunctionId>> {
+    let mut index = vec![Vec::new(); program.modules.len()];
+    for f in &program.functions {
+        if index.len() <= f.module.0 {
+            index.resize_with(f.module.0 + 1, Vec::new);
+        }
+        index[f.module.0].push(f.id);
+    }
+    index
 }
 
 impl crate::source_digraph::RuntimeGraphKey for GraphVertex {
