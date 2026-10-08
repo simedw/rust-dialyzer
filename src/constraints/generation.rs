@@ -21,7 +21,7 @@ use crate::{
     program::{ModuleId, NodeRef},
     term_order::{CaptureEnvironment, CaptureId, CaptureTerm, TermOrderArena},
 };
-use std::{cell::OnceCell, collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 #[derive(Debug)]
 pub enum GenerationError {
     ConstructionFailure,

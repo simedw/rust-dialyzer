@@ -172,6 +172,7 @@ fn analyze_phases(
     }
     .publish(&cleanup.module_dependencies)
     .map_err(|error| format!("{error:?}"))?;
+    timings.mark("module_dependencies");
     let unknown = warning_publication::collect_unknown(
         calls,
         &definitions.external_types,
@@ -179,6 +180,7 @@ fn analyze_phases(
         input.report_modules.as_ref(),
     )
     .map_err(|error| format!("{error:?}"))?;
+    timings.mark("unknown_warnings");
     let unknown_flat = unknown
         .by_module
         .iter()

@@ -85,6 +85,11 @@ pub fn analyze(
             .map(|raw| NativeWarning { raw })
             .collect::<Vec<_>>(),
     );
+    // With report_modules, only those modules' signatures are emitted.
+    let report_modules: Option<std::collections::BTreeSet<String>> =
+        row["report_modules"].as_array().map(|names| {
+            names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect()
+        });
     let signatures =
         output
             .analysis
@@ -92,7 +97,9 @@ pub fn analyze(
             .signatures
             .iter()
             .filter_map(|(label, signature)| {
-                output.graph.function_name(*label).map(|name| json!({
+                output.graph.function_name(*label)
+                    .filter(|name| report_modules.as_ref().is_none_or(|r| r.contains(&name.module)))
+                    .map(|name| json!({
             "module":name.module,"function":name.function,"arity":name.arity,
             "arguments":signature.arguments.iter().map(Type::to_value).collect::<Vec<_>>(),
             "result":signature.result.to_value(),
@@ -105,5 +112,6 @@ pub fn analyze(
         "unknown_warning_count":output.unknown.by_module.len(),
         "module_dependencies":output.module_dependencies.named_projection()?});
     timings.mark("signatures_and_output_projection");
+    crate::teardown::release(output);
     Ok(result)
 }

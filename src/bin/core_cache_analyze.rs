@@ -73,11 +73,14 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
         Err(error) => return json!({"status": "error", "stage": "load", "detail": error}),
     };
     let modules = core.modules.len();
+    // One-shot run: the process exits after printing, so skip teardown.
+    rust_dialyzer_poc::teardown::skip_drops_at_exit();
     let started = Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| {
         rust_dialyzer_poc::compiled_probe::analyze(&core, options, library, &profile)
     }));
     let analysis_seconds = started.elapsed().as_secs_f64();
+    rust_dialyzer_poc::teardown::release(core);
     let base = json!({
         "modules": modules,
         "load_seconds": load_seconds,

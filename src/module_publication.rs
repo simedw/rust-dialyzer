@@ -106,6 +106,14 @@ impl PublicationInput<'_> {
     pub fn type_dependencies(&self) -> Result<ModuleDependencies> {
         // Original module_type_deps obtains every behaviour list before its collector runs.
         let mut behaviour_dependencies = Vec::new();
+        // Behaviour metadata grouped once instead of scanning all metadata per module.
+        let mut behaviours_by_module: std::collections::BTreeMap<_, Vec<_>> =
+            std::collections::BTreeMap::new();
+        for metadata in &self.program.metadata {
+            if let Some(behaviour) = metadata.behaviour.as_ref() {
+                behaviours_by_module.entry(metadata.module).or_default().push(behaviour);
+            }
+        }
         for &target in self.targets {
             let module = self.core.modules.get(target.0).ok_or_else(|| {
                 PublicationError::Boundary("target outside compiler input".into())
@@ -118,11 +126,11 @@ impl PublicationInput<'_> {
             behaviour_dependencies.push((
                 module.name.clone(),
                 crate::behaviour_metadata::collect(
-                    self.program
-                        .metadata
-                        .iter()
-                        .filter(|metadata| metadata.module == target)
-                        .filter_map(|metadata| metadata.behaviour.as_ref()),
+                    behaviours_by_module
+                        .get(&target)
+                        .into_iter()
+                        .flatten()
+                        .copied(),
                 )
                 .map_err(|error| match error {
                     FormError::Native(error) => PublicationError::Native(error),
@@ -157,19 +165,27 @@ impl PublicationInput<'_> {
                         .map_err(|e| PublicationError::Boundary(e.to_string()))
                 })
                 .collect::<Result<Vec<_>>>()?;
+            // First entry per key, as the linear search over entries returned.
+            let mut first_index = std::collections::BTreeMap::new();
+            for (index, key) in keys.iter().enumerate() {
+                first_index.entry(key.clone()).or_insert(index);
+            }
             let ordered = self.ordered_keys(keys)?;
             for key in ordered {
-                let literal = key.literal();
-                let root = literal.root;
-                let key = RawLiteral::from_arena(std::sync::Arc::new(literal), root)
-                    .map_err(PublicationError::Boundary)?;
-                let entry = entries
-                    .iter()
-                    .find(|(candidate, _)| candidate == &key)
-                    .map(|(_, e)| *e)
+                let entry = first_index
+                    .get(&key)
+                    .map(|index| entries[*index].1)
                     .ok_or_else(|| {
                         PublicationError::Boundary("ordered declaration row missing".into())
                     })?;
+                if crate::lattice::verify_fast_paths() {
+                    let literal = key.literal();
+                    let root = literal.root;
+                    let raw = RawLiteral::from_arena(std::sync::Arc::new(literal), root)
+                        .map_err(PublicationError::Boundary)?;
+                    let linear = entries.iter().find(|(candidate, _)| candidate == &raw).map(|(_, e)| *e);
+                    assert!(linear.is_some_and(|e| std::ptr::eq(e, entry)), "publication index differs from linear search");
+                }
                 let raw = entry.key.raw();
                 let ErlangTerm::Tuple(fields) = raw.term() else {
                     unreachable!()

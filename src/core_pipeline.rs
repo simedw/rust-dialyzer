@@ -170,6 +170,10 @@ pub fn analyze<'a>(
     })?;
     diagnostic_timings.mark("all_modules");
     timings.mark("diagnostics");
+    drop(bodies);
+    crate::teardown::release(diagnostics);
+    crate::teardown::release(phases);
+    crate::teardown::release(schedule);
     Ok(CollectedAnalysis {
         state,
         documentation: Some(documentation),
