@@ -244,7 +244,7 @@ pub struct BodyFlow<'a, 'b, 'c> {
     pub bifs: &'a Registry,
     pub calls: Option<(
         &'a crate::guard_producer::GuardProducer<'a, 'c, 'c>,
-        &'a crate::body_calls::CallWorld<'a>,
+        &'a dyn crate::body_calls::CallLookup,
     )>,
     pub guards: Option<&'a crate::guard_control::GuardControl<'a, 'c, 'c>>,
     pub letrec: &'a crate::letrec_types::LetrecLinks,

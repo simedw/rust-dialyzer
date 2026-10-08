@@ -3,7 +3,7 @@ use crate::{
     bifs::registry::{Mfa, Registry},
     binder::{BinderState, OpaqueMatch},
     binder_module::ModuleBinderError,
-    body_calls::{ActiveContract, CallWorld},
+    body_calls::{ActiveContract, ApplyTarget, CallLookup, CallWorld},
     body_flow::{BodyError, BodyFlow, BodyWarning, CaseWarning},
     call_transfer::Signature,
     call_warning::CallWarning,
@@ -108,6 +108,8 @@ pub struct CorePhases<'a> {
     function_names: BTreeMap<CoreLabel, Mfa>,
     core_captures: CoreCaptureStore<'a>,
     scc_memo: std::sync::Mutex<BTreeMap<Vec<Mfa>, std::sync::Arc<SccMemo>>>,
+    module_memo: std::sync::Mutex<BTreeMap<ModuleId, std::sync::Arc<ModuleMemo>>>,
+    module_memo_counts: ModuleMemoCounts,
     /// Generation's view of each entry of `world.active_contracts`, converted
     /// once when the contract is activated instead of at every call site.
     generation_contracts: BTreeMap<Mfa, Result<GenerationActiveContract, String>>,
@@ -145,6 +147,8 @@ impl<'a> CorePhases<'a> {
             function_names: index_function_names(&inputs.graph.named_labels),
             core_captures: CoreCaptureStore::new(inputs.nodes.core(), inputs.nodes.labels()),
             scc_memo: Default::default(),
+            module_memo: Default::default(),
+            module_memo_counts: Default::default(),
             generation_contracts: BTreeMap::new(),
         };
         phases.initialize()?;
@@ -241,6 +245,7 @@ impl ModuleBodies<'_, '_> {
         &self,
         module: ModuleId,
         previous: &FunctionTypes,
+        calls: &dyn CallLookup,
         warnings: bool,
     ) -> Result<(FunctionTypes, Vec<NativeWarning>), CorePhaseError> {
         let mut timings = crate::phase_timings::PhaseTimings::new(if warnings {
@@ -280,7 +285,7 @@ impl ModuleBodies<'_, '_> {
             patterns: &mut patterns,
             functions: &mut functions,
             bifs: self.bifs,
-            calls: Some((&producer, &self.world)),
+            calls: Some((&producer, calls)),
             guards: Some(&guards),
             letrec,
         };
@@ -312,7 +317,7 @@ impl ModuleBodies<'_, '_> {
         module: ModuleId,
         previous: &FunctionTypes,
     ) -> Result<ModuleDiagnostics, CorePhaseError> {
-        self.module_body(module, previous, true)
+        self.module_body(module, previous, self.world, true)
             .map(|(signatures, warnings)| ModuleDiagnostics {
                 signatures,
                 warnings,
@@ -368,15 +373,54 @@ impl AnalysisPhases for CorePhases<'_> {
         &mut self,
         requests: Vec<ModuleRequest<'_>>,
     ) -> Vec<Result<FunctionTypes, Self::Error>> {
+        let mut timings = crate::phase_timings::PhaseTimings::new("module_memo");
+        self.module_memo_counts.reset();
         let this = &*self;
-        crate::ordered_parallel::parallel_map(&requests, |request| this.refine_module_shared(request))
+        let results = crate::ordered_parallel::parallel_map(&requests, |request| this.refine_module_shared(request));
+        timings.label(|| self.module_memo_counts.describe(requests.len()));
+        results
     }
 }
 
 impl CorePhases<'_> {
+    /// Module refinement is memoized across fixpoint iterations like SCCs.
+    /// The body analysis depends on the module's Core, the fixed run inputs
+    /// (definitions, call sites, guards, letrec links), `previous` and the
+    /// signatures and contracts it reads from the call world; with identical
+    /// values for all of these it computes the same types.
     fn refine_module_shared(&self, request: &ModuleRequest<'_>) -> Result<FunctionTypes, CorePhaseError> {
-        self.module_bodies().module_body(request.module, request.previous, false)
-            .map(|(signatures, _)| signatures)
+        let memo = self.module_memo.lock().unwrap().get(&request.module).cloned();
+        if let Some(memo) = memo
+            && memo.previous == *request.previous
+        {
+            self.module_memo_counts.same_previous.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if memo.reads.still_valid(&self.world) {
+                self.module_memo_counts.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if crate::lattice::verify_fast_paths() {
+                    let (fresh, _) = self.refine_module_uncached(request)?;
+                    assert_eq!(fresh, memo.result, "memoized module result differs: {:?}", request.module);
+                }
+                return Ok(memo.result.clone());
+            }
+        }
+        let (result, reads) = self.refine_module_uncached(request)?;
+        self.module_memo.lock().unwrap().insert(
+            request.module,
+            std::sync::Arc::new(ModuleMemo {
+                previous: request.previous.clone(),
+                reads,
+                result: result.clone(),
+            }),
+        );
+        Ok(result)
+    }
+    fn refine_module_uncached(&self, request: &ModuleRequest<'_>) -> Result<(FunctionTypes, CallReads), CorePhaseError> {
+        let calls = RecordingCalls {
+            world: &self.world,
+            reads: Default::default(),
+        };
+        let (signatures, _) = self.module_bodies().module_body(request.module, request.previous, &calls, false)?;
+        Ok((signatures, calls.reads.into_inner()))
     }
     /// SCC results are memoized across fixpoint iterations. Generation and
     /// solving depend on the Core, the fixed run inputs, `previous` (the
@@ -537,6 +581,70 @@ impl LibraryTypes for RecordingWorld<'_, '_> {
             None => LibraryTypes::active_contract(self.world, mfa)?,
         };
         self.reads.borrow_mut().contracts.entry(mfa.clone()).or_insert_with(|| contract_source(self.world, mfa));
+        Ok(contract)
+    }
+}
+
+struct ModuleMemo {
+    previous: FunctionTypes,
+    reads: CallReads,
+    result: FunctionTypes,
+}
+#[derive(Default)]
+struct ModuleMemoCounts {
+    same_previous: std::sync::atomic::AtomicUsize,
+    hits: std::sync::atomic::AtomicUsize,
+}
+impl ModuleMemoCounts {
+    fn reset(&self) {
+        self.same_previous.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.hits.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn describe(&self, requests: usize) -> String {
+        format!(
+            "modules {requests} same_previous {} hits {}",
+            self.same_previous.load(std::sync::atomic::Ordering::Relaxed),
+            self.hits.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+}
+/// Call-world values read by one module body analysis.
+#[derive(Default)]
+struct CallReads {
+    named: BTreeMap<Mfa, Option<Signature>>,
+    anonymous: BTreeMap<CoreLabel, Option<Signature>>,
+    contracts: BTreeMap<Mfa, ContractSource>,
+}
+impl CallReads {
+    fn still_valid(&self, world: &CallWorld<'_>) -> bool {
+        self.named.iter().all(|(mfa, value)| world.named_signature(mfa).is_ok_and(|current| current == *value))
+            && self.anonymous.iter().all(|(label, value)| world.anonymous_signatures.get(label) == value.as_ref())
+            && self.contracts.iter().all(|(mfa, source)| contract_source(world, mfa) == *source)
+    }
+}
+/// Records every call-world value a module body reads, for `ModuleMemo`
+/// validation. Call sites are fixed when the phases are built.
+struct RecordingCalls<'w, 'l> {
+    world: &'w CallWorld<'l>,
+    reads: std::cell::RefCell<CallReads>,
+}
+impl CallLookup for RecordingCalls<'_, '_> {
+    fn call_sites(&self, site: &NodeRef) -> Option<&[ApplyTarget]> {
+        CallLookup::call_sites(self.world, site)
+    }
+    fn named_signature(&self, name: &Mfa) -> Result<Option<Signature>, String> {
+        let signature = self.world.named_signature(name)?;
+        self.reads.borrow_mut().named.entry(name.clone()).or_insert_with(|| signature.clone());
+        Ok(signature)
+    }
+    fn anonymous_signature(&self, label: &CoreLabel) -> Option<Signature> {
+        let signature = self.world.anonymous_signatures.get(label).cloned();
+        self.reads.borrow_mut().anonymous.entry(*label).or_insert_with(|| signature.clone());
+        signature
+    }
+    fn active_contract(&self, name: &Mfa) -> Result<Option<ActiveContract>, String> {
+        let contract = self.world.active_contract(name)?;
+        self.reads.borrow_mut().contracts.entry(name.clone()).or_insert_with(|| contract_source(self.world, name));
         Ok(contract)
     }
 }

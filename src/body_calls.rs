@@ -82,6 +82,28 @@ impl CallWorld<'_> {
         Ok(())
     }
 }
+/// What body analysis reads from the call world. Wrappers can observe the
+/// reads (see the module refinement memo in `core_phases`).
+pub trait CallLookup {
+    fn call_sites(&self, site: &NodeRef) -> Option<&[ApplyTarget]>;
+    fn named_signature(&self, name: &Mfa) -> std::result::Result<Option<Signature>, String>;
+    fn anonymous_signature(&self, label: &CoreLabel) -> Option<Signature>;
+    fn active_contract(&self, name: &Mfa) -> std::result::Result<Option<ActiveContract>, String>;
+}
+impl CallLookup for CallWorld<'_> {
+    fn call_sites(&self, site: &NodeRef) -> Option<&[ApplyTarget]> {
+        self.call_sites.get(site).map(Vec::as_slice)
+    }
+    fn named_signature(&self, name: &Mfa) -> std::result::Result<Option<Signature>, String> {
+        CallWorld::named_signature(self, name)
+    }
+    fn anonymous_signature(&self, label: &CoreLabel) -> Option<Signature> {
+        self.anonymous_signatures.get(label).cloned()
+    }
+    fn active_contract(&self, name: &Mfa) -> std::result::Result<Option<ActiveContract>, String> {
+        CallWorld::active_contract(self, name)
+    }
+}
 #[derive(Debug)]
 pub enum CallControllerError {
     Lattice(LatticeError),
@@ -139,7 +161,7 @@ pub struct BodyCalls<'a, 'b, 'c> {
     pub producer: &'a GuardProducer<'a, 'c, 'c>,
     pub functions: &'a mut FunctionState,
     pub bifs: &'a Registry,
-    pub world: &'a CallWorld<'a>,
+    pub world: &'a dyn CallLookup,
 }
 impl BodyCalls<'_, '_, '_> {
     fn format_args<W>(
@@ -322,9 +344,8 @@ impl BodyCalls<'_, '_, '_> {
         }
         let candidates = self
             .world
-            .call_sites
-            .get(&tree)
-            .cloned()
+            .call_sites(&tree)
+            .map(<[ApplyTarget]>::to_vec)
             .unwrap_or_else(|| vec![ApplyTarget::External])
             .into_iter()
             .map(|x| match x {
@@ -446,7 +467,7 @@ impl BodyCalls<'_, '_, '_> {
                             Some(n) => self.world.named_signature(n)?,
                             None => match key {
                                 FunctionKey::Label(l) => {
-                                    self.world.anonymous_signatures.get(l).cloned()
+                                    self.world.anonymous_signature(l)
                                 }
                                 FunctionKey::Top => None,
                             },
