@@ -61,13 +61,81 @@ pub enum CaptureTerm {
         identity: RuntimeIdentity,
     },
 }
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CaptureEnvironment {
-    arena: std::sync::Arc<TermOrderArena>,
-    root: CaptureId,
+    form: EnvironmentForm,
     count: usize,
 }
+#[derive(Clone)]
+enum EnvironmentForm {
+    Built(std::sync::Arc<TermOrderArena>, CaptureId),
+    Lazy(std::sync::Arc<LazyEnvironment>),
+}
+type BuildEnvironment = dyn Fn() -> Result<CaptureEnvironment, String> + Send + Sync;
+/// Most closure comparisons are decided by code identity, so the comparison
+/// arena of an environment is only built once a comparison reaches it.
+struct LazyEnvironment {
+    build: Box<BuildEnvironment>,
+    built: std::sync::OnceLock<Result<(std::sync::Arc<TermOrderArena>, CaptureId), String>>,
+}
+impl std::fmt::Debug for CaptureEnvironment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut out = f.debug_struct("CaptureEnvironment");
+        match self.built() {
+            Ok((arena, root)) => out.field("arena", arena).field("root", &root),
+            Err(error) => out.field("error", &error),
+        };
+        out.field("count", &self.count).finish()
+    }
+}
 impl CaptureEnvironment {
+    /// `build` must produce an environment of `count` values; it runs at most
+    /// once, on first use. Fast-path verification builds it immediately.
+    pub fn lazy(
+        count: usize,
+        build: impl Fn() -> Result<CaptureEnvironment, String> + Send + Sync + 'static,
+    ) -> Self {
+        let this = Self {
+            form: EnvironmentForm::Lazy(std::sync::Arc::new(LazyEnvironment {
+                build: Box::new(build),
+                built: std::sync::OnceLock::new(),
+            })),
+            count,
+        };
+        if crate::lattice::verify_fast_paths() {
+            if let Err(error) = this.built() {
+                panic!("lazy capture environment failed to build: {error}");
+            }
+        }
+        this
+    }
+    fn built(&self) -> Result<(&TermOrderArena, CaptureId), String> {
+        match &self.form {
+            EnvironmentForm::Built(arena, root) => Ok((arena, *root)),
+            EnvironmentForm::Lazy(lazy) => lazy
+                .built
+                .get_or_init(|| {
+                    let built = (lazy.build)()?;
+                    if built.count != self.count {
+                        return Err("lazy capture environment count mismatch".into());
+                    }
+                    let (arena, root) = built.built()?;
+                    match built.form {
+                        EnvironmentForm::Built(ref arena, _) => Ok((arena.clone(), root)),
+                        EnvironmentForm::Lazy(_) => {
+                            Ok((std::sync::Arc::new(arena.clone()), root))
+                        }
+                    }
+                })
+                .as_ref()
+                .map(|(arena, root)| (&**arena, *root))
+                .map_err(Clone::clone),
+        }
+    }
+    fn arena(&self) -> (&TermOrderArena, CaptureId) {
+        self.built()
+            .unwrap_or_else(|error| panic!("lazy capture environment failed to build: {error}"))
+    }
     pub fn from_native_values(values: &[crate::lattice::NativeValue]) -> Result<Self, String> {
         use crate::lattice::NativeValue;
         enum Frame<'a> {
@@ -143,8 +211,9 @@ impl CaptureEnvironment {
     }
 
     pub fn append_to(&self, terms: &mut Vec<CaptureTerm>) -> CaptureId {
+        let (arena, root) = self.arena();
         let offset = terms.len();
-        for node in &self.arena.nodes {
+        for node in &arena.nodes {
             let id = |n: Id| CaptureId(offset + n);
             terms.push(match node {
                 Node::Integer(n) => CaptureTerm::Integer(n.to_string()),
@@ -193,7 +262,7 @@ impl CaptureEnvironment {
                 }),
             });
         }
-        CaptureId(offset + self.arena.source_ids[self.root.0])
+        CaptureId(offset + arena.source_ids[root.0])
     }
     pub fn append_values_to(&self, terms: &mut Vec<CaptureTerm>) -> Vec<CaptureId> {
         let mut root = self.append_to(terms);
@@ -238,7 +307,10 @@ impl CaptureEnvironment {
     }
     pub fn new(arena: std::sync::Arc<TermOrderArena>, root: CaptureId) -> Result<Self, String> {
         let count = arena.captured_environment_size(root)?;
-        Ok(Self { arena, root, count })
+        Ok(Self {
+            form: EnvironmentForm::Built(arena, root),
+            count,
+        })
     }
     pub fn literal_roots(source: &ErlangTerms, roots: &[TermId]) -> Result<Self, String> {
         let mut arena = TermOrderArena::new(source)?;
@@ -270,8 +342,9 @@ impl CaptureEnvironment {
         )
     }
     pub fn compare(&self, other: &Self) -> Result<Ordering, String> {
-        self.arena
-            .compare_captures(self.root, &other.arena, other.root)
+        let (a, a_root) = self.built()?;
+        let (b, b_root) = other.built()?;
+        a.compare_captures(a_root, b, b_root)
     }
     pub fn parse(value: &serde_json::Value) -> Result<Self, String> {
         let (arena, root) = parse_captures(value)?;

@@ -584,7 +584,7 @@ impl<'a> Generator<'a> {
         site: &str,
         env: Vec<NativeValue>,
     ) -> Result<NativeOperand> {
-        let environment = capture_values(&env).map_err(GenerationError::Boundary)?;
+        let environment = CaptureEnvironment::lazy(env.len(), move || capture_values(&env));
         let key = self
             .profile
             .instantiate(site, environment)
@@ -1692,12 +1692,14 @@ impl Generator<'_> {
                 }
                 domain = Type::meet_lists(&domain, &signature.arguments)?;
             }
-            let captures = contract_capture(
-                &contract.captured_record,
-                args,
-                signature.as_ref().map(|s| &s.returns),
-            )
-            .map_err(GenerationError::Boundary)?;
+            let captures = {
+                let record = contract.captured_record.clone();
+                let args = args.to_vec();
+                let range = signature.as_ref().map(|s| s.returns.clone());
+                CaptureEnvironment::lazy(2 + usize::from(range.is_some()), move || {
+                    contract_capture(&record, &args, range.as_ref())
+                })
+            };
             let key = self
                 .profile
                 .instantiate(
