@@ -1,9 +1,11 @@
 use std::{sync::OnceLock, collections::BTreeMap};
 
 use crate::{
+    atom::Atom,
     bifs::registry::Mfa,
     core::{CoreExpr, CoreProgram, ErlangTerm, ErlangTerms, NodeId},
     dataflow_map::DataflowMap,
+    fast_hash::FastHashMap,
     labels::{CoreLabel, Labels},
     lattice::{Known, LatticeError, Type, TypeGetter, TypePredicate, TypeValue, VariableId},
     literal_types::LiteralTypes,
@@ -16,6 +18,24 @@ pub struct DataflowNodes<'a> {
     literals: Vec<LiteralTypes>,
     contains_map: Vec<Vec<bool>>,
     named_variables: OnceLock<Result<BTreeMap<VariableId, Mfa>, String>>,
+    definitions: OnceLock<FastHashMap<Atom, ModuleDefinitions>>,
+}
+/// Top-level definitions of the first module bearing a name, in the form a
+/// linear scan with `named_mfa` would see them: the first definition per
+/// name/arity, up to the first binder `named_mfa` rejects.
+enum ModuleDefinitions {
+    NotModule,
+    Indexed {
+        module: ModuleId,
+        functions: FastHashMap<(Atom, usize), (NodeId, NodeId)>,
+        error: Option<String>,
+    },
+}
+pub enum DefinitionLookupError {
+    ModuleAbsent,
+    NotModule,
+    Malformed(String),
+    FunctionAbsent,
 }
 impl<'a> DataflowNodes<'a> {
     pub fn core(&self) -> &'a CoreProgram {
@@ -47,6 +67,60 @@ impl<'a> DataflowNodes<'a> {
             })
             .as_ref()
             .map_err(Clone::clone)
+    }
+    /// The module and `(binder, fun)` definition named by `mfa`; equivalent
+    /// to scanning the first module named `mfa.module` with `named_mfa`.
+    pub fn definition(
+        &self,
+        mfa: &Mfa,
+    ) -> Result<(ModuleId, NodeId, NodeId), DefinitionLookupError> {
+        let definitions = self.definitions.get_or_init(|| {
+            let mut index = FastHashMap::default();
+            for (module, m) in self.core.modules.iter().enumerate() {
+                index
+                    .entry(Atom::new(&m.name))
+                    .or_insert_with(|| Self::index_module(ModuleId(module), m));
+            }
+            index
+        });
+        match definitions.get(&mfa.module) {
+            None => Err(DefinitionLookupError::ModuleAbsent),
+            Some(ModuleDefinitions::NotModule) => Err(DefinitionLookupError::NotModule),
+            Some(ModuleDefinitions::Indexed {
+                module,
+                functions,
+                error,
+            }) => match (functions.get(&(mfa.function, mfa.arity)), error) {
+                (Some((variable, function)), _) => Ok((*module, *variable, *function)),
+                (None, Some(error)) => Err(DefinitionLookupError::Malformed(error.clone())),
+                (None, None) => Err(DefinitionLookupError::FunctionAbsent),
+            },
+        }
+    }
+    fn index_module(module: ModuleId, m: &crate::core::CoreModule) -> ModuleDefinitions {
+        let CoreExpr::Module { definitions, .. } = &m.nodes[m.core.0].expr else {
+            return ModuleDefinitions::NotModule;
+        };
+        let mut functions = FastHashMap::default();
+        let mut error = None;
+        for (variable, function) in definitions {
+            match m.named_mfa(*variable) {
+                Ok(mfa) => {
+                    functions
+                        .entry((mfa.function, mfa.arity))
+                        .or_insert((*variable, *function));
+                }
+                Err(failure) => {
+                    error = Some(failure);
+                    break;
+                }
+            }
+        }
+        ModuleDefinitions::Indexed {
+            module,
+            functions,
+            error,
+        }
     }
     pub fn literal_types(&self) -> &[LiteralTypes] {
         &self.literals
@@ -93,6 +167,7 @@ impl<'a> DataflowNodes<'a> {
             literals,
             contains_map,
             named_variables: OnceLock::new(),
+            definitions: OnceLock::new(),
         })
     }
     pub fn module(&self, id: ModuleId) -> Result<&crate::core::CoreModule, String> {

@@ -6,12 +6,11 @@ use crate::{
         GenerationCaptureInputs, GenerationError, GenerationOutput, GenerationPhase, Generator, SourceBifProvider,
     },
     constraints::tree::FunctionVariable,
-    core::CoreExpr,
-    dataflow_nodes::DataflowNodes,
+    dataflow_nodes::{DataflowNodes, DefinitionLookupError},
     labels::CoreLabel,
     lattice::Type,
     native_error::NativeTransferError,
-    program::{ModuleId, NodeRef},
+    program::NodeRef,
     source_callgraph::{GraphVertex, SourceCallGraph},
     term_order::CaptureEnvironment,
 };
@@ -95,38 +94,22 @@ impl SccAnalyzer<'_> {
         output: GenerationOutput,
     ) -> Result<SccAnalysis, AnalyzeSccError> {
         let mut timings = crate::phase_timings::PhaseTimings::detail("scc_components");
-        let core = self.nodes.core();
         let mut entries = Vec::with_capacity(ordered_mfas.len());
         for mfa in ordered_mfas {
-            let module = core
-                .modules
-                .iter()
-                .position(|module| *module.name == *mfa.module)
-                .ok_or_else(|| {
+            entries.push(self.nodes.definition(mfa).map_err(|error| match error {
+                DefinitionLookupError::ModuleAbsent => {
                     AnalyzeSccError::Boundary(format!("SCC module {} absent", mfa.module))
-                })?;
-            let CoreExpr::Module { definitions, .. } =
-                &core.modules[module].nodes[core.modules[module].core.0].expr
-            else {
-                return Err(AnalyzeSccError::Boundary(
-                    "SCC Core root is not a module".into(),
-                ));
-            };
-            let mut found = None;
-            for (variable, function) in definitions {
-                if core.modules[module].named_mfa(*variable)
-                    .map_err(|error| AnalyzeSccError::Generation(GenerationError::Boundary(error)))?
-                    == *mfa
-                {
-                    found = Some((ModuleId(module), *variable, *function));
-                    break;
                 }
-            }
-            entries.push(found.ok_or_else(|| {
-                AnalyzeSccError::Boundary(format!(
+                DefinitionLookupError::NotModule => {
+                    AnalyzeSccError::Boundary("SCC Core root is not a module".into())
+                }
+                DefinitionLookupError::Malformed(error) => {
+                    AnalyzeSccError::Generation(GenerationError::Boundary(error))
+                }
+                DefinitionLookupError::FunctionAbsent => AnalyzeSccError::Boundary(format!(
                     "SCC function {}:{}/{} absent",
                     mfa.module, mfa.function, mfa.arity
-                ))
+                )),
             })?);
         }
         if entries.is_empty() {
