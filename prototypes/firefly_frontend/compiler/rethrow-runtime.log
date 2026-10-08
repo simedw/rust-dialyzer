@@ -1,1 +1,0 @@
-LOWER OK path=fixtures/rethrow/firefly_rethrow_identity.beam functions=5 types_before=0 specs_before=0 diagnostics=""

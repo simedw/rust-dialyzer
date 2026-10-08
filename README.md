@@ -2,7 +2,9 @@
 
 This experiment checks a small compiled Elixir app with OTP Dialyzer and an independent Rust analyzer. It establishes diagnostic parity on the fixture before comparing two Rust solvers.
 
-The newer [native Elixir frontend prototype](prototypes/firefly_frontend/README.md) reads BEAM debug metadata and lowers it entirely in Rust. Its selected Elixir corpus passes 21 grouped warning/type comparisons across 48 unique modules and 33 warnings, without launching a VM during native execution. Its ingestion, lowering and analysis now run in one executable, with a separate correctness gate and optimized benchmark; the original commands below still use the compiler bridge. The prototype README records supported language groups and remaining integration work.
+The current pipeline lets OTP compile each module's `debug_info` to Core Erlang, as Dialyzer itself does, and caches the result per BEAM content hash ([core_cache.exs](prototypes/core_cache/core_cache.exs)). The Rust analyzer loads that cache ([core_cache_analyze](src/bin/core_cache_analyze.rs)). On the 1,082 modules of a Phoenix project's PLT it matches OTP's warnings and all 42,246 inferred signatures exactly; it is still about 19 times slower. See [the Phase 0 notes](bench/phase0/README.md).
+
+An earlier native frontend reimplemented the compiler step in Rust using code extracted from Firefly. It was removed because it could not handle current OTP and dependency code and was no faster than OTP's compiler. The tag `firefly-frontend-snapshot` preserves it.
 
 The app in `examples/tiny` has 22 runtime functions. Eighteen produce no warnings. Four contain deliberate problems: an invalid return contract, a bad built-in call, a bad call to an unspecced function in another module, and a caller that inherits the failure. Both analyzers emit the same six normalized warnings.
 

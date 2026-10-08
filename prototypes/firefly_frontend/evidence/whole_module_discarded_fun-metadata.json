@@ -1,9 +1,0 @@
-{
-  "source_forms_equal": true,
-  "attribute_payloads_and_locations_equal": true,
-  "attributes": [
-    "file"
-  ],
-  "count": 1,
-  "oracle_core_bodies_used_as_native_input": false
-}

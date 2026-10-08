@@ -65,6 +65,8 @@ Dialyzer computes its own callees-first SCC order regardless of file order. So t
 
 ### Rust on the cone: it cannot build a PLT yet
 
+> The Firefly-based Rust frontend measured in this section, and its `inventory.py`, `analysis_loop.py` and `probe_modules.py` drivers, have been removed. The tag `firefly-frontend-snapshot` preserves them.
+
 I gave the integrated release (`native-elixir-dialyzer`, SHA-256 `4c2cfa52…`) the 507 cone modules as targets, with a one-module stub PLT. The harness setup is in `.cache/phase0/rust-cone`. The run aborts. Rust has only been checked on project code analyzed against facts exported from an OTP-built PLT. It has not been run on OTP, Elixir and dependency code as targets.
 
 The failures found so far (`.cache/phase0/rust-cone/out/rejected.txt`):
@@ -133,6 +135,6 @@ Results from the ETF cache are identical: 400/400 warnings and 42,246/42,246 sig
 
 ## Open items
 
-- Locate the remaining `FunctionClause` failure. Then make all 1,082 PLT modules go through the Rust frontend and analyzer.
+- Speed: about 415 s of Rust analysis against OTP's 22 s for the same 1,082 modules.
 - A real dependency version bump (lock change) rather than a single-module edit.
 - A second project, to check that the cone result generalizes.
