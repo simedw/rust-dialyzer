@@ -374,6 +374,21 @@ impl PreparedDefinitions {
             let mid = ModuleId(i);
             let mut b = ReasonBuilder::from_terms(module.terms.clone());
             let mut own = Vec::new();
+            // One shared copy of the module's terms for all its aliases (this
+            // was copied per declaration).
+            let source_arena = Arc::new(crate::core::ErlangTerms {
+                root: module.source_forms,
+                terms: module.terms.clone(),
+            });
+            // This module's aliases by position; prior_aliases scanned every
+            // declaration of every module per alias.
+            let mut module_aliases: Vec<(usize, (String, usize))> = forms
+                .declarations
+                .values()
+                .filter(|d| d.name.module == module.name && d.kind == DeclarationKind::Alias)
+                .map(|d| (d.metadata, (d.name.name.clone(), d.name.arity)))
+                .collect();
+            module_aliases.sort();
             for d in ordered_declarations(&forms, &module.name) {
                 let meta = &program.metadata[d.metadata];
                 let file = b.string(meta.origin.file.as_deref().unwrap_or("nofile"));
@@ -381,15 +396,13 @@ impl PreparedDefinitions {
                 let fl = b.tuple(vec![file, loc]);
                 let m = b.atom(&module.name);
                 let body = if d.kind == DeclarationKind::Alias && module.name != "erlang" {
-                    let raw = RawFormTerm::new(
-                        Arc::new(crate::core::ErlangTerms {
-                            root: module.source_forms,
-                            terms: module.terms.clone(),
-                        }),
-                        forms.nodes[d.body.0].raw,
-                    )
+                    let raw = RawFormTerm::new(source_arena.clone(), forms.nodes[d.body.0].raw)
                     .expect("source declaration");
-                    let defs = prior_aliases(&forms, &module.name, d.metadata);
+                    let defs: BTreeSet<(String, usize)> = module_aliases
+                        .iter()
+                        .take_while(|(metadata, _)| *metadata < d.metadata)
+                        .map(|(_, name)| name.clone())
+                        .collect();
                     b.copy(&crate::native_form_preprocessing::massage(&raw, &defs))
                 } else {
                     forms.nodes[d.body.0].raw
@@ -620,6 +633,7 @@ impl PreparedDefinitions {
         resolver
             .set_record_types(all_types)
             .map_err(import_failure)?;
+        let alias_index = AliasIndex::new(&resolver.forms);
         for (index, module) in core.modules.iter().enumerate() {
             let mid = ModuleId(index);
             resolver.replace_cache(FormCache::new());
@@ -705,7 +719,7 @@ impl PreparedDefinitions {
                 resolver.set_native_site(site.clone());
                 let summary = crate::contracts::compile_at(&mut resolver, contract, Some(&origin))
                     .map_err(|e| failure(PreparationStage::Contracts, site, e, &resolver))?;
-                let capture = contract_capture(core, &resolver.forms, &sources, contract, &summary)
+                let capture = contract_capture(core, &resolver.forms, &alias_index, &sources, contract, &summary)
                     .map_err(|e| {
                         failure(
                             PreparationStage::Contracts,
@@ -784,6 +798,7 @@ fn generated_variable(b: &mut ReasonBuilder) -> TermId {
 fn contract_capture(
     core: &CoreProgram,
     forms: &Forms,
+    aliases: &AliasIndex,
     sources: &BTreeMap<ModuleId, FormSourceArena>,
     contract: &Contract,
     summary: &ContractSummary,
@@ -862,7 +877,7 @@ fn contract_capture(
             && !contract.callback
             && core.modules[form.module.0].name != "erlang"
         {
-            let defs = prior_aliases(forms, &core.modules[form.module.0].name, contract.metadata);
+            let defs = aliases.prior(forms, &core.modules[form.module.0].name, contract.metadata);
             crate::native_form_preprocessing::massage(&raw, &defs)
         } else {
             raw
@@ -1021,6 +1036,48 @@ fn finalize_tables(
     Ok(())
 }
 
+/// Each module's alias declarations sorted by position, so prior aliases are a
+/// prefix instead of a scan over every declaration of every module.
+struct AliasIndex {
+    declarations: usize,
+    by_module: BTreeMap<String, Vec<(usize, (String, usize))>>,
+}
+impl AliasIndex {
+    fn new(forms: &Forms) -> Self {
+        let mut by_module: BTreeMap<String, Vec<(usize, (String, usize))>> = BTreeMap::new();
+        for d in forms.declarations.values() {
+            if d.kind == DeclarationKind::Alias {
+                by_module
+                    .entry(d.name.module.clone())
+                    .or_default()
+                    .push((d.metadata, (d.name.name.clone(), d.name.arity)));
+            }
+        }
+        for aliases in by_module.values_mut() {
+            aliases.sort();
+        }
+        Self {
+            declarations: forms.declarations.len(),
+            by_module,
+        }
+    }
+    /// Same result as `prior_aliases`; falls back to it if declarations changed.
+    fn prior(&self, forms: &Forms, module: &str, metadata: usize) -> BTreeSet<(String, usize)> {
+        if forms.declarations.len() != self.declarations {
+            return prior_aliases(forms, module, metadata);
+        }
+        self.by_module
+            .get(module)
+            .map(|aliases| {
+                aliases
+                    .iter()
+                    .take_while(|(m, _)| *m < metadata)
+                    .map(|(_, name)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
 fn prior_aliases(forms: &Forms, module: &str, metadata: usize) -> BTreeSet<(String, usize)> {
     forms
         .declarations
