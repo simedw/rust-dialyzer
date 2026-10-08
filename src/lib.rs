@@ -65,6 +65,8 @@ pub mod erlang_syntax;
 
 pub mod external_term;
 
+pub mod fast_hash;
+
 pub mod fingerprint;
 
 pub mod snapshot_file;

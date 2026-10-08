@@ -1,9 +1,11 @@
 use crate::core::{ErlangTerm, ErlangTerms, TermId};
 use num_bigint::BigInt;
 use num_traits::FromPrimitive;
+/// Interning tables here are the main hashing cost of the analysis.
+type HashMap<K, V> = crate::fast_hash::FastHashMap<K, V>;
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,12 +79,12 @@ impl CaptureEnvironment {
             nodes: Vec::new(),
             source_ids: Vec::new(),
             canonical_ids: Vec::new(),
-            intern: HashMap::new(),
+            intern: HashMap::default(),
         };
         let nil = arena.append_capture(Node::Nil);
         arena.source_ids.push(nil);
-        let mut atoms = HashMap::new();
-        let mut integers = HashMap::new();
+        let mut atoms = HashMap::default();
+        let mut integers = HashMap::default();
         let mut built = Vec::new();
         for value in values {
             let mut todo = vec![Frame::Visit(value)];
@@ -484,10 +486,10 @@ impl TermOrderArena {
             nodes: Vec::new(),
             source_ids: Vec::with_capacity(source.len()),
             canonical_ids: Vec::new(),
-            intern: HashMap::new(),
+            intern: HashMap::default(),
         };
-        let mut atom_ids: HashMap<&str, Id> = HashMap::new();
-        let mut integer_ids: HashMap<&str, Id> = HashMap::new();
+        let mut atom_ids: HashMap<&str, Id> = HashMap::default();
+        let mut integer_ids: HashMap<&str, Id> = HashMap::default();
         let mut nil_id = None;
         for term in source {
             let existing = match term {
@@ -521,7 +523,7 @@ impl TermOrderArena {
                 CaptureTerm::Tuple(xs) => Node::Tuple(xs.iter().map(at).collect::<Result<_, _>>()?),
                 CaptureTerm::Map(xs) => {
                     let mut unique: Vec<(Id, Id)> = Vec::new();
-                    let mut seen = HashMap::new();
+                    let mut seen = HashMap::default();
                     for (key, value) in xs {
                         let (key, value) = (at(key)?, at(value)?);
                         let canonical = out.canonical_ids[key];
@@ -653,7 +655,7 @@ impl TermOrderArena {
             nodes: Vec::new(),
             source_ids: Vec::with_capacity(source.terms.len()),
             canonical_ids: Vec::new(),
-            intern: HashMap::new(),
+            intern: HashMap::default(),
         };
         for term in &source.terms {
             let id = out.append_core_term(term)?;
@@ -794,7 +796,7 @@ impl RootTermOrder {
             nodes: Vec::new(),
             source_ids: Vec::new(),
             canonical_ids: Vec::new(),
-            intern: HashMap::new(),
+            intern: HashMap::default(),
         };
         let mut source_ids = std::collections::BTreeMap::new();
         for id in reachable {
@@ -941,7 +943,7 @@ fn compare(
     )];
     let mut result = None;
     let mut equal = HashSet::new();
-    let mut sorted_maps: HashMap<Location, Vec<(Id, Id)>> = HashMap::new();
+    let mut sorted_maps: HashMap<Location, Vec<(Id, Id)>> = HashMap::default();
     let take_order = |value: Option<Value>| match value {
         Some(Value::Order(x)) => x,
         _ => unreachable!("comparison continuation"),
