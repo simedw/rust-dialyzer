@@ -13,6 +13,11 @@ use rust_dialyzer_poc::{
 };
 use serde_json::{Value, json};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+
+// Analysis allocates heavily from all cores; the system allocator spends
+// about a third of CPU time under that load.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::time::Instant;
 
 fn load(manifest: &Value) -> Result<CoreProgram, String> {
