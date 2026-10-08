@@ -123,8 +123,8 @@ impl CoreAnalyzer<'_> {
         let mut functions = Vec::new();
         for mfa in names {
             let name = FunctionName {
-                module: mfa.module.clone(),
-                name: mfa.function.clone(),
+                module: mfa.module.clone().to_string(),
+                name: mfa.function.clone().to_string(),
                 arity: mfa.arity,
             };
             let id = self
@@ -183,8 +183,8 @@ impl CoreAnalyzer<'_> {
                         .to_string()
                         .parse::<usize>()
                         .map(|arity| Mfa {
-                            module: module.clone(),
-                            function: function.clone(),
+                            module: module.clone().into(),
+                            function: function.clone().into(),
                             arity,
                         })
                         .map_err(|_| "SCC arity outside platform range".to_owned()),

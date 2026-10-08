@@ -141,8 +141,8 @@ fn run(row: &Value) -> Result<Value, ProbeError> {
     let external_match=expected_rows.len()==out.external_calls.len() && expected_rows.iter().zip(&out.external_calls).all(|(id,c)|{
  let rust_dialyzer_poc::core::ErlangTerm::Tuple(xs)=&expected.terms[id.0] else{return false};if xs.len()!=2{return false}
  let rust_dialyzer_poc::core::ErlangTerm::Tuple(mfa)=&expected.terms[xs[0].0] else{return false};if mfa.len()!=3{return false}
- let target=matches!(&expected.terms[mfa[0].0],rust_dialyzer_poc::core::ErlangTerm::Atom(a) if a==&c.target.module)
- && matches!(&expected.terms[mfa[1].0],rust_dialyzer_poc::core::ErlangTerm::Atom(a) if a==&c.target.function)
+ let target=matches!(&expected.terms[mfa[0].0],rust_dialyzer_poc::core::ErlangTerm::Atom(a) if a==&*c.target.module)
+ && matches!(&expected.terms[mfa[1].0],rust_dialyzer_poc::core::ErlangTerm::Atom(a) if a==&*c.target.function)
  && matches!(&expected.terms[mfa[2].0],rust_dialyzer_poc::core::ErlangTerm::Integer(a) if a==&c.target.arity.to_string());
  let origin=RawFormTerm::new(expected.clone(),xs[1]).unwrap();
  let fake=NativeWarning::from_value("fixture",&c.origin,&rust_dialyzer_poc::lattice::NativeValue::Atom("fixture".into()));

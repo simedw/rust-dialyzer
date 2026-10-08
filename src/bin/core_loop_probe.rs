@@ -126,8 +126,8 @@ impl Schedule {
         vec![OrderedScc {
             identity: 1,
             members: vec![GraphVertex::Named {
-                module: self.name.module.clone(),
-                function: self.name.function.clone(),
+                module: self.name.module.clone().to_string(),
+                function: self.name.function.clone().to_string(),
                 arity: self.name.arity.into(),
             }],
         }]
@@ -219,8 +219,8 @@ fn run(r: &Value) -> Result<Value, String> {
         named_label: *graph
             .named_labels
             .get(&GraphVertex::Named {
-                module: name.module.clone(),
-                function: name.function.clone(),
+                module: name.module.clone().to_string(),
+                function: name.function.clone().to_string(),
                 arity: name.arity.into(),
             })
             .ok_or("named graph label")?,

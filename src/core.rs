@@ -320,8 +320,8 @@ impl CoreModule {
             return Err("named function name/arity types".into());
         };
         Ok(crate::bifs::registry::Mfa {
-            module: self.name.clone(),
-            function: name.clone(),
+            module: self.name.clone().into(),
+            function: name.clone().into(),
             arity: arity
                 .parse()
                 .map_err(|_| "named function arity invalid".to_owned())?,

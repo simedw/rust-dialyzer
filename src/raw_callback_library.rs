@@ -129,8 +129,8 @@ impl RawCallbackLibrary {
                 }
                 let value = tuple(&fields[1], 3)?;
                 let callable = key.callable().map(|name| Mfa {
-                    module: name.module.clone(),
-                    function: name.name.clone(),
+                    module: name.module.clone().into(),
+                    function: name.name.clone().into(),
                     arity: name.arity,
                 });
                 indexes.push(rows.len());

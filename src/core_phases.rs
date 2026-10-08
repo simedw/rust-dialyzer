@@ -83,7 +83,7 @@ fn index_function_names(named_labels: &BTreeMap<GraphVertex, CoreLabel>) -> BTre
             continue;
         };
         names.entry(*label).or_insert_with(|| Mfa {
-            module: module.clone(), function: function.clone(), arity,
+            module: module.clone().into(), function: function.clone().into(), arity,
         });
     }
     names

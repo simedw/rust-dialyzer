@@ -848,8 +848,8 @@ impl<'a> Generator<'a> {
                                     };
                                 if let (Some(module), Some(function)) = (atom(module), atom(name)) {
                                     let mfa = Mfa {
-                                        module,
-                                        function,
+                                        module: module.into(),
+                                        function: function.into(),
                                         arity: args.len(),
                                     };
                                     let finish = if let Some(op) = self.scc_variables.get(&mfa) {

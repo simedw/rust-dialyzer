@@ -68,8 +68,8 @@ pub fn classify(
             } => match (literal(module, *m), literal(module, *f)) {
                 (Some(ErlangTerm::Atom(m)), Some(ErlangTerm::Atom(f))) => {
                     let mfa = Mfa {
-                        module: m.clone(),
-                        function: f.clone(),
+                        module: m.clone().into(),
+                        function: f.clone().into(),
                         arity: args.len(),
                     };
                     if bifs.is_known(&mfa)

@@ -82,8 +82,8 @@ impl Artifact {
                     ErlangTerm::Atom(function),
                     ErlangTerm::Integer(arity),
                 ) => Ok(Mfa {
-                    module: module.clone(),
-                    function: function.clone(),
+                    module: module.clone().into(),
+                    function: function.clone().into(),
                     arity: arity.parse().map_err(|_| "prior arity invalid")?,
                 }),
                 _ => Err("prior MFA shape differs".into()),
@@ -513,8 +513,8 @@ impl PriorPlt {
                     continue;
                 };
                 current_named.insert(Mfa {
-                    module,
-                    function,
+                    module: module.into(),
+                    function: function.into(),
                     arity,
                 });
             }
@@ -612,7 +612,7 @@ impl Store {
             if summary.arguments.len() != summary.mfa.arity || summary.mfa.arity > 255 {
                 return Err(format!("invalid summary arity for {:?}", summary.mfa));
             }
-            if !modules.contains(&summary.mfa.module) {
+            if !modules.contains(summary.mfa.module.as_str()) {
                 return Err(format!(
                     "summary module absent from dependency inventory: {:?}",
                     summary.mfa
@@ -685,7 +685,7 @@ impl Store {
                     let mut groups = BTreeMap::<String, Vec<Mfa>>::new();
                     for name in entries.keys() {
                         groups
-                            .entry(name.module.clone())
+                            .entry(name.module.clone().to_string())
                             .or_default()
                             .push(name.clone());
                     }

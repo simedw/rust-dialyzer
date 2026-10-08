@@ -105,8 +105,8 @@ impl CompletedPlt {
                 .map_err(boundary)?
                 .into_iter()
                 .map(|n| Mfa {
-                    module: n.module,
-                    function: n.name,
+                    module: n.module.into(),
+                    function: n.name.into(),
                     arity: n.arity,
                 })
                 .collect::<BTreeSet<_>>();
@@ -125,8 +125,8 @@ impl CompletedPlt {
                 {
                     use num_traits::ToPrimitive;
                     let name = Mfa {
-                        module,
-                        function,
+                        module: module.into(),
+                        function: function.into(),
                         arity: arity
                             .to_usize()
                             .ok_or_else(|| boundary("nonexport arity outside schema"))?,
@@ -329,8 +329,8 @@ impl CompletedPlt {
         if let Some(target) = &target {
             for name in &target.definitions.exported_types {
                 let mfa = Mfa {
-                    module: name.module.clone(),
-                    function: name.name.clone(),
+                    module: name.module.clone().into(),
+                    function: name.name.clone().into(),
                     arity: name.arity,
                 };
                 let key = mfa_key(&mfa);

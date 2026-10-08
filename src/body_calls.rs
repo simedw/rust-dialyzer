@@ -281,8 +281,8 @@ impl BodyCalls<'_, '_, '_> {
             && f.len() == 1
         {
             let mfa = Mfa {
-                module: m[0].clone(),
-                function: f[0].clone(),
+                module: m[0].clone().into(),
+                function: f[0].clone().into(),
                 arity: args.len(),
             };
             return self
@@ -436,8 +436,8 @@ impl BodyCalls<'_, '_, '_> {
                         .get(key)
                         .ok_or(StateError::Missing(*key))?;
                     let name = def.name.as_ref().map(|n| Mfa {
-                        module: n.module.clone(),
-                        function: n.name.clone(),
+                        module: n.module.clone().into(),
+                        function: n.name.clone().into(),
                         arity: n.arity,
                     });
                     let raw = match &def.raw_signature {
@@ -544,8 +544,8 @@ impl BodyCalls<'_, '_, '_> {
                 let message = Self::message(
                     description,
                     vec![
-                        NativeValue::Atom(name.module.clone()),
-                        NativeValue::Atom(name.function.clone()),
+                        NativeValue::Atom(name.module.clone().to_string()),
+                        NativeValue::Atom(name.function.clone().to_string()),
                         string(&self.format_args(args, actual, &state)?),
                         NativeValue::List(conflicts),
                         NativeValue::List(
@@ -587,8 +587,8 @@ impl BodyCalls<'_, '_, '_> {
                             "contract_range",
                             vec![
                                 string(&cs),
-                                NativeValue::Atom(mfa.module.clone()),
-                                NativeValue::Atom(mfa.function.clone()),
+                                NativeValue::Atom(mfa.module.clone().to_string()),
+                                NativeValue::Atom(mfa.function.clone().to_string()),
                                 NativeValue::Integer(mfa.arity.into()),
                                 string(&args),
                                 string(&ret),
@@ -659,8 +659,8 @@ impl BodyCalls<'_, '_, '_> {
                         ci,
                     ];
                     let tag = if let Some(n) = &name {
-                        parts.insert(0, NativeValue::Atom(n.function.clone()));
-                        parts.insert(0, NativeValue::Atom(n.module.clone()));
+                        parts.insert(0, NativeValue::Atom(n.function.clone().to_string()));
+                        parts.insert(0, NativeValue::Atom(n.module.clone().to_string()));
                         "call"
                     } else {
                         "apply"
@@ -739,7 +739,7 @@ impl BodyCalls<'_, '_, '_> {
                 tag,
                 vec![
                     string(&self.format_type(&left, state)?),
-                    NativeValue::Atom(name.function.clone()),
+                    NativeValue::Atom(name.function.clone().to_string()),
                     string(&self.format_type(&right, state)?),
                 ],
             );

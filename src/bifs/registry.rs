@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct Mfa {
-    pub module: String,
-    pub function: String,
+    pub module: crate::atom::Atom,
+    pub function: crate::atom::Atom,
     pub arity: usize,
 }
 #[derive(Clone, Debug)]

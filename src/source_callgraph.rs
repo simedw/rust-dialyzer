@@ -371,8 +371,8 @@ impl SourceCallGraph {
                         && let Some(arity) = num_traits::ToPrimitive::to_usize(arity)
                     {
                         index.entry(*value).or_insert_with(|| Mfa {
-                            module: module.clone(),
-                            function: function.clone(),
+                            module: module.clone().into(),
+                            function: function.clone().into(),
                             arity,
                         });
                     }

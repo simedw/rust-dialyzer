@@ -184,8 +184,8 @@ fn main() {
                     return None;
                 };
                 let mfa = Mfa {
-                    module: n.module.clone(),
-                    function: n.name.clone(),
+                    module: n.module.clone().into(),
+                    function: n.name.clone().into(),
                     arity: n.arity,
                 };
                 requested.get(&mfa).map(|s| {

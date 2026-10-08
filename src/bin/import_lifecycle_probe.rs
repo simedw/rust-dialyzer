@@ -47,8 +47,8 @@ fn run(row: &Value, raw: &str) -> Result<Value, String> {
                 prior
                     .original_membership()
                     .contains(&rust_dialyzer_poc::bifs::registry::Mfa {
-                        module: module.clone(),
-                        function: function.clone(),
+                        module: module.clone().into(),
+                        function: function.clone().into(),
                         arity: arity.to_usize().unwrap(),
                     })
             }

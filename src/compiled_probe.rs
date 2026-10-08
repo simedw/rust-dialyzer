@@ -98,7 +98,7 @@ pub fn analyze(
             .iter()
             .filter_map(|(label, signature)| {
                 output.graph.function_name(*label)
-                    .filter(|name| report_modules.as_ref().is_none_or(|r| r.contains(&name.module)))
+                    .filter(|name| report_modules.as_ref().is_none_or(|r| r.contains(name.module.as_str())))
                     .map(|name| json!({
             "module":name.module,"function":name.function,"arity":name.arity,
             "arguments":signature.arguments.iter().map(Type::to_value).collect::<Vec<_>>(),

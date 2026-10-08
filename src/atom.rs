@@ -140,6 +140,12 @@ impl serde::Serialize for Atom {
         serializer.serialize_str(self.0)
     }
 }
+impl<'de> serde::Deserialize<'de> for Atom {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        Ok(Atom::new(&name))
+    }
+}
 impl From<Atom> for String {
     fn from(atom: Atom) -> Self {
         atom.0.to_owned()

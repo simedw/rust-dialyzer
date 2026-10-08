@@ -210,8 +210,8 @@ pub fn publish(
         let origin = prepared_origin(contract);
         origins.insert(
             FunctionName {
-                module: mfa.module.clone(),
-                name: mfa.function.clone(),
+                module: mfa.module.clone().to_string(),
+                name: mfa.function.clone().to_string(),
                 arity: mfa.arity,
             },
             ContractOrigin {

@@ -37,8 +37,8 @@ impl Generator<'_> {
             named.push((
                 label,
                 Mfa {
-                    module: name.module.clone(),
-                    function: name.name.clone(),
+                    module: name.module.clone().into(),
+                    function: name.name.clone().into(),
                     arity: name.arity,
                 },
             ));

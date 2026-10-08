@@ -541,8 +541,8 @@ impl DiagnosticSession<'_, '_> {
                 continue;
             };
             let mfa = Mfa {
-                module: name.module.clone(),
-                function: name.name.clone(),
+                module: name.module.clone().into(),
+                function: name.name.clone().into(),
                 arity: name.arity,
             };
             let node = NodeRef {

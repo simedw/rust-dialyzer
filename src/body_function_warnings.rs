@@ -41,15 +41,15 @@ impl BodyFlow<'_, '_, '_> {
                 .map(WarningFunction::Named)
                 .ok_or_else(|| BodyError::Boundary("function warning home absent".into()))?;
             let mfa = definition.name.as_ref().map(|name| Mfa {
-                module: name.module.clone(),
-                function: name.name.clone(),
+                module: name.module.clone().into(),
+                function: name.name.clone().into(),
                 arity: name.arity,
             });
             let vertex =
                 mfa.as_ref()
                     .map_or(GraphVertex::Label(*label), |mfa| GraphVertex::Named {
-                        module: mfa.module.clone(),
-                        function: mfa.function.clone(),
+                        module: mfa.module.clone().to_string(),
+                        function: mfa.function.clone().to_string(),
                         arity: mfa.arity.into(),
                     });
             let incoming = graph.in_neighbours(&vertex).unwrap_or(&[]);
@@ -61,8 +61,8 @@ impl BodyFlow<'_, '_, '_> {
                         arity,
                     },
                 ] => Some(Mfa {
-                    module: module.clone(),
-                    function: function.clone(),
+                    module: module.clone().into(),
+                    function: function.clone().into(),
                     arity: num_traits::ToPrimitive::to_usize(arity).ok_or(LatticeError::BadArg)?,
                 }),
                 [GraphVertex::Label(label)] => graph.function_name(*label),
@@ -148,7 +148,7 @@ impl BodyFlow<'_, '_, '_> {
                         info,
                         message: BodyMessage::Function {
                             warning,
-                            name: mfa.map(|mfa| (mfa.function, mfa.arity)),
+                            name: mfa.map(|mfa| (mfa.function.to_string(), mfa.arity)),
                         },
                     }
                     .into(),

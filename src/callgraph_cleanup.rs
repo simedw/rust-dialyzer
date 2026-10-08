@@ -51,8 +51,8 @@ fn named(v: &GraphVertex) -> Result<Mfa> {
             function,
             arity,
         } => Ok(Mfa {
-            module: module.clone(),
-            function: function.clone(),
+            module: module.clone().into(),
+            function: function.clone().into(),
             arity: arity
                 .to_usize()
                 .ok_or(CallGraphError::Native(NativeTransferError::FunctionClause))?,
@@ -64,15 +64,15 @@ fn named(v: &GraphVertex) -> Result<Mfa> {
 }
 fn function(mfa: &Mfa) -> FunctionName {
     FunctionName {
-        module: mfa.module.clone(),
-        name: mfa.function.clone(),
+        module: mfa.module.clone().to_string(),
+        name: mfa.function.clone().to_string(),
         arity: mfa.arity,
     }
 }
 fn mfa_value(mfa: &Mfa) -> NativeValue {
     NativeValue::Tuple(vec![
-        NativeValue::Atom(mfa.module.clone()),
-        NativeValue::Atom(mfa.function.clone()),
+        NativeValue::Atom(mfa.module.clone().to_string()),
+        NativeValue::Atom(mfa.function.clone().to_string()),
         NativeValue::Integer(mfa.arity.into()),
     ])
 }
@@ -158,7 +158,7 @@ impl CleanupContext<'_, '_, '_, '_> {
         let (Some(m), Some(f)) = (self.atom(site(*module))?, self.atom(site(*name))?) else {
             return Ok(false);
         };
-        if m == target.module && f == target.function && args.len() == target.arity {
+        if *m == *target.module && *f == *target.function && args.len() == target.arity {
             return Ok(true);
         }
         if m != "erlang" || f != "make_fun" || args.len() != 3 {
@@ -298,7 +298,7 @@ pub fn cleanup_callgraph(
                 .program
                 .modules
                 .iter()
-                .any(|m| m.name == target.module)
+                .any(|m| *m.name == *target.module)
         {
             bad.push((from, to));
         } else {
@@ -336,8 +336,8 @@ pub fn cleanup_callgraph(
         let message = NativeValue::Tuple(vec![
             NativeValue::Atom("call_to_missing".into()),
             NativeValue::List(vec![
-                NativeValue::Atom(target.module),
-                NativeValue::Atom(target.function),
+                NativeValue::Atom(target.module.to_string()),
+                NativeValue::Atom(target.function.to_string()),
                 NativeValue::Integer(target.arity.into()),
             ]),
         ]);

@@ -101,7 +101,7 @@ impl SccAnalyzer<'_> {
             let module = core
                 .modules
                 .iter()
-                .position(|module| module.name == mfa.module)
+                .position(|module| *module.name == *mfa.module)
                 .ok_or_else(|| {
                     AnalyzeSccError::Boundary(format!("SCC module {} absent", mfa.module))
                 })?;

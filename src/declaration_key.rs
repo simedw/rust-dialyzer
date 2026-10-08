@@ -198,8 +198,8 @@ impl Ord for DeclarationKey {
 impl DeclarationKey {
     pub fn callable_mfa(&self) -> Option<crate::bifs::registry::Mfa> {
         self.callable().map(|f| crate::bifs::registry::Mfa {
-            module: f.module.clone(),
-            function: f.name.clone(),
+            module: f.module.clone().into(),
+            function: f.name.clone().into(),
             arity: f.arity,
         })
     }

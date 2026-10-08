@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 impl From<&FunctionName> for Mfa {
     fn from(name: &FunctionName) -> Self {
         Self {
-            module: name.module.clone(),
-            function: name.name.clone(),
+            module: name.module.clone().into(),
+            function: name.name.clone().into(),
             arity: name.arity,
         }
     }

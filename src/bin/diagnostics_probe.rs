@@ -69,8 +69,8 @@ fn entry(v: &Value) -> Entry {
             let n = name(v);
             rust_dialyzer_poc::declaration_key::DeclarationKey::from_callable(
                 &rust_dialyzer_poc::program::FunctionName {
-                    module: n.module,
-                    name: n.function,
+                    module: n.module.to_string(),
+                    name: n.function.to_string(),
                     arity: n.arity,
                 },
             )
@@ -172,7 +172,7 @@ fn main() {
             accepted_matched=Some(accepted.len()==expected_pairs.len()&&accepted.iter().zip(expected_pairs).all(|(name,id)|{
              let rust_dialyzer_poc::core::ErlangTerm::Tuple(pair)=&expected.arena().terms[id.0]else{return false};
              let rust_dialyzer_poc::core::ErlangTerm::Tuple(mfa)=&expected.arena().terms[pair[0].0]else{return false};
-             let names=matches!(&expected.arena().terms[mfa[0].0],rust_dialyzer_poc::core::ErlangTerm::Atom(m)if m==&name.module)&&matches!(&expected.arena().terms[mfa[1].0],rust_dialyzer_poc::core::ErlangTerm::Atom(f)if f==&name.function)&&matches!(&expected.arena().terms[mfa[2].0],rust_dialyzer_poc::core::ErlangTerm::Integer(a)if a==&name.arity.to_string());
+             let names=matches!(&expected.arena().terms[mfa[0].0],rust_dialyzer_poc::core::ErlangTerm::Atom(m)if m==&*name.module)&&matches!(&expected.arena().terms[mfa[1].0],rust_dialyzer_poc::core::ErlangTerm::Atom(f)if f==&*name.function)&&matches!(&expected.arena().terms[mfa[2].0],rust_dialyzer_poc::core::ErlangTerm::Integer(a)if a==&name.arity.to_string());
              let entry=entries.iter().flatten().find(|e|&e.mfa==name).unwrap();
              names&&compare_map_keys(entry.capture.arena(),entry.capture.id(),expected.arena(),pair[1]).unwrap().is_eq()
             }));
