@@ -1,0 +1,1224 @@
+--- a/src/dependencies.rs
++++ b/src/dependencies.rs
+@@ -28,6 +28,128 @@
+     type_tables: serde_json::Value,
+     exported_types: serde_json::Value,
+ }
++
++#[derive(Deserialize)]
++struct Transport {
++    #[serde(flatten)]
++    artifact: Artifact,
++    raw_summaries: Option<serde_json::Value>,
++    raw_contracts: Option<serde_json::Value>,
++}
++impl Artifact {
++    fn parse(raw: &str) -> Result<Self, String> {
++        let transport_span = crate::perf_trace::Span::new("prior.transport_json");
++        let transport: Transport = serde_json::from_str(raw).map_err(|e| e.to_string())?;
++        drop(transport_span);
++        Self::from_transport(transport)
++    }
++    fn from_value(value: serde_json::Value) -> Result<Self, String> {
++        let span = crate::perf_trace::Span::new("prior.transport_value");
++        let transport = serde_json::from_value(value).map_err(|e| e.to_string())?;
++        drop(span);
++        Self::from_transport(transport)
++    }
++    fn from_transport(transport: Transport) -> Result<Self, String> {
++        let mut artifact = transport.artifact;
++        if artifact.version != 5 {
++            return Ok(artifact);
++        }
++        if !artifact.summaries.is_empty() || !artifact.contracts.is_empty() {
++            return Err("schema5 requires one raw summary/contract authority".into());
++        }
++        fn arena(value: Option<serde_json::Value>) -> Result<std::sync::Arc<ErlangTerms>, String> {
++            Ok(std::sync::Arc::new(ErlangTerms::parse(
++                &value.ok_or("raw prior table missing")?,
++            )?))
++        }
++        fn list(arena: &ErlangTerms, mut id: TermId) -> Result<Vec<TermId>, String> {
++            let mut result = Vec::new();
++            loop {
++                match &arena.terms[id.0] {
++                    ErlangTerm::Nil => return Ok(result),
++                    ErlangTerm::List { items, tail } => {
++                        result.extend(items);
++                        id = *tail;
++                    }
++                    _ => return Err("prior table proper list expected".into()),
++                }
++            }
++        }
++        fn tuple(arena: &ErlangTerms, id: TermId, arity: usize) -> Result<&[TermId], String> {
++            match &arena.terms[id.0] {
++                ErlangTerm::Tuple(fields) if fields.len() == arity => Ok(fields),
++                _ => Err("prior table tuple shape differs".into()),
++            }
++        }
++        fn mfa(arena: &ErlangTerms, id: TermId) -> Result<Mfa, String> {
++            let fields = tuple(arena, id, 3)?;
++            match (
++                &arena.terms[fields[0].0],
++                &arena.terms[fields[1].0],
++                &arena.terms[fields[2].0],
++            ) {
++                (
++                    ErlangTerm::Atom(module),
++                    ErlangTerm::Atom(function),
++                    ErlangTerm::Integer(arity),
++                ) => Ok(Mfa {
++                    module: module.clone(),
++                    function: function.clone(),
++                    arity: arity.parse().map_err(|_| "prior arity invalid")?,
++                }),
++                _ => Err("prior MFA shape differs".into()),
++            }
++        }
++        let summaries_span = crate::perf_trace::Span::new("prior.raw_summaries");
++        let summaries = arena(transport.raw_summaries)?;
++        for id in list(&summaries, summaries.root)? {
++            let fields = tuple(&summaries, id, 3)?;
++            artifact.summaries.push(NativeSummary {
++                mfa: mfa(&summaries, fields[0])?,
++                result: NativeTerm::from_arena(&summaries, fields[1])?,
++                arguments: list(&summaries, fields[2])?
++                    .into_iter()
++                    .map(|id| NativeTerm::from_arena(&summaries, id))
++                    .collect::<Result<_, _>>()?,
++            });
++        }
++        drop(summaries_span);
++        let contracts_span = crate::perf_trace::Span::new("prior.raw_contracts");
++        let contracts = arena(transport.raw_contracts)?;
++        for id in list(&contracts, contracts.root)? {
++            let fields = tuple(&contracts, id, 2)?;
++            let raw = |id| -> Result<crate::native_form_environment::RawFormTerm, String> {
++                let source =
++                    crate::native_form_environment::RawFormTerm::new(contracts.clone(), id)?;
++                let mut builder = crate::form_error::ReasonBuilder::new();
++                let root = builder.copy(&source);
++                Ok(builder.finish(root))
++            };
++            let builder = crate::form_error::ReasonBuilder::new();
++            let nil = builder.nil();
++            let nil = builder.finish(nil);
++            let contract = match &contracts.terms[fields[1].0] {
++                ErlangTerm::Tuple(record) if record.len() == 4 => {
++                    let mut contract = Contract::from_capture(&raw(fields[1])?, &nil, &nil)?;
++                    contract.location = None;
++                    contract.flags = None;
++                    contract
++                }
++                ErlangTerm::Tuple(record) if record.len() == 3 => {
++                    Contract::from_capture(&raw(record[1])?, &raw(record[0])?, &raw(record[2])?)?
++                }
++                _ => return Err("prior contract shape differs".into()),
++            };
++            artifact.contracts.push(NativeContract {
++                mfa: mfa(&contracts, fields[0])?,
++                contract,
++            });
++        }
++        drop(contracts_span);
++        Ok(artifact)
++    }
++}
++
+ #[derive(Deserialize)]
+ struct Profile {
+     otp: String,
+@@ -171,7 +293,7 @@
+             crate::native_form_environment::RawFormTerm::new(raw.arena().clone(), fields[3])?;
+         let mut b = crate::form_error::ReasonBuilder::new();
+         let id = b.copy(&forms);
+-        let forms = b.finish(id).arena().as_ref().clone();
++        let forms = std::sync::Arc::unwrap_or_clone(b.finish(id).arena);
+         Ok(Self {
+             raw_capture: Some(raw.clone()),
+             summary: OnceLock::new(),
+@@ -372,6 +494,21 @@
+             plan: plan.clone(),
+         })
+     }
++    pub fn from_value(
++        value: serde_json::Value,
++        core: &CoreProgram,
++        plan: &ImportPlan,
++    ) -> Result<Self, String> {
++        Ok(Self {
++            library: Store::from_artifact(Artifact::from_value(value)?, &core.profile, plan)?,
++            target_modules: core
++                .modules
++                .iter()
++                .map(|module| module.name.clone())
++                .collect(),
++            plan: plan.clone(),
++        })
++    }
+     pub fn original_membership(&self) -> &OriginalPltMembership {
+         &self.library.original_membership
+     }
+@@ -463,8 +600,21 @@
+         profile: &crate::core::CompilerProfile,
+         plan: &ImportPlan,
+     ) -> Result<Self, String> {
+-        let artifact: Artifact = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+-        if !matches!(artifact.version, 2..=4) {
++        Self::from_artifact(Artifact::parse(raw)?, profile, plan)
++    }
++    pub fn retain_value_without_analysis(
++        value: serde_json::Value,
++        profile: &crate::core::CompilerProfile,
++        plan: &ImportPlan,
++    ) -> Result<Self, String> {
++        Self::from_artifact(Artifact::from_value(value)?, profile, plan)
++    }
++    fn from_artifact(
++        artifact: Artifact,
++        profile: &crate::core::CompilerProfile,
++        plan: &ImportPlan,
++    ) -> Result<Self, String> {
++        if !matches!(artifact.version, 2..=5) {
+             return Err(format!(
+                 "unsupported dependency schema {}",
+                 artifact.version
+@@ -528,7 +678,7 @@
+                 return Err("duplicate dependency contract".into());
+             }
+         }
+-        let (raw, original_order) = if artifact.version == 4 {
++        let (raw, original_order) = if matches!(artifact.version, 4 | 5) {
+             if !artifact.callbacks.is_empty() || artifact.callback_lists.is_some() {
+                 return Err("schema4 callback authority must be raw groups only".into());
+             }
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -166,3 +166,5 @@
+ pub mod raw_callback_library;
+ 
+ pub mod portable_term_hash;
++
++pub mod perf_trace;
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -7,13 +7,14 @@
+ use std::path::PathBuf;
+ 
+ fn run() -> Result<i32, String> {
++    let _total = rust_dialyzer_poc::perf_trace::Span::new("cli.total");
+     let mut arguments = std::env::args().skip(1).collect::<Vec<_>>();
+     let json = arguments
+         .iter()
+         .position(|arg| arg == "--json")
+         .map(|i| arguments.remove(i))
+         .is_some();
+-    let catalogues = Catalogues::load()?;
++    let catalogues = { let _span = rust_dialyzer_poc::perf_trace::Span::new("cli.catalogues"); Catalogues::load()? };
+     let command = Command::parse(arguments, &catalogues.warnings)?;
+     let mut bridge = CompilerBridge::production(&PathBuf::from(env!("CARGO_MANIFEST_DIR")))?;
+     let report = compiled_operation::execute(&command, &mut bridge, &catalogues)
+--- a/src/compiler_bundle.rs
++++ b/src/compiler_bundle.rs
+@@ -17,32 +17,25 @@
+ 
+ pub struct PreparedBundle {
+     pub core: CoreProgram,
+-    pub prior: String,
++    pub prior: Value,
+     pub closure_profile: ClosureCodeProfile,
+-    pub context: Value,
+ }
+ impl PreparedBundle {
+     pub fn parse(mut value: Value) -> Result<Self, String> {
++        let _span = crate::perf_trace::Span::new("bundle.parse");
+         if value["version"] != 1 {
+             return Err("unsupported compiler bundle version".into());
+         }
+         let core = CoreProgram::parse(&value["core"].to_string())?;
+         let closure_profile = ClosureCodeProfile::parse(&value["closure_profile"])?;
+         let prior = value
+-            .get("prior")
++            .get_mut("prior")
+             .ok_or("prior snapshot missing")?
+-            .to_string();
+-        let context = value
+-            .as_object_mut()
+-            .ok_or("compiler bundle object expected")?;
+-        context.remove("core");
+-        context.remove("prior");
+-        context.remove("closure_profile");
++            .take();
+         Ok(Self {
+             core,
+             prior,
+             closure_profile,
+-            context: value,
+         })
+     }
+ }
+@@ -53,10 +46,12 @@
+ 
+ pub struct CompilerBridge {
+     script: PathBuf,
++    identity_script: PathBuf,
+     implementation_files: Vec<PathBuf>,
+     directory: PathBuf,
+     sequence: u64,
+     implementation_sha256: String,
++    implementation_inputs: Vec<PathBuf>,
+ }
+ impl CompilerBridge {
+     pub fn production(root: &Path) -> Result<Self, String> {
+@@ -65,6 +60,8 @@
+         files.extend(
+             [
+                 "compiled_bundle.exs",
++                "compiler_identity.exs",
++                "compiler_identity_main.exs",
+                 "dependency_export.exs",
+                 "analysis_profile_export.exs",
+                 "native_types.exs",
+@@ -73,10 +70,21 @@
+             ]
+             .map(|name| root.join("scripts").join(name)),
+         );
+-        Self::new(&script, files)
+-    }
+-    pub fn new(script: &Path, implementation_files: Vec<PathBuf>) -> Result<Self, String> {
++        Self::new(
++            &script,
++            &root.join("scripts/compiler_identity_main.exs"),
++            files,
++        )
++    }
++    pub fn new(
++        script: &Path,
++        identity_script: &Path,
++        implementation_files: Vec<PathBuf>,
++    ) -> Result<Self, String> {
+         let script = script.canonicalize().map_err(|error| error.to_string())?;
++        let identity_script = identity_script
++            .canonicalize()
++            .map_err(|error| error.to_string())?;
+         static NEXT: AtomicU64 = AtomicU64::new(0);
+         let time = SystemTime::now()
+             .duration_since(UNIX_EPOCH)
+@@ -90,22 +98,38 @@
+         fs::create_dir(&directory).map_err(|error| error.to_string())?;
+         let mut bridge = Self {
+             script,
++            identity_script,
+             implementation_files,
+             directory,
+             sequence: 0,
+             implementation_sha256: String::new(),
++            implementation_inputs: Vec::new(),
+         };
+         let value = bridge.invoke("identity", json!({}))?;
+         bridge.implementation_sha256 = value["implementation_sha256"]
+             .as_str()
+             .ok_or("implementation identity missing")?
+             .to_owned();
++        bridge.implementation_inputs = value["implementation_inputs"]
++            .as_array()
++            .ok_or("implementation fingerprint inputs missing")?
++            .iter()
++            .map(|path| {
++                path.as_str()
++                    .map(PathBuf::from)
++                    .ok_or("implementation path missing")
++            })
++            .collect::<Result<_, _>>()?;
+         Ok(bridge)
++    }
++    pub fn implementation_inputs(&self) -> &[PathBuf] {
++        &self.implementation_inputs
+     }
+     pub fn implementation_sha256(&self) -> &str {
+         &self.implementation_sha256
+     }
+     pub fn invoke(&mut self, operation: &str, mut request: Value) -> Result<Value, String> {
++        let _span = crate::perf_trace::Span::new(format!("bridge.{operation}"));
+         request["implementation_files"] = json!(self.implementation_files);
+         request["implementation_sha256"] = json!(self.implementation_sha256);
+         let request_path = self
+@@ -120,13 +144,27 @@
+             serde_json::to_vec(&request).map_err(|error| error.to_string())?,
+         )
+         .map_err(|error| error.to_string())?;
++        let process_span = crate::perf_trace::Span::new(format!("bridge.{operation}.process"));
+         let output = Command::new("elixir")
+-            .arg(&self.script)
++            .arg(if operation == "identity" {
++                &self.identity_script
++            } else {
++                &self.script
++            })
+             .arg(operation)
+             .arg(&request_path)
+             .arg(&output_path)
+             .output()
+             .map_err(|error| error.to_string())?;
++        drop(process_span);
++        if std::env::var_os("RUST_DIALYZER_TRACE").is_some() {
++            for line in String::from_utf8_lossy(&output.stderr)
++                .lines()
++                .filter(|line| line.starts_with("PERF "))
++            {
++                eprintln!("{line}");
++            }
++        }
+         if !output.status.success() {
+             return Err(format!(
+                 "compiler/prior ABI failed: {}",
+--- a/src/compiled_command.rs
++++ b/src/compiled_command.rs
+@@ -17,6 +17,10 @@
+     Incremental,
+ }
+ impl Operation {
++    pub fn output_error(self, output: Option<&std::path::Path>) -> Option<&'static str> {
++        (self == Self::SuccessTypings && output.is_some())
++            .then_some("Output PLT cannot be specified in analysis mode succ_typings")
++    }
+     pub fn backend(self, get_warnings: Option<bool>) -> AnalysisMode {
+         match self {
+             Self::SuccessTypings | Self::Incremental => AnalysisMode::SuccessTypings,
+@@ -101,6 +105,9 @@
+                 _ => files.push(PathBuf::from(argument)),
+             }
+         }
++        if let Some(error) = operation.output_error(output.as_deref()) {
++            return Err(error.into());
++        }
+         let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+         let absolute = |path: PathBuf| {
+             if path.is_absolute() {
+--- a/src/compiled_operation.rs
++++ b/src/compiled_operation.rs
+@@ -5,7 +5,7 @@
+     compiled_analysis::{self, AnalysisInput, AnalysisOutput},
+     compiled_command::Command,
+     compiled_definitions::{PreparedContract, PreparedRecord},
+-    compiler_bundle::{CompilerBridge, PreparedBundle},
++    compiler_bundle::CompilerBridge,
+     dependencies::{ImportPlan, Store},
+     native_form_environment::RawFormTerm,
+     warnings::Registry as Warnings,
+@@ -72,26 +72,29 @@
+     }
+ }
+ pub(crate) fn analyze(
+-    bundle: &PreparedBundle,
++    core: &crate::core::CoreProgram,
++    prior: serde_json::Value,
++    closure_profile: &crate::constraints::closure_order::ClosureCodeProfile,
+     command: &Command,
+     catalogues: &Catalogues,
+     import: &ImportPlan,
+ ) -> Result<(Report, AnalysisOutput), String> {
++    let _span = crate::perf_trace::Span::new("operation.analysis_and_report");
+     let output = compiled_analysis::analyze(AnalysisInput {
+-        core: &bundle.core,
++        core,
+         mode: command.mode,
+-        prior: &bundle.prior,
++        prior,
+         import,
+         bifs: &catalogues.bifs,
+         dependency_policy: &catalogues.dependencies,
+         warning_registry: &catalogues.warnings,
+         legal_warnings: &command.legal_warnings,
+-        closure_profile: &bundle.closure_profile,
++        closure_profile,
+         contracts: command.contracts,
+         solvers: command.solvers.clone(),
+         location: command.location,
+     })?;
+-    Ok((Report::from_analysis(&bundle.core, &output), output))
++    Ok((Report::from_analysis(core, &output), output))
+ }
+ 
+ use crate::{
+@@ -176,20 +179,10 @@
+         *fields.get(index).ok_or("physical PLT field missing")?,
+     )
+ }
+-fn implementation(context: &serde_json::Value) -> Result<RawFormTerm, String> {
+-    let paths = context["implementation_inputs"]
+-        .as_array()
+-        .ok_or("implementation fingerprint inputs missing")?
+-        .iter()
+-        .map(|row| {
+-            row["path"]
+-                .as_str()
+-                .map(PathBuf::from)
+-                .ok_or("implementation path missing")
+-        })
+-        .collect::<Result<Vec<_>, _>>()?;
+-    classic_persistence::file_fingerprints(&paths, LIMITS).map_err(error)
+-}
++fn implementation(bridge: &CompilerBridge) -> Result<RawFormTerm, String> {
++    classic_persistence::file_fingerprints(bridge.implementation_inputs(), LIMITS).map_err(error)
++}
++
+ fn version(profile: &CompilerProfile) -> String {
+     format!("v{}", profile.dialyzer)
+ }
+@@ -273,6 +266,26 @@
+     bridge: &mut CompilerBridge,
+     catalogues: &Catalogues,
+ ) -> Result<Report, OperationFailure> {
++    if let Some(message) = input.operation.output_error(input.output.as_deref()) {
++        if input.entry == EntryPoint::ClStart {
++            return Err(OperationFailure::Boundary(
++                "raw cl_start succ_typings output fails in Native with runtime ETS references; exact runtime failure transport remains unsupported".into(),
++            ));
++        }
++        let mut builder = ReasonBuilder::new();
++        let tag = builder.atom("dialyzer_error");
++        let message = builder.string(message);
++        let reason = builder.tuple(vec![tag, message]);
++        return Err(OperationFailure::Prior {
++            class: if input.entry == EntryPoint::PublicRun {
++                "error"
++            } else {
++                "throw"
++            }
++            .into(),
++            reason: builder.finish(reason),
++        });
++    }
+     let mut command = input.clone();
+     if !command.apps.is_empty() {
+         let directories =
+@@ -326,14 +339,16 @@
+         let prior = bridge.empty_prior()?;
+         let bundle = bridge.prepare(&prior, &command.files, &[])?;
+         let (report, output) = analyze(
+-            &bundle,
++            &bundle.core,
++            bundle.prior,
++            &bundle.closure_profile,
+             command,
+             catalogues,
+             &ImportPlan::cold_targets(&bundle.core),
+         )?;
+         let files =
+             classic_persistence::file_fingerprints(&command.files, LIMITS).map_err(error)?;
+-        let implementation = implementation(&bundle.context)?;
++        let implementation = implementation(bridge)?;
+         let completed = CompletedPlt::from_analysis(&bundle.core, output).map_err(error)?;
+         let path = command
+             .output
+@@ -427,31 +442,14 @@
+         );
+     }
+     let bundle = bridge.prepare_priors(&command.priors, &command.files, &[])?;
+-    let (report, output) = analyze(
+-        &bundle,
++    let (report, _) = analyze(
++        &bundle.core,
++        bundle.prior,
++        &bundle.closure_profile,
+         command,
+         catalogues,
+         &ImportPlan::before_cleanup(Vec::<String>::new()),
+     )?;
+-    if let Some(path) = &command.output {
+-        let files = crate::compiler_bundle::raw(&bundle.context["prior_file_fingerprints"])?;
+-        let dependencies = ModuleDependencies::from_raw_dict(&field(
+-            &crate::compiler_bundle::raw(&bundle.context["prior_header"])?,
+-            8,
+-        )?)
+-        .map_err(error)?;
+-        let implementation = implementation(&bundle.context)?;
+-        let completed = CompletedPlt::from_analysis(&bundle.core, output).map_err(error)?;
+-        write(
+-            completed,
+-            path,
+-            &bundle.core.profile,
+-            &files,
+-            &implementation,
+-            &dependencies,
+-            &identity,
+-        )?;
+-    }
+     Ok(report)
+ }
+ fn checked_operation(
+@@ -566,14 +564,14 @@
+     };
+     let files = files.to_raw();
+     if analyze_files.is_empty() && !rebuild {
+-        let context = bridge.invoke(
++        let mut context = bridge.invoke(
+             "inspect",
+             serde_json::json!({"prior_plt":prior,"layout_atoms":atoms}),
+         )?;
+         let profile = CompilerProfile::parse(&context["prior"]["profile"])?;
+         let layout = NativeAtomLayout::parse(&context["atom_layout"]).map_err(error)?;
+-        let store = Store::retain_without_analysis(
+-            &context["prior"].to_string(),
++        let store = Store::retain_value_without_analysis(
++            context["prior"].take(),
+             &profile,
+             &ImportPlan::before_cleanup(purge),
+         )?;
+@@ -583,7 +581,7 @@
+             path,
+             &profile,
+             &files,
+-            &implementation(&context)?,
++            &implementation(bridge)?,
+             &dependencies,
+             identity,
+         )?;
+@@ -604,14 +602,21 @@
+     } else {
+         ImportPlan::before_cleanup(purge)
+     };
+-    let (report, output) = analyze(&bundle, command, catalogues, &import)?;
++    let (report, output) = analyze(
++        &bundle.core,
++        bundle.prior,
++        &bundle.closure_profile,
++        command,
++        catalogues,
++        &import,
++    )?;
+     let completed = CompletedPlt::from_analysis(&bundle.core, output).map_err(error)?;
+     write(
+         completed,
+         path,
+         &bundle.core.profile,
+         &files,
+-        &implementation(&bundle.context)?,
++        &implementation(bridge)?,
+         &dependencies,
+         identity,
+     )?;
+--- a/src/compiled_analysis.rs
++++ b/src/compiled_analysis.rs
+@@ -28,7 +28,7 @@
+ pub struct AnalysisInput<'a> {
+     pub core: &'a CoreProgram,
+     pub mode: AnalysisMode,
+-    pub prior: &'a str,
++    pub prior: serde_json::Value,
+     pub import: &'a ImportPlan,
+     pub bifs: &'a Registry,
+     pub dependency_policy: &'a DependencyPolicy,
+@@ -54,6 +54,8 @@
+ }
+ 
+ pub fn analyze(input: AnalysisInput<'_>) -> Result<AnalysisOutput, String> {
++    let _total = crate::perf_trace::Span::new("analysis.total");
++    let front_span = crate::perf_trace::Span::new("analysis.frontend");
+     let layout = input
+         .core
+         .atom_layout
+@@ -69,7 +71,11 @@
+     graph
+         .attach_layout(layout.clone())
+         .map_err(|error| error.to_string())?;
+-    let prior = PriorPlt::parse(input.prior, input.core, input.import)?;
++    drop(front_span);
++    let prior_span = crate::perf_trace::Span::new("analysis.prior");
++    let prior = PriorPlt::from_value(input.prior, input.core, input.import)?;
++    drop(prior_span);
++    let definitions_span = crate::perf_trace::Span::new("analysis.definitions_cleanup");
+     let policy = Policy::build(input.core, input.warning_registry, input.legal_warnings)
+         .map_err(|error| format!("{error:?}"))?;
+     let states = (0..input.core.modules.len())
+@@ -109,6 +115,8 @@
+         .persistence_groups()
+         .map_err(|error| format!("{error:?}"))?;
+     let folded = FoldedCore::build(input.core);
++    drop(definitions_span);
++    let pipeline_span = crate::perf_trace::Span::new("analysis.pipeline");
+     let analysis = core_pipeline::analyze(
+         CorePhaseInputs {
+             nodes: &nodes,
+@@ -128,6 +136,8 @@
+         input.mode,
+     )
+     .map_err(|error| format!("{error:?}"))?;
++    drop(pipeline_span);
++    let publication_span = crate::perf_trace::Span::new("analysis.publication");
+     let module_dependencies = PublicationInput {
+         core: input.core,
+         program: &program,
+@@ -157,6 +167,7 @@
+         input.location,
+     )
+     .map_err(|error| format!("{error:?}"))?;
++    drop(publication_span);
+     Ok(AnalysisOutput {
+         program,
+         graph,
+--- /dev/null
++++ b/src/perf_trace.rs
+@@ -0,0 +1,26 @@
++use std::time::Instant;
++pub struct Span {
++    name: String,
++    start: Instant,
++    enabled: bool,
++}
++impl Span {
++    pub fn new(name: impl Into<String>) -> Self {
++        Self {
++            name: name.into(),
++            start: Instant::now(),
++            enabled: std::env::var_os("RUST_DIALYZER_TRACE").is_some(),
++        }
++    }
++}
++impl Drop for Span {
++    fn drop(&mut self) {
++        if self.enabled {
++            eprintln!(
++                "PERF {} {:.6}",
++                self.name,
++                self.start.elapsed().as_secs_f64()
++            );
++        }
++    }
++}
+--- a/src/bin/compiler_bridge_probe.rs
++++ b/src/bin/compiler_bridge_probe.rs
+@@ -19,7 +19,11 @@
+             .into_iter()
+             .filter(|path| path.extension().is_some_and(|extension| extension == "exs")),
+     );
+-    let mut bridge = CompilerBridge::new(&script, identity_files)?;
++    let mut bridge = CompilerBridge::new(
++        &script,
++        &script.with_file_name("compiler_identity_main.exs"),
++        identity_files,
++    )?;
+     let primitives = bridge.primitives(&arguments[0], &["prior_only_primitive".into()])?;
+     let bundle = bridge.prepare(
+         &arguments[0],
+@@ -33,7 +37,7 @@
+     assert!(bundle.core.atom_layout.is_some());
+     println!(
+         "{}",
+-        serde_json::json!({"modules":bundle.core.modules.len(),"prior_version":serde_json::from_str::<serde_json::Value>(&bundle.prior).map_err(|error|error.to_string())?["version"],"implementation_sha256":bridge.implementation_sha256()})
++        serde_json::json!({"modules":bundle.core.modules.len(),"prior_version":bundle.prior["version"],"implementation_sha256":bridge.implementation_sha256()})
+     );
+     Ok(())
+ }
+--- a/scripts/dependency_export.exs
++++ b/scripts/dependency_export.exs
+@@ -2,6 +2,13 @@
+ Code.require_file("core_export.exs", __DIR__)
+ 
+ defmodule ExportDependencies do
++  defp timed(name, fun) do
++    started = System.monotonic_time(:microsecond)
++    result = fun.()
++    if System.get_env("RUST_DIALYZER_TRACE"),
++      do: IO.puts(:stderr, "PERF export.prior.#{name} #{(System.monotonic_time(:microsecond) - started) / 1_000_000}")
++    result
++  end
+   def mfa({module, function, arity}), do: %{module: Atom.to_string(module), function: Atom.to_string(function), arity: arity}
+   def contract({location, value, flags}), do: Map.merge(contract(value), %{location: NativeTypes.term(location), flags: NativeTypes.term(flags)})
+   def contract({:contract, alternatives, arguments, forms}) do
+@@ -9,37 +16,45 @@
+         %{signature: NativeTypes.term(signature), constraints: Enum.map(constraints, fn {:subtype, left, right} -> %{left: NativeTypes.term(left), right: NativeTypes.term(right)} end)}
+       end), arguments: Enum.map(arguments, &NativeTypes.term/1), forms: CoreExport.export_terms(forms)}
+   end
+-  def build(plt, path) do
++  def build(plt, path), do: build(plt, path, false)
++  def build(plt, path, compact) do
++      capture = if compact, do: &CoreExport.capture_terms/1, else: &CoreExport.export_terms/1
+       modules = :dialyzer_plt.all_modules(plt) |> :sets.to_list() |> Enum.sort()
+       contracts = :dialyzer_plt.get_all_contracts(plt)
+-      summaries = for module <- modules,
++      summaries = timed("summaries", fn -> for module <- modules,
+                       {:value, entries} = :dialyzer_plt.lookup_module(plt, module),
+                       {name, result, arguments} <- entries do
+-        %{mfa: mfa(name), result: NativeTypes.term(result), arguments: Enum.map(arguments, &NativeTypes.term/1)}
++        if compact, do: {name, result, arguments}, else: %{mfa: mfa(name), result: NativeTypes.term(result), arguments: Enum.map(arguments, &NativeTypes.term/1)}
+       end
+-      header = path |> File.read!() |> :erlang.binary_to_term()
++      end)
++      source = timed("source", fn ->
++      bytes = File.read!(path)
++      header = timed("source_header", fn -> :erlang.binary_to_term(bytes) end)
+       {source_kind, files} = case elem(header, 0) do
+         :file_plt ->
+-          {:ok, info} = :dialyzer.plt_info(String.to_charlist(path))
+-          {"classic_plt", Keyword.fetch!(info, :files)}
++          files = timed("source_info", fn -> for {file, _digest} <- elem(header, 2), do: file end)
++          {"classic_plt", files}
+         :ifile_plt -> {"incremental_plt", []}
+       end
+-      {fingerprints, unavailable} = Enum.reduce(files, {[], []}, fn file, {available, missing} ->
++      {fingerprints, unavailable} = timed("source_fingerprints", fn -> Enum.reduce(files, {[], []}, fn file, {available, missing} ->
+         path = IO.chardata_to_string(file)
+         case File.read(file) do
+           {:ok, bytes} -> {[ %{path: path, sha256: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)} | available], missing}
+           {:error, reason} -> {available, [%{path: path, reason: Atom.to_string(reason)} | missing]}
+         end
+       end)
++      end)
+       fingerprints = Enum.reverse(fingerprints)
+       unavailable = Enum.reverse(unavailable)
+-      artifact = %{version: 4, profile: CoreExport.profile(), source: %{exporter_sha256: :crypto.hash(:sha256, File.read!(__ENV__.file)) |> Base.encode16(case: :lower), kind: source_kind, path: Path.expand(path), sha256: :crypto.hash(:sha256, File.read!(path)) |> Base.encode16(case: :lower), files: fingerprints, unavailable_files: unavailable},
+-        modules: Enum.map(modules, &Atom.to_string/1), summaries: summaries,
+-        contracts: Enum.map(Enum.sort(contracts), fn {name, value} -> %{mfa: mfa(name), contract: contract(value)} end),
+-        raw_callback_groups: CoreExport.export_terms(:ets.tab2list(elem(plt, 4))),
+-        type_tables: :dialyzer_plt.get_all_types(plt) |> CoreExport.export_terms(),
+-        exported_types: :dialyzer_plt.get_exported_types(plt) |> :sets.to_list() |> CoreExport.export_terms()}
+-      artifact
++      %{exporter_sha256: :crypto.hash(:sha256, File.read!(__ENV__.file)) |> Base.encode16(case: :lower), kind: source_kind, path: Path.expand(path), sha256: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower), files: fingerprints, unavailable_files: unavailable}
++      end)
++      artifact = %{version: if(compact, do: 5, else: 4), profile: CoreExport.profile(), source: source,
++        modules: Enum.map(modules, &Atom.to_string/1), summaries: if(compact, do: [], else: summaries),
++        contracts: if(compact, do: [], else: Enum.map(Enum.sort(contracts), fn {name, value} -> %{mfa: mfa(name), contract: contract(value)} end)),
++        raw_callback_groups: timed("callbacks", fn -> capture.(:ets.tab2list(elem(plt, 4))) end),
++        type_tables: timed("types", fn -> :dialyzer_plt.get_all_types(plt) |> capture.() end),
++        exported_types: timed("exports", fn -> :dialyzer_plt.get_exported_types(plt) |> :sets.to_list() |> capture.() end)}
++      if compact, do: Map.merge(artifact, %{raw_summaries: timed("summary_capture", fn -> capture.(summaries) end), raw_contracts: timed("contract_capture", fn -> capture.(Enum.sort(contracts)) end)}), else: artifact
+   end
+ 
+   def raw_tables(plt), do: for(i <- 1..5, do: :ets.tab2list(elem(plt, i)))
+--- a/scripts/compiled_bundle.exs
++++ b/scripts/compiled_bundle.exs
+@@ -1,15 +1,17 @@
++bootstrap_started = System.monotonic_time(:microsecond)
++Code.require_file("compiler_identity.exs", __DIR__)
+ Code.require_file("dependency_export.exs", __DIR__)
+ Code.require_file("analysis_profile_export.exs", __DIR__)
++if System.get_env("RUST_DIALYZER_TRACE"), do: IO.puts(:stderr, "PERF export.bootstrap_helpers #{(System.monotonic_time(:microsecond) - bootstrap_started) / 1_000_000}")
+ 
+ defmodule CompilerBundle do
+-  def implementation_identity(request) do
+-    native = Enum.map([:erl_bif_types, :erl_types, :dialyzer_typesig, :dialyzer_contracts,
+-      :dialyzer_utils, :dialyzer_clean_core, :dialyzer_cplt], &:code.which/1)
+-    identities = (request["implementation_files"] ++ Enum.map(native, &List.to_string/1))
+-      |> Enum.map(&Path.expand/1) |> Enum.uniq() |> Enum.sort()
+-    :crypto.hash(:sha256, :erlang.term_to_binary(Enum.map(identities, fn path ->
+-      {path, :crypto.hash(:sha256, File.read!(path))}
+-    end))) |> Base.encode16(case: :lower)
++  def timed(name, fun) do
++    started = System.monotonic_time(:microsecond)
++    result = fun.()
++    if System.get_env("RUST_DIALYZER_TRACE") do
++      IO.puts(:stderr, "PERF export.#{name} #{(System.monotonic_time(:microsecond) - started) / 1_000_000}")
++    end
++    result
+   end
+ 
+   def empty(request) do
+@@ -37,74 +39,63 @@
+       merged=:dialyzer_cplt.merge_plts_or_report_conflicts(paths,plts)
+       :dialyzer_plt.delete(merged)
+       %{status: "ok"}
+-    catch class,reason -> %{status: "error", class: Atom.to_string(class), reason: CoreExport.export_terms(reason)} end
++    catch class,reason -> %{status: "error", class: Atom.to_string(class), reason: CoreExport.capture_terms(reason)} end
+   end
+ 
+   def prepare(request), do: capture(request, true)
+   def inspect_prior(request), do: capture(request, false)
+ 
+   def primitives(request) do
+-    identity = implementation_identity(request)
++    identity = timed("identity", fn -> CompilerIdentity.digest(request) end)
+     if request["implementation_sha256"] != identity,
+       do: raise("implementation changed while preparing primitives")
+     header = request["prior_plt"] |> File.read!() |> :erlang.binary_to_term()
+     atoms = Enum.map(request["layout_atoms"] || [], &String.to_atom/1)
+-    %{version: 1, profile: CoreExport.profile(), header: CoreExport.export_terms(header),
++    %{version: 1, profile: CoreExport.profile(), header: CoreExport.capture_terms(header),
+       atom_layout: CoreExport.atom_layout([], [header, atoms]), implementation_sha256: identity}
+   end
+ 
+   defp capture(request, compile_targets) do
+-    identity = implementation_identity(request)
++    identity = timed("identity", fn -> CompilerIdentity.digest(request) end)
+     if request["implementation_sha256"] != identity,
+       do: raise("implementation changed while preparing analysis")
+     paths = (request["beam_files"] || []) |> Enum.map(&Path.expand/1)
+     if compile_targets and paths == [], do: raise("no target BEAM files")
+     prior_paths = Enum.map(request["prior_plts"] || [request["prior_plt"]], &Path.expand/1)
+     prior_path = hd(prior_paths)
+-    header = prior_path |> File.read!() |> :erlang.binary_to_term()
++    header = timed("prior_header", fn -> prior_path |> File.read!() |> :erlang.binary_to_term() end)
+     true = tuple_size(header) == 10
+-    {plt, context, dependencies} = case elem(header, 0) do
+-      :file_plt -> {:dialyzer_cplt.from_file(String.to_charlist(prior_path)), nil,
+-        :maps.from_list(:dict.to_list(elem(header, 8)))}
++    {plt, context} = timed("prior_load", fn -> case elem(header, 0) do
++      :file_plt -> {:dialyzer_cplt.from_file(String.to_charlist(prior_path)), nil}
+       :ifile_plt ->
+         context = case elem(header, 8) do
+           value when is_binary(value) -> :erlang.binary_to_term(value)
+           value -> value
+         end
+-        {:dialyzer_iplt.from_file(String.to_charlist(prior_path)), context,
+-          :maps.from_list(:dict.to_list(elem(context, 1)))}
++        {:dialyzer_iplt.from_file(String.to_charlist(prior_path)), context}
+     end
++    end)
+     plt = if length(prior_paths) > 1 do
+       others=Enum.map(tl(prior_paths),fn path -> :dialyzer_cplt.from_file(String.to_charlist(path)) end)
+       :dialyzer_cplt.merge_plts_or_report_conflicts(Enum.map(prior_paths,&String.to_charlist/1), [plt|others])
+     else plt end
+-    headers = Enum.map(prior_paths,fn path -> path |> File.read!() |> :erlang.binary_to_term() end)
++    headers = timed("prior_headers", fn -> Enum.map(prior_paths,fn path -> path |> File.read!() |> :erlang.binary_to_term() end) end)
+     try do
+       modules = if compile_targets,
+-        do: Enum.map(paths, &CoreExport.module/1) |> Enum.sort_by(& &1.name), else: []
++        do: timed("modules", fn -> Enum.map(paths, &CoreExport.module/1) |> Enum.sort_by(& &1.name) end), else: []
+       atoms = Enum.map(request["layout_atoms"] || [], &String.to_atom/1)
+-      layout = CoreExport.atom_layout(modules, [headers, context, ExportDependencies.raw_tables(plt), atoms])
++      layout = timed("atom_layout", fn -> CoreExport.atom_layout(modules, [headers, context, ExportDependencies.raw_tables(plt), atoms]) end)
+       result = %{
+         version: 1,
+-        prior: ExportDependencies.build(plt, prior_path),
++        prior: timed("prior", fn -> ExportDependencies.build(plt, prior_path, true) end),
+         atom_layout: layout,
+-        prior_header: CoreExport.export_terms(header),
+-        prior_dependencies: CoreExport.export_terms(dependencies),
+-        prior_incremental_data: CoreExport.export_terms(context),
+-        prior_file_fingerprints: CoreExport.export_terms(elem(header, 2)),
+-        implementation_sha256: identity,
+-        implementation_inputs: Enum.map([:erl_bif_types, :erl_types], fn module ->
+-          path = :code.which(module)
+-          {:ok, {^module, [debug_info: {:debug_info_v1, backend, metadata}]}} = :beam_lib.chunks(path, [:debug_info])
+-          {:ok, forms} = backend.debug_info(:erlang_v1, module, metadata, [])
+-          %{module: Atom.to_string(module), path: List.to_string(path), forms: CoreExport.export_terms(forms)}
+-        end)
++        implementation_sha256: identity
+       }
+       if compile_targets do
+         Map.merge(result, %{
+           core: %{version: 6, profile: CoreExport.profile(), atom_layout: layout, modules: modules,
+-            contract_closure_profile: ExportAnalysisProfile.build(:dialyzer_contracts)},
+-          closure_profile: ExportAnalysisProfile.build(:dialyzer_typesig)
++            contract_closure_profile: timed("contract_profile", fn -> ExportAnalysisProfile.build(:dialyzer_contracts) end)},
++          closure_profile: timed("solver_profile", fn -> ExportAnalysisProfile.build(:dialyzer_typesig) end)
+         })
+       else result end
+     after
+@@ -117,7 +108,6 @@
+ request = request_path |> File.read!() |> :json.decode()
+ :logger.set_primary_config(:level, :none)
+ result = case operation do
+-  "identity" -> %{implementation_sha256: CompilerBundle.implementation_identity(request)}
+   "empty" -> CompilerBundle.empty(request)
+   "primitives" -> CompilerBundle.primitives(request)
+   "inspect" -> CompilerBundle.inspect_prior(request)
+@@ -126,4 +116,6 @@
+   "validate_merge" -> CompilerBundle.validate_merge(request)
+ end
+ File.mkdir_p!(Path.dirname(output_path))
+-File.write!(output_path, :json.encode(result))
++encoded = CompilerBundle.timed("encode", fn -> :json.encode(result) end)
++CompilerBundle.timed("write", fn -> File.write!(output_path, encoded) end)
++if System.get_env("RUST_DIALYZER_TRACE"), do: IO.puts(:stderr, "BUNDLE_BYTES #{:erlang.iolist_size(encoded)}")
+--- a/scripts/core_export.exs
++++ b/scripts/core_export.exs
+@@ -138,15 +138,26 @@
+     Map.fetch!(terms, exported["root"])
+   end
+ 
+-  def export_terms(value) do
++  def capture_terms(value) do
++    started = System.monotonic_time(:microsecond)
+     Process.put(:core_terms_cache, %{})
+     Process.put(:core_terms_count, 0)
+     Process.put(:core_terms, [])
+     root = intern(value)
+     exported = %{root: root, terms: Enum.reverse(Process.get(:core_terms))}
+     Enum.each([:core_terms_cache, :core_terms_count, :core_terms], &Process.delete/1)
++    if System.get_env("RUST_DIALYZER_TRACE"),
++      do: IO.puts(:stderr, "PERF arena.capture #{(System.monotonic_time(:microsecond) - started) / 1_000_000}")
++    exported
++  end
++
++  def export_terms(value) do
++    exported = capture_terms(value)
++    started = System.monotonic_time(:microsecond)
+     decoded = exported |> :json.encode() |> IO.iodata_to_binary() |> :json.decode() |> rebuild_terms()
+     if :erlang.term_to_binary(decoded) !== :erlang.term_to_binary(value), do: raise("term arena roundtrip differs")
++    if System.get_env("RUST_DIALYZER_TRACE"),
++      do: IO.puts(:stderr, "PERF arena.roundtrip #{(System.monotonic_time(:microsecond) - started) / 1_000_000}")
+     exported
+   end
+ 
+@@ -216,12 +227,16 @@
+                                   Base.encode16(:crypto.strong_rand_bytes(16)))
+   end
+ 
+-  defp raw_atoms(atom) when is_atom(atom), do: [atom]
+-  defp raw_atoms([]), do: []
+-  defp raw_atoms([head | tail]), do: raw_atoms(head) ++ raw_atoms(tail)
+-  defp raw_atoms(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> raw_atoms()
+-  defp raw_atoms(map) when is_map(map), do: map |> Map.to_list() |> raw_atoms()
+-  defp raw_atoms(_), do: []
++  defp raw_atoms(value), do: value |> collect_atoms(MapSet.new()) |> MapSet.to_list()
++
++  defp collect_atoms(atom, atoms) when is_atom(atom), do: MapSet.put(atoms, atom)
++  defp collect_atoms([], atoms), do: atoms
++  defp collect_atoms([head | tail], atoms), do: collect_atoms(tail, collect_atoms(head, atoms))
++  defp collect_atoms(tuple, atoms) when is_tuple(tuple),
++    do: tuple |> Tuple.to_list() |> collect_atoms(atoms)
++  defp collect_atoms(map, atoms) when is_map(map),
++    do: map |> Map.to_list() |> collect_atoms(atoms)
++  defp collect_atoms(_, atoms), do: atoms
+ 
+   def run(beam_dir, output) do
+     paths = Path.wildcard(Path.join(beam_dir, "*.beam"))
+--- /dev/null
++++ b/scripts/compiler_identity.exs
+@@ -0,0 +1,18 @@
++defmodule CompilerIdentity do
++  def implementation_inputs do
++    Enum.map([:erl_bif_types, :erl_types], fn module ->
++      module |> :code.which() |> List.to_string()
++    end)
++  end
++
++  def digest(request) do
++    native = Enum.map([:erl_bif_types, :erl_types, :dialyzer_typesig, :dialyzer_contracts,
++      :dialyzer_utils, :dialyzer_clean_core, :dialyzer_cplt], &:code.which/1)
++    identities = (request["implementation_files"] ++ Enum.map(native, &List.to_string/1))
++      |> Enum.map(&Path.expand/1) |> Enum.uniq() |> Enum.sort()
++    :crypto.hash(:sha256, :erlang.term_to_binary(Enum.map(identities, fn path ->
++      {path, :crypto.hash(:sha256, File.read!(path))}
++    end))) |> Base.encode16(case: :lower)
++  end
++
++end
+--- /dev/null
++++ b/scripts/compiler_identity_main.exs
+@@ -0,0 +1,7 @@
++Code.require_file("compiler_identity.exs", __DIR__)
++["identity", request_path, output_path] = System.argv()
++request = request_path |> File.read!() |> :json.decode()
++result = %{implementation_sha256: CompilerIdentity.digest(request),
++  implementation_inputs: CompilerIdentity.implementation_inputs()}
++File.mkdir_p!(Path.dirname(output_path))
++File.write!(output_path, :json.encode(result))
+--- a/src/bin/analysis_mode_probe.rs
++++ b/src/bin/analysis_mode_probe.rs
+@@ -46,7 +46,7 @@
+             rust_dialyzer_poc::compiled_analysis::AnalysisMode::SuccessTypings
+         },
+         core: &core,
+-        prior: library,
++        prior: serde_json::from_str(library).map_err(|error| error.to_string())?,
+         import: &ImportPlan::before_cleanup(purged),
+         bifs: &bifs,
+         dependency_policy: &policy,
+--- a/src/bin/compiled_analysis_probe.rs
++++ b/src/bin/compiled_analysis_probe.rs
+@@ -46,7 +46,7 @@
+             rust_dialyzer_poc::compiled_analysis::AnalysisMode::SuccessTypings
+         },
+         core: &core,
+-        prior: library,
++        prior: serde_json::from_str(library).map_err(|error| error.to_string())?,
+         import: &ImportPlan::before_cleanup(purged),
+         bifs: &bifs,
+         dependency_policy: &policy,
+--- a/src/bin/raw_classic_pipeline_probe.rs
++++ b/src/bin/raw_classic_pipeline_probe.rs
+@@ -44,7 +44,7 @@
+         let output = compiled_analysis::analyze(AnalysisInput {
+             mode: compiled_analysis::AnalysisMode::PltBuild,
+             core: &core,
+-            prior: &prior.to_string(),
++            prior: prior.clone(),
+             import: &if let Some(modules) = row
+                 .get("prior_plt")
+                 .and_then(|p| p.get("purged_modules"))
+--- /dev/null
++++ b/src/bin/value_contracts_probe.rs
+@@ -0,0 +1,38 @@
++use rust_dialyzer_poc::{core::CoreProgram, type_exports::arena_to_value};
++fn main() -> Result<(), String> {
++    let args = std::env::args().skip(1).collect::<Vec<_>>();
++    if args.len() != 2 {
++        return Err("usage: library_contracts_probe CORE DEPENDENCIES".into());
++    }
++    let core = CoreProgram::parse(&std::fs::read_to_string(&args[0]).map_err(|e| e.to_string())?)?;
++    let library = rust_dialyzer_poc::dependencies::PriorPlt::from_value(
++        serde_json::from_str(&std::fs::read_to_string(&args[1]).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?,
++        &core,
++        &rust_dialyzer_poc::dependencies::ImportPlan::cold_targets(&core),
++    )
++    .and_then(|prior| prior.into_cold_store())?;
++    for (name, contract) in &library.contracts {
++        let raw = contract.captured_record();
++        println!(
++            "{}",
++            serde_json::json!({"kind":"contract","mfa":name,"record":arena_to_value(&raw.arena().terms,raw.id())})
++        );
++    }
++    for row in library
++        .callbacks
++        .original()
++        .map_err(|e| format!("{e:?}"))?
++        .rows()
++    {
++        println!(
++            "{}",
++            serde_json::json!({"kind":"callback","mfa":row.callable(),"record":arena_to_value(&row.capture.arena().terms,row.capture.id())})
++        );
++    }
++    let world = rust_dialyzer_poc::body_calls::CallWorld::from_library(&library)?;
++    eprintln!(
++        "{}",
++        serde_json::json!({"signatures":world.named_signatures.len(),"active_contracts":world.active_contracts.len()})
++    );
++    Ok(())
++}
+--- /dev/null
++++ b/src/bin/value_signatures_probe.rs
+@@ -0,0 +1,20 @@
++use rust_dialyzer_poc::{
++    body_calls::CallWorld,
++    core::CoreProgram,
++    dependencies::{ImportPlan, PriorPlt},
++};
++fn main() -> Result<(), String> {
++    let args = std::env::args().skip(1).collect::<Vec<_>>();
++    if args.len() != 2 {
++        return Err("usage: library_signatures_probe CORE DEPENDENCIES".into());
++    }
++    let read = |path: &str| std::fs::read_to_string(path).map_err(|error| error.to_string());
++    let core = CoreProgram::parse(&read(&args[0])?)?;
++    let library = PriorPlt::from_value(serde_json::from_str(&read(&args[1])?).map_err(|e| e.to_string())?, &core, &ImportPlan::cold_targets(&core))?
++        .into_cold_store()?;
++    let world = CallWorld::from_library(&library)?;
++    for (name, signature) in world.named_signatures {
++        println!("{}", serde_json::json!({"mfa":name,"signature":signature}));
++    }
++    Ok(())
++}
+--- a/src/body_calls.rs
++++ b/src/body_calls.rs
+@@ -10,7 +10,6 @@
+     core_print::{CorePrinter, PrintError},
+     dataflow_map::DataflowMap,
+     emission::{ComparisonWarning, EqualityOperator, comparison_warnings},
+-    folded_core::FoldedCore,
+     function_state::{FunctionState, StateError},
+     guard_producer::{ArgumentRef, GuardProducer, ProducerError},
+     labels::CoreLabel,
+@@ -136,7 +135,7 @@
+ }
+ pub struct BodyCalls<'a, 'b, 'c> {
+     pub patterns: &'a mut Patterns<'b, 'c>,
+-    pub folded: &'a FoldedCore,
++    pub producer: &'a GuardProducer<'a, 'c, 'c>,
+     pub functions: &'a mut FunctionState,
+     pub bifs: &'a Registry,
+     pub world: &'a CallWorld,
+@@ -148,17 +147,7 @@
+         types: &[Type],
+         state: &BinderState<W>,
+     ) -> Result<String> {
+-        let folded_nodes = crate::dataflow_nodes::DataflowNodes::build(
+-            &self.folded.program,
+-            self.patterns.nodes.labels(),
+-        )?;
+-        let folded_patterns = Patterns::new(&folded_nodes);
+-        let p = GuardProducer {
+-            original: self.patterns.nodes,
+-            folded: self.folded,
+-            patterns: &folded_patterns,
+-        };
+-        Ok(p.format_args(
++        Ok(self.producer.format_args(
+             &args
+                 .iter()
+                 .copied()
+--- a/src/body_flow.rs
++++ b/src/body_flow.rs
+@@ -243,7 +243,7 @@
+     pub functions: &'a mut FunctionState,
+     pub bifs: &'a Registry,
+     pub calls: Option<(
+-        &'a crate::folded_core::FoldedCore,
++        &'a crate::guard_producer::GuardProducer<'a, 'c, 'c>,
+         &'a crate::body_calls::CallWorld,
+     )>,
+     pub guards: Option<&'a crate::guard_control::GuardControl<'a, 'c, 'c>>,
+@@ -805,7 +805,7 @@
+                 name,
+                 args,
+             } => {
+-                let (folded, world) = self.calls.ok_or(BodyError::Unported {
++                let (producer, world) = self.calls.ok_or(BodyError::Unported {
+                     node: tree,
+                     kind: "call phase absent",
+                 })?;
+@@ -815,7 +815,7 @@
+                 let actual = types.collect::<Vec<_>>();
+                 let bound = crate::body_calls::BodyCalls {
+                     patterns: self.patterns,
+-                    folded,
++                    producer,
+                     functions: self.functions,
+                     bifs: self.bifs,
+                     world,
+@@ -843,7 +843,7 @@
+                 operator,
+                 args,
+             } => {
+-                let (folded, world) = self.calls.ok_or(BodyError::Unported {
++                let (producer, world) = self.calls.ok_or(BodyError::Unported {
+                     node: tree,
+                     kind: "apply phase absent",
+                 })?;
+@@ -851,7 +851,7 @@
+                 let operator_type = actual.pop().ok_or(LatticeError::FunctionClause)?;
+                 let bound = crate::body_calls::BodyCalls {
+                     patterns: self.patterns,
+-                    folded,
++                    producer,
+                     functions: self.functions,
+                     bifs: self.bifs,
+                     world,
+--- a/src/core_phases.rs
++++ b/src/core_phases.rs
+@@ -211,7 +211,7 @@
+             patterns: &mut patterns,
+             functions: &mut functions,
+             bifs: self.bifs,
+-            calls: Some((self.folded, &self.world)),
++            calls: Some((&producer, &self.world)),
+             guards: Some(&guards),
+             letrec,
+         };
+--- a/src/bin/body_calls_probe.rs
++++ b/src/bin/body_calls_probe.rs
+@@ -254,7 +254,7 @@
+         bifs: &bifs,
+         letrec: &letrec,
+         guards: Some(&guards),
+-        calls: Some((&folded, &world)),
++        calls: Some((&producer, &world)),
+     }
+     .evaluate(tree, &map, &state)
+     .map_err(|error| match error {
+--- a/src/bin/body_probe.rs
++++ b/src/bin/body_probe.rs
+@@ -174,7 +174,7 @@
+     let mut patterns = Patterns::new(&nodes);
+     let world = rust_dialyzer_poc::body_calls::CallWorld::default();
+     let mut flow = BodyFlow {
+-        calls: Some((&folded, &world)),
++        calls: Some((&producer, &world)),
+         guards: Some(&guards),
+         patterns: &mut patterns,
+         functions: &mut functions,

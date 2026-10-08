@@ -1,0 +1,25 @@
+[package]
+name = "firefly_binary"
+description = "Provides the runtime for Erlang-style binary pattern matching/construction"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+std = ["anyhow/std", "num-bigint/std", "num-traits/std"]
+
+[dependencies]
+anyhow.workspace = true
+half.workspace = true
+num-traits.workspace = true
+num-bigint.workspace = true
+paste.workspace = true
+static_assertions.workspace = true

@@ -1,0 +1,860 @@
+use crate::constraints::atomic::{
+    AtomicConstraint, AtomicOutcome, BindingMap, ConstraintValue, Relation, SolveError,
+};
+use crate::constraints::closure_order::ClosureOrderKey;
+use crate::constraints::derived::{BifResultProvider, DerivedArena, DerivedId, DerivedOp};
+use crate::constraints::tree::FunctionVariable;
+use crate::lattice::{LatticeError, NativeValue, Type, TypePredicate, VariableId};
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
+use std::sync::OnceLock;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeConstraintId(pub usize);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeDerivedId(pub usize);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupKind {
+    Conjunction,
+    Disjunction,
+}
+#[derive(Clone, Debug)]
+pub enum NativeOperand {
+    Type(Type),
+    Derived(NativeDerivedId),
+}
+#[derive(Clone, Copy, Debug)]
+pub enum ClosureOrigin {
+    Undefined,
+    SourceLine(u32),
+}
+#[derive(Clone, Debug)]
+struct OrderedDerived {
+    semantic: DerivedId,
+    key: ClosureOrderKey,
+    origin: ClosureOrigin,
+    deps: BTreeSet<VariableId>,
+}
+#[derive(Clone, Debug)]
+pub enum NativeConstraint {
+    Atomic {
+        left: Type,
+        relation: Relation,
+        right: NativeOperand,
+        deps: BTreeSet<VariableId>,
+    },
+    Group {
+        kind: GroupKind,
+        children: Vec<NativeConstraintId>,
+        deps: BTreeSet<VariableId>,
+    },
+    Reference {
+        function: FunctionVariable,
+        deps: BTreeSet<VariableId>,
+    },
+}
+#[derive(Clone, Debug)]
+pub enum NormalizationError {
+    TooManyDisjunctions,
+    Lattice(LatticeError),
+    Solve(SolveError),
+    Unsatisfiable,
+    Boundary(String),
+    Comparison(String),
+}
+impl From<LatticeError> for NormalizationError {
+    fn from(e: LatticeError) -> Self {
+        Self::Lattice(e)
+    }
+}
+impl From<SolveError> for NormalizationError {
+    fn from(e: SolveError) -> Self {
+        Self::Solve(e)
+    }
+}
+#[derive(Default)]
+struct AtomicOrderKeys {
+    left: OnceLock<NativeValue>,
+    right: OnceLock<NativeValue>,
+}
+
+#[derive(Default)]
+pub struct NativeConstraintArena {
+    nodes: Vec<NativeConstraint>,
+    order_keys: Vec<AtomicOrderKeys>,
+    derived: Vec<OrderedDerived>,
+    pub(crate) semantics: DerivedArena,
+}
+impl NativeConstraintArena {
+    pub fn derived(
+        &mut self,
+        op: DerivedOp,
+        key: ClosureOrderKey,
+        origin: ClosureOrigin,
+    ) -> NativeDerivedId {
+        let semantic = self.semantics.push(op);
+        let deps = self.semantics.dependencies(semantic).unwrap().clone();
+        let id = NativeDerivedId(self.derived.len());
+        self.derived.push(OrderedDerived {
+            semantic,
+            key,
+            origin,
+            deps,
+        });
+        id
+    }
+    pub fn derived_order_key(&self, id: NativeDerivedId) -> Option<&ClosureOrderKey> {
+        self.derived.get(id.0).map(|v| &v.key)
+    }
+    pub fn derived_capture(
+        &self,
+        id: NativeDerivedId,
+    ) -> Option<(&ClosureOrderKey, ClosureOrigin, &BTreeSet<VariableId>)> {
+        self.derived
+            .get(id.0)
+            .map(|value| (&value.key, value.origin, &value.deps))
+    }
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+    pub fn node(&self, id: NativeConstraintId) -> Option<&NativeConstraint> {
+        self.nodes.get(id.0)
+    }
+    fn push(&mut self, node: NativeConstraint) -> NativeConstraintId {
+        let id = NativeConstraintId(self.nodes.len());
+        self.nodes.push(node);
+        self.order_keys.push(AtomicOrderKeys::default());
+        id
+    }
+    pub(crate) fn operand(
+        &self,
+        value: &NativeOperand,
+    ) -> Result<ConstraintValue, NormalizationError> {
+        Ok(match value {
+            NativeOperand::Type(t) => ConstraintValue::Type(t.clone()),
+            NativeOperand::Derived(id) => ConstraintValue::Derived(
+                self.derived
+                    .get(id.0)
+                    .ok_or_else(|| NormalizationError::Boundary("foreign derived identity".into()))?
+                    .semantic,
+            ),
+        })
+    }
+    pub fn atomic(
+        &mut self,
+        left: Type,
+        relation: Relation,
+        right: NativeOperand,
+        provider: &dyn BifResultProvider,
+    ) -> Result<NativeConstraintId, NormalizationError> {
+        if left.predicate(TypePredicate::Any)? {
+            return Ok(self.any(relation));
+        }
+        let right_any = match &right {
+            NativeOperand::Type(t) => t.predicate(TypePredicate::Any)?,
+            NativeOperand::Derived(id) => {
+                self.derived.get(id.0).ok_or_else(|| {
+                    NormalizationError::Boundary("foreign derived identity".into())
+                })?;
+                false
+            }
+        };
+        if right_any {
+            return Ok(self.any(relation));
+        }
+        let mut deps = left.collect_var_names();
+        match &right {
+            NativeOperand::Type(t) => deps.extend(t.collect_var_names()),
+            NativeOperand::Derived(id) => deps.extend(self.derived[id.0].deps.clone()),
+        }
+        let (left, right) = if matches!(relation, Relation::Equal) {
+            match right {
+                NativeOperand::Type(t) if left.to_native_value() >= t.to_native_value() => {
+                    (t, NativeOperand::Type(left))
+                }
+                right => (left, right),
+            }
+        } else {
+            (left, right)
+        };
+        if deps.is_empty() {
+            let c = AtomicConstraint {
+                left: left.clone(),
+                relation,
+                right: self.operand(&right)?,
+            };
+            if matches!(
+                c.solve(BindingMap::new(), &self.semantics, provider)?,
+                AtomicOutcome::Failed
+            ) {
+                return Err(NormalizationError::Unsatisfiable);
+            }
+        }
+        Ok(self.push(NativeConstraint::Atomic {
+            left,
+            relation,
+            right,
+            deps,
+        }))
+    }
+    fn any(&mut self, relation: Relation) -> NativeConstraintId {
+        self.push(NativeConstraint::Atomic {
+            left: Type::any(),
+            relation,
+            right: NativeOperand::Type(Type::any()),
+            deps: BTreeSet::new(),
+        })
+    }
+    pub fn reference(
+        &mut self,
+        function: FunctionVariable,
+        mut deps: BTreeSet<VariableId>,
+    ) -> NativeConstraintId {
+        deps.remove(function.variable());
+        self.push(NativeConstraint::Reference { function, deps })
+    }
+    pub fn dependencies(
+        &self,
+        id: NativeConstraintId,
+    ) -> Result<&BTreeSet<VariableId>, NormalizationError> {
+        match self
+            .nodes
+            .get(id.0)
+            .ok_or_else(|| NormalizationError::Boundary("foreign constraint identity".into()))?
+        {
+            NativeConstraint::Atomic { deps, .. }
+            | NativeConstraint::Group { deps, .. }
+            | NativeConstraint::Reference { deps, .. } => Ok(deps),
+        }
+    }
+    pub fn group(
+        &mut self,
+        kind: GroupKind,
+        children: Vec<NativeConstraintId>,
+    ) -> Result<NativeConstraintId, NormalizationError> {
+        // A native one-element disjunction returns its element before wrapping or flattening.
+        if kind == GroupKind::Disjunction && children.len() == 1 {
+            self.dependencies(children[0])?;
+            return Ok(children[0]);
+        }
+        let mut children = children;
+        if kind == GroupKind::Disjunction {
+            for id in &mut children {
+                if matches!(self.node(*id), Some(NativeConstraint::Atomic { .. })) {
+                    *id = self.group(GroupKind::Conjunction, vec![*id])?;
+                }
+            }
+        }
+        let mut flat = std::collections::VecDeque::new();
+        for id in children {
+            match self
+                .node(id)
+                .ok_or_else(|| NormalizationError::Boundary("foreign constraint identity".into()))?
+            {
+                NativeConstraint::Group {
+                    kind: k, children, ..
+                } if *k == kind => {
+                    for child in children.iter().rev() {
+                        flat.push_front(*child);
+                    }
+                }
+                _ => flat.push_front(id),
+            }
+        }
+        let mut list = self.sorted_unique(flat.into_iter().collect())?;
+        if kind == GroupKind::Conjunction {
+            list.retain(|id| !self.dependencies(*id).unwrap().is_empty());
+        } else if list
+            .iter()
+            .any(|id| self.dependencies(*id).unwrap().is_empty())
+        {
+            list = vec![self.any(Relation::Equal)];
+        }
+        let mut deps = BTreeSet::new();
+        for id in &list {
+            deps.extend(self.dependencies(*id)?.clone());
+        }
+        if deps.is_empty() {
+            let tautology = self.any(Relation::Equal);
+            return Ok(self.push(NativeConstraint::Group {
+                kind: GroupKind::Conjunction,
+                children: vec![tautology],
+                deps,
+            }));
+        }
+        Ok(self.push(NativeConstraint::Group {
+            kind,
+            children: list,
+            deps,
+        }))
+    }
+    pub fn disjunctive_normal_form(
+        &mut self,
+        root: NativeConstraintId,
+    ) -> Result<NativeConstraintId, NormalizationError> {
+        let expanded = self.expand(root);
+        match expanded {
+            Ok(list) => self.group(GroupKind::Disjunction, list),
+            Err(NormalizationError::TooManyDisjunctions) => Ok(root),
+            Err(e) => Err(e),
+        }
+    }
+    fn expand(
+        &mut self,
+        root: NativeConstraintId,
+    ) -> Result<Vec<NativeConstraintId>, NormalizationError> {
+        use std::collections::BTreeMap;
+        let mut values: BTreeMap<usize, Vec<NativeConstraintId>> = BTreeMap::new();
+        let mut work = vec![(root, false)];
+        while let Some((id, leave)) = work.pop() {
+            if values.contains_key(&id.0) {
+                continue;
+            }
+            let NativeConstraint::Group { kind, children, .. } = self
+                .node(id)
+                .ok_or_else(|| NormalizationError::Boundary("foreign DNF identity".into()))?
+                .clone()
+            else {
+                return Err(NormalizationError::Boundary(
+                    "DNF expansion root must be a native constraint list".into(),
+                ));
+            };
+            if !leave {
+                if kind == GroupKind::Disjunction && children.len() > 28 {
+                    return Err(NormalizationError::TooManyDisjunctions);
+                }
+                work.push((id, true));
+                for child in children.iter().rev() {
+                    if matches!(self.node(*child), Some(NativeConstraint::Group { .. })) {
+                        work.push((*child, false));
+                    }
+                }
+                continue;
+            }
+            let mut simple = Vec::new();
+            let mut groups = Vec::new();
+            for child in children {
+                if matches!(self.node(child), Some(NativeConstraint::Group { .. })) {
+                    groups.push(values[&child.0].clone());
+                } else {
+                    simple.push(child);
+                }
+            }
+            let result = match kind {
+                GroupKind::Disjunction => {
+                    if simple
+                        .iter()
+                        .any(|id| matches!(self.node(*id), Some(NativeConstraint::Atomic { .. })))
+                    {
+                        return Err(NormalizationError::Boundary(
+                            "native disjunction contains an unwrapped atomic constraint".into(),
+                        ));
+                    }
+                    let mut result: Vec<_> = groups.into_iter().flatten().collect();
+                    result.extend(simple);
+                    if result.len() > 28 {
+                        return Err(NormalizationError::TooManyDisjunctions);
+                    }
+                    result
+                }
+                GroupKind::Conjunction => match groups.len() {
+                    0 => vec![self.group(GroupKind::Conjunction, simple)?],
+                    1 => {
+                        let mut result = Vec::new();
+                        for child in groups.pop().unwrap() {
+                            let mut list = vec![child];
+                            list.extend(&simple);
+                            result.push(self.group(GroupKind::Conjunction, list)?);
+                        }
+                        result
+                    }
+                    _ => {
+                        let mut groups = groups.into_iter();
+                        let mut combined = groups.next().unwrap();
+                        for next in groups {
+                            let mut joined = Vec::new();
+                            for a in &combined {
+                                for b in &next {
+                                    joined.push(self.group(GroupKind::Conjunction, vec![*a, *b])?);
+                                }
+                            }
+                            if joined.len() > 28 {
+                                return Err(NormalizationError::TooManyDisjunctions);
+                            }
+                            combined = joined;
+                        }
+                        let mut result = Vec::new();
+                        for child in combined {
+                            let prefix = self.group(GroupKind::Conjunction, simple.clone())?;
+                            result.push(self.group(GroupKind::Conjunction, vec![prefix, child])?);
+                        }
+                        result
+                    }
+                },
+            };
+            values.insert(id.0, result);
+        }
+        Ok(values.remove(&root.0).unwrap())
+    }
+    pub fn to_value(
+        &self,
+        root: NativeConstraintId,
+    ) -> Result<serde_json::Value, NormalizationError> {
+        use serde_json::json;
+        enum Action {
+            Enter(NativeConstraintId),
+            Leave(NativeConstraintId, usize),
+        }
+        let mut work = vec![Action::Enter(root)];
+        let mut nodes = Vec::new();
+        let mut built = Vec::new();
+        let vars = |deps: &BTreeSet<VariableId>| {
+            deps.iter()
+                .map(|v| match v {
+                    VariableId::Integer(n) => json!({"integer":n.to_string()}),
+                    VariableId::Atom(a) => json!({"atom":a}),
+                })
+                .collect::<Vec<_>>()
+        };
+        while let Some(action) = work.pop() {
+            match action {
+                Action::Enter(id) => match self.node(id).ok_or_else(|| {
+                    NormalizationError::Boundary("foreign constraint identity".into())
+                })? {
+                    NativeConstraint::Group { children, .. } => {
+                        work.push(Action::Leave(id, children.len()));
+                        for child in children.iter().rev() {
+                            work.push(Action::Enter(*child));
+                        }
+                    }
+                    NativeConstraint::Atomic {
+                        left,
+                        relation,
+                        right,
+                        deps,
+                    } => {
+                        let right = match right {
+                            NativeOperand::Type(t) => t.to_value(),
+                            NativeOperand::Derived(id) => serde_json::json!({"derived":id.0}),
+                        };
+                        built.push(nodes.len());
+                        nodes.push(json!({"kind":"atomic","left":left.to_value(),"relation":if matches!(relation,Relation::Equal){"eq"}else{"sub"},"right":right,"deps":vars(deps)}));
+                    }
+                    NativeConstraint::Reference { function, deps } => {
+                        let id = match function.variable() {
+                            VariableId::Integer(n) => json!({"integer":n.to_string()}),
+                            VariableId::Atom(a) => json!({"atom":a}),
+                        };
+                        built.push(nodes.len());
+                        nodes.push(json!({"kind":"ref","function":id,"deps":vars(deps)}));
+                    }
+                },
+                Action::Leave(id, count) => {
+                    let children = built.split_off(built.len() - count);
+                    let NativeConstraint::Group { kind, deps, .. } = self.node(id).unwrap() else {
+                        unreachable!()
+                    };
+                    built.push(nodes.len());
+                    nodes.push(json!({"kind":if *kind==GroupKind::Conjunction{"conj"}else{"disj"},"children":children,"deps":vars(deps)}));
+                }
+            }
+        }
+        Ok(json!({"root":built[0],"nodes":nodes}))
+    }
+    fn compare_operand(
+        &self,
+        ai: NativeConstraintId,
+        bi: NativeConstraintId,
+        a: &NativeOperand,
+        b: &NativeOperand,
+    ) -> Result<Ordering, NormalizationError> {
+        Ok(match (a, b) {
+            (NativeOperand::Type(a), NativeOperand::Type(b)) => {
+                let a = self.order_keys[ai.0].right.get_or_init(|| a.to_native_value());
+                let b = self.order_keys[bi.0].right.get_or_init(|| b.to_native_value());
+                a.cmp(b)
+            }
+            (NativeOperand::Type(_), NativeOperand::Derived(_)) => Ordering::Less,
+            (NativeOperand::Derived(_), NativeOperand::Type(_)) => Ordering::Greater,
+            (NativeOperand::Derived(a), NativeOperand::Derived(b)) => {
+                let a = &self.derived[a.0];
+                let b = &self.derived[b.0];
+                let c = a
+                    .key
+                    .compare(&b.key)
+                    .map_err(NormalizationError::Comparison)?;
+                c.then(a.deps.cmp(&b.deps))
+                    .then(match (a.origin, b.origin) {
+                        (ClosureOrigin::Undefined, ClosureOrigin::Undefined) => Ordering::Equal,
+                        (ClosureOrigin::Undefined, _) => Ordering::Greater,
+                        (_, ClosureOrigin::Undefined) => Ordering::Less,
+                        (ClosureOrigin::SourceLine(a), ClosureOrigin::SourceLine(b)) => a.cmp(&b),
+                    })
+            }
+        })
+    }
+    pub fn compare(
+        &self,
+        a: NativeConstraintId,
+        b: NativeConstraintId,
+    ) -> Result<Ordering, NormalizationError> {
+        struct GroupCursor<'a> {
+            children: std::iter::Zip<
+                std::slice::Iter<'a, NativeConstraintId>,
+                std::slice::Iter<'a, NativeConstraintId>,
+            >,
+            parents: (NativeConstraintId, NativeConstraintId),
+            lengths: (usize, usize),
+        }
+        let mut groups = Vec::<GroupCursor<'_>>::new();
+        let (mut ai, mut bi) = (a, b);
+        loop {
+            let order = {
+                let a = self.node(ai).ok_or_else(|| {
+                    NormalizationError::Boundary("foreign constraint identity".into())
+                })?;
+                let b = self.node(bi).ok_or_else(|| {
+                    NormalizationError::Boundary("foreign constraint identity".into())
+                })?;
+                let arity = |n: &NativeConstraint| match n {
+                    NativeConstraint::Reference { .. } => 3,
+                    NativeConstraint::Atomic { .. } => 5,
+                    NativeConstraint::Group { .. } => 6,
+                };
+                let size = arity(a).cmp(&arity(b));
+                if size != Ordering::Equal {
+                    return Ok(size);
+                }
+                match (a, b) {
+                    (
+                        NativeConstraint::Reference {
+                            function: a,
+                            deps: ad,
+                        },
+                        NativeConstraint::Reference {
+                            function: b,
+                            deps: bd,
+                        },
+                    ) => a.variable().cmp(b.variable()).then(ad.cmp(bd)),
+                    (
+                        NativeConstraint::Atomic {
+                            left: a,
+                            relation: ar,
+                            right: av,
+                            deps: ad,
+                        },
+                        NativeConstraint::Atomic {
+                            left: b,
+                            relation: br,
+                            right: bv,
+                            deps: bd,
+                        },
+                    ) => {
+                        let a = self.order_keys[ai.0]
+                            .left
+                            .get_or_init(|| a.to_native_value());
+                        let b = self.order_keys[bi.0]
+                            .left
+                            .get_or_init(|| b.to_native_value());
+                        let c = a.cmp(b).then(match (ar, br) {
+                            (Relation::Equal, Relation::Subtype) => Ordering::Less,
+                            (Relation::Subtype, Relation::Equal) => Ordering::Greater,
+                            _ => Ordering::Equal,
+                        });
+                        if c != Ordering::Equal {
+                            return Ok(c);
+                        }
+                        self.compare_operand(ai, bi, av, bv)?.then(ad.cmp(bd))
+                    }
+                    (
+                        NativeConstraint::Group {
+                            kind: ak,
+                            children: ac,
+                            ..
+                        },
+                        NativeConstraint::Group {
+                            kind: bk,
+                            children: bc,
+                            ..
+                        },
+                    ) => {
+                        let kind = match (ak, bk) {
+                            (GroupKind::Conjunction, GroupKind::Disjunction) => Ordering::Less,
+                            (GroupKind::Disjunction, GroupKind::Conjunction) => Ordering::Greater,
+                            _ => Ordering::Equal,
+                        };
+                        if kind != Ordering::Equal {
+                            return Ok(kind);
+                        }
+                        // Visit children lexicographically without queuing unused siblings.
+                        let mut children = ac.iter().zip(bc.iter());
+                        if let Some((&a, &b)) = children.next() {
+                            groups.push(GroupCursor {
+                                children,
+                                parents: (ai, bi),
+                                lengths: (ac.len(), bc.len()),
+                            });
+                            (ai, bi) = (a, b);
+                            continue;
+                        }
+                        let length = ac.len().cmp(&bc.len());
+                        if length != Ordering::Equal {
+                            return Ok(length);
+                        }
+                        self.dependencies(ai)?.cmp(self.dependencies(bi)?)
+                    }
+                    _ => unreachable!("same native tuple arity selects same constraint record"),
+                }
+            };
+            if order != Ordering::Equal {
+                return Ok(order);
+            }
+            loop {
+                let Some(group) = groups.last_mut() else {
+                    return Ok(Ordering::Equal);
+                };
+                if let Some((&a, &b)) = group.children.next() {
+                    (ai, bi) = (a, b);
+                    break;
+                }
+                let length = group.lengths.0.cmp(&group.lengths.1);
+                if length != Ordering::Equal {
+                    return Ok(length);
+                }
+                let order = self
+                    .dependencies(group.parents.0)?
+                    .cmp(self.dependencies(group.parents.1)?);
+                if order != Ordering::Equal {
+                    return Ok(order);
+                }
+                groups.pop();
+            }
+        }
+    }
+    fn sorted_unique(
+        &self,
+        mut list: Vec<NativeConstraintId>,
+    ) -> Result<Vec<NativeConstraintId>, NormalizationError> {
+        let n = list.len();
+        let mut width = 1;
+        while width < n {
+            let mut merged = Vec::with_capacity(n);
+            let mut start = 0;
+            while start < n {
+                let middle = (start + width).min(n);
+                let end = (middle + width).min(n);
+                let (mut a, mut b) = (start, middle);
+                while a < middle && b < end {
+                    if self.compare(list[a], list[b])? != Ordering::Greater {
+                        merged.push(list[a]);
+                        a += 1;
+                    } else {
+                        merged.push(list[b]);
+                        b += 1;
+                    }
+                }
+                merged.extend_from_slice(&list[a..middle]);
+                merged.extend_from_slice(&list[b..end]);
+                start = end;
+            }
+            list = merged;
+            width = width.saturating_mul(2);
+        }
+        let mut unique = Vec::with_capacity(n);
+        for id in list {
+            if let Some(last) = unique.last()
+                && self.compare(*last, id)? == Ordering::Equal
+            {
+                continue;
+            }
+            unique.push(id);
+        }
+        Ok(unique)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constraints::derived::NoBifProvider;
+    fn leaf(a: &mut NativeConstraintArena, variable: i64, name: &str) -> NativeConstraintId {
+        a.atomic(
+            Type::variable_integer(variable.into()),
+            Relation::Equal,
+            NativeOperand::Type(Type::atom(name)),
+            &NoBifProvider,
+        )
+        .unwrap()
+    }
+    #[test]
+    fn atomic_order_keys_are_lazy_on_the_reached_operand() {
+        let mut arena = NativeConstraintArena::default();
+        let mut atom = |variable: i64| {
+            arena
+                .atomic(
+                    Type::variable_integer(variable.into()),
+                    Relation::Subtype,
+                    NativeOperand::Type(Type::atom("payload")),
+                    &NoBifProvider,
+                )
+                .unwrap()
+        };
+        let first = atom(1_i64);
+        let second = atom(2_i64);
+        assert!(arena.order_keys[first.0].left.get().is_none());
+        assert!(arena.order_keys[first.0].right.get().is_none());
+        assert_eq!(arena.compare(first, second).unwrap(), Ordering::Less);
+        assert!(arena.order_keys[first.0].left.get().is_some());
+        assert!(arena.order_keys[second.0].left.get().is_some());
+        assert!(arena.order_keys[first.0].right.get().is_none());
+        assert!(arena.order_keys[second.0].right.get().is_none());
+        let left = arena.order_keys[first.0].left.get().unwrap() as *const NativeValue;
+        assert_eq!(arena.compare(first, second).unwrap(), Ordering::Less);
+        assert_eq!(
+            left,
+            arena.order_keys[first.0].left.get().unwrap() as *const NativeValue
+        );
+    }
+
+    #[test]
+    fn foreign_constraint_error_precedes_order_key_initialization() {
+        let mut arena = NativeConstraintArena::default();
+        let valid = leaf(&mut arena, 1, "a");
+        for (a, b) in [
+            (NativeConstraintId(usize::MAX), valid),
+            (valid, NativeConstraintId(usize::MAX)),
+        ] {
+            assert!(
+                matches!(arena.compare(a, b), Err(NormalizationError::Boundary(error)) if error == "foreign constraint identity")
+            );
+        }
+        assert!(arena.order_keys[valid.0].left.get().is_none());
+        assert!(arena.order_keys[valid.0].right.get().is_none());
+    }
+
+    #[test]
+    fn immutable_order_keys_preserve_arena_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<NativeConstraintArena>();
+    }
+
+    #[test]
+    fn constant_failure_is_rejected_at_construction() {
+        let mut a = NativeConstraintArena::default();
+        assert!(matches!(
+            a.atomic(
+                Type::atom("a"),
+                Relation::Equal,
+                NativeOperand::Type(Type::atom("b")),
+                &NoBifProvider
+            ),
+            Err(NormalizationError::Unsatisfiable)
+        ));
+    }
+    #[test]
+    fn equalities_deduplicate_after_native_side_orientation() {
+        let mut a = NativeConstraintArena::default();
+        let first = leaf(&mut a, 1, "a");
+        let reversed = a
+            .atomic(
+                Type::atom("a"),
+                Relation::Equal,
+                NativeOperand::Type(Type::variable_integer(1.into())),
+                &NoBifProvider,
+            )
+            .unwrap();
+        let root = a
+            .group(GroupKind::Conjunction, vec![first, reversed])
+            .unwrap();
+        let Some(NativeConstraint::Group { children, .. }) = a.node(root) else {
+            panic!()
+        };
+        assert_eq!(children.len(), 1);
+    }
+    fn product(a: &mut NativeConstraintArena, x: usize, y: usize) -> NativeConstraintId {
+        let mut groups = Vec::new();
+        for (variable, count) in [(1, x), (2, y)] {
+            let children = (0..count)
+                .map(|n| leaf(a, variable, &format!("a{n}")))
+                .collect();
+            groups.push(a.group(GroupKind::Disjunction, children).unwrap());
+        }
+        a.group(GroupKind::Conjunction, groups).unwrap()
+    }
+    #[test]
+    fn native_dnf_boundary_is_twenty_eight_and_fallback_preserves_root() {
+        let mut a = NativeConstraintArena::default();
+        let root = product(&mut a, 7, 4);
+        let normalized = a.disjunctive_normal_form(root).unwrap();
+        let Some(NativeConstraint::Group { kind, children, .. }) = a.node(normalized) else {
+            panic!()
+        };
+        assert_eq!(*kind, GroupKind::Disjunction);
+        assert_eq!(children.len(), 28);
+        let overflow = product(&mut a, 10, 3);
+        assert_eq!(a.disjunctive_normal_form(overflow).unwrap(), overflow);
+    }
+    #[test]
+    fn conjunction_tautology_is_filtered_but_disjunction_tautology_wins() {
+        let mut a = NativeConstraintArena::default();
+        let tautology = a.group(GroupKind::Conjunction, vec![]).unwrap();
+        let atom = leaf(&mut a, 1, "a");
+        let conjunction = a
+            .group(GroupKind::Conjunction, vec![tautology, atom])
+            .unwrap();
+        assert_eq!(a.dependencies(conjunction).unwrap().len(), 1);
+        let disjunction = a
+            .group(GroupKind::Disjunction, vec![tautology, atom])
+            .unwrap();
+        assert!(a.dependencies(disjunction).unwrap().is_empty());
+    }
+    #[test]
+    fn flat_serialization_and_drop_accept_deep_alternating_groups() {
+        let mut a = NativeConstraintArena::default();
+        let mut root = leaf(&mut a, 1, "first");
+        for n in 0..1000 {
+            let other = leaf(&mut a, 1, &format!("a{n}"));
+            let branch = a.group(GroupKind::Disjunction, vec![root, other]).unwrap();
+            root = a
+                .group(GroupKind::Conjunction, vec![branch, other])
+                .unwrap();
+        }
+        assert!(a.to_value(root).unwrap()["nodes"].as_array().unwrap().len() > 1000);
+    }
+    #[test]
+    fn differing_left_does_not_read_forged_derived_operand() {
+        let mut a = NativeConstraintArena::default();
+        let mut raw = |n: i64| {
+            a.push(NativeConstraint::Atomic {
+                left: Type::variable_integer(n.into()),
+                relation: Relation::Equal,
+                right: NativeOperand::Derived(NativeDerivedId(usize::MAX)),
+                deps: BTreeSet::new(),
+            })
+        };
+        let l = raw(1);
+        let r = raw(2);
+        assert_eq!(a.compare(l, r).unwrap(), Ordering::Less);
+        assert!(a.order_keys[l.0].right.get().is_none());
+    }
+    #[test]
+    fn deeply_nested_equal_groups_are_iterative() {
+        let mut a = NativeConstraintArena::default();
+        let mut root = a.push(NativeConstraint::Group {
+            kind: GroupKind::Conjunction,
+            children: vec![],
+            deps: BTreeSet::new(),
+        });
+        for _ in 0..4096 {
+            root = a.push(NativeConstraint::Group {
+                kind: GroupKind::Conjunction,
+                children: vec![root],
+                deps: BTreeSet::new(),
+            });
+        }
+        assert_eq!(a.compare(root, root).unwrap(), Ordering::Equal);
+    }
+}

@@ -1,0 +1,47 @@
+--- a/src/dependencies.rs
++++ b/src/dependencies.rs
+@@ -43,9 +43,25 @@
+         drop(transport_span);
+         Self::from_transport(transport)
+     }
+-    fn from_value(value: serde_json::Value) -> Result<Self, String> {
++    fn from_value(mut value: serde_json::Value) -> Result<Self, String> {
+         let span = crate::perf_trace::Span::new("prior.transport_value");
+-        let transport = serde_json::from_value(value).map_err(|e| e.to_string())?;
++        let summaries = value.get_mut("raw_summaries").map(serde_json::Value::take);
++        let contracts = value.get_mut("raw_contracts").map(serde_json::Value::take);
++        let callbacks = value
++            .get_mut("raw_callback_groups")
++            .map(serde_json::Value::take);
++        let types = value.get_mut("type_tables").map(serde_json::Value::take);
++        let exports = value.get_mut("exported_types").map(serde_json::Value::take);
++        let mut transport: Transport = serde_json::from_value(value).map_err(|e| e.to_string())?;
++        transport.raw_summaries = summaries.filter(|value| !value.is_null());
++        transport.raw_contracts = contracts.filter(|value| !value.is_null());
++        transport.artifact.raw_callback_groups = callbacks.filter(|value| !value.is_null());
++        if let Some(types) = types {
++            transport.artifact.type_tables = types;
++        }
++        if let Some(exports) = exports {
++            transport.artifact.exported_types = exports;
++        }
+         drop(span);
+         Self::from_transport(transport)
+     }
+@@ -169,8 +185,14 @@
+             });
+         }
+         if tracing {
+-            eprintln!("PERF prior.contract_copy {:.6}", copying.get().as_secs_f64());
+-            eprintln!("PERF prior.contract_conversion {:.6}", conversion.get().as_secs_f64());
++            eprintln!(
++                "PERF prior.contract_copy {:.6}",
++                copying.get().as_secs_f64()
++            );
++            eprintln!(
++                "PERF prior.contract_conversion {:.6}",
++                conversion.get().as_secs_f64()
++            );
+         }
+         drop(contracts_span);
+         Ok(artifact)

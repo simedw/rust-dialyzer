@@ -1,0 +1,55 @@
+{
+  "results": [
+    {
+      "workload": "tiny",
+      "groups": 1,
+      "modules": 4,
+      "samples": {
+        "native": [
+          0.5177610829705372,
+          0.556420708890073,
+          0.5474387500435114
+        ],
+        "rust": [
+          3.2842684159986675,
+          3.294852999970317,
+          3.249959959066473
+        ]
+      },
+      "median_seconds": {
+        "native": 0.5474387500435114,
+        "rust": 3.2842684159986675
+      },
+      "rust_over_native": 5.999334931510837
+    },
+    {
+      "workload": "elixir_suite",
+      "groups": 19,
+      "modules": 22,
+      "samples": {
+        "native": [
+          11.395365086966194,
+          10.080450834240764,
+          10.060031416709535
+        ],
+        "rust": [
+          68.80043166712858,
+          61.73974000115413,
+          60.01138971070759
+        ]
+      },
+      "median_seconds": {
+        "native": 10.080450834240764,
+        "rust": 61.73974000115413
+      },
+      "rust_over_native": 6.124700275451938
+    }
+  ],
+  "warnings_exact": true,
+  "inputs_unchanged": true,
+  "rounds": 3,
+  "scope": "Full analysis with an existing dependency PLT; CLI startup, compiler export, inference and rendering included; no incremental result cache; PLT construction and Mix compilation excluded.",
+  "candidate_root": "/private/tmp/rust-dialyzer-perf-11",
+  "evidence_root": "/private/tmp/rust-dialyzer-cli-benchmark-perf11-1",
+  "note": "Three measured rounds after warmup. Separate CLI invocation per Elixir fixture group; full analysis with dependency PLT reuse, not incremental analysis."
+}

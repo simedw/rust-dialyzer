@@ -1,0 +1,390 @@
+{
+  "modules": 48,
+  "equal": 48,
+  "results": [
+    {
+      "module": "Elixir.Dialyxir.Examples.Apply",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "cc58fe0238e84807b211d6721aa7e74f608c7647b04bfb9bb50d5f871836aee0",
+      "native_forms_sha256": "ed3349f33d7237c221c20b638050169f528d8d19f21e8e4126b2a47a21e3bf1b",
+      "oracle_forms_sha256": "ed3349f33d7237c221c20b638050169f528d8d19f21e8e4126b2a47a21e3bf1b"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.Call",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "1969c1b9b7b5f7a81998984ed45b8bf9762ba574effdf83ebd08adc7f0f09b44",
+      "native_forms_sha256": "28ca39eff597c2dd6be5c0391b80ef8859ed5bae67f5f375d6e6aef7e50b621d",
+      "oracle_forms_sha256": "28ca39eff597c2dd6be5c0391b80ef8859ed5bae67f5f375d6e6aef7e50b621d"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.CallbackArgument",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "2f584ac0954ebf8daa65fd81fb821c0080e278e4bbb9939e6d7902fcb422d0a2",
+      "native_forms_sha256": "9b9083cff977446c072202c17444242162b8d19d0f255042d3a607b4855459fd",
+      "oracle_forms_sha256": "9b9083cff977446c072202c17444242162b8d19d0f255042d3a607b4855459fd"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.CallbackArgument.Behaviour",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "64d600f77cec6427ffe7818f9f242483330e1ba30369cfba46a080a968e6c9fa",
+      "native_forms_sha256": "57e8e0c220c0ecf39a83b8a3c72459037d38fcf08a12ed83b402bf01da3710bc",
+      "oracle_forms_sha256": "57e8e0c220c0ecf39a83b8a3c72459037d38fcf08a12ed83b402bf01da3710bc"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.CallbackSpecArgument",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "6ee7c41a0499aa351e406838f611c0bcc1658c9cecb1aca50fa42c39b017f1fe",
+      "native_forms_sha256": "19d85245b6fd24074d1d1491946badf8bc9fbfb456d3f62fbdbc16f6cff553b8",
+      "oracle_forms_sha256": "19d85245b6fd24074d1d1491946badf8bc9fbfb456d3f62fbdbc16f6cff553b8"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.CallbackSpecArgument.Behaviour",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "2491a29c1bea73adcad0262310180c09301727bc4fe951dbc1285103787d6cef",
+      "native_forms_sha256": "7f2678c5815b6ea94053096ee91c5e2cf686296162f17a0688bda7ddeedd1bb9",
+      "oracle_forms_sha256": "7f2678c5815b6ea94053096ee91c5e2cf686296162f17a0688bda7ddeedd1bb9"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.ContractSuperType",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "c8d1b83426e0c56e66cff7fe3511404715d9c182dba2f2984cf0c69ed5c5ec0f",
+      "native_forms_sha256": "de261f4800175f24e7ea4adbcf4035a8612cfeb8c8cbcf5eeaf3eb8373a77541",
+      "oracle_forms_sha256": "de261f4800175f24e7ea4adbcf4035a8612cfeb8c8cbcf5eeaf3eb8373a77541"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.ContractWithOpaque",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "55a731fb593d71e8143f76189a9cfd93093eb9953a3723dc607a9e27b2380876",
+      "native_forms_sha256": "47dd440215d8d13cef0fb69f0d81e7493f91aa0f7f5471be0d29bcd7abb59e3e",
+      "oracle_forms_sha256": "47dd440215d8d13cef0fb69f0d81e7493f91aa0f7f5471be0d29bcd7abb59e3e"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.ContractWithOpaque.Types",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "f7c1ee52441259d4a9fc2f8b191faa2cfc40df394ae7d7c1322fe5622dd5dbd3",
+      "native_forms_sha256": "4da70f5c32592c8004555b36a6431da8b760bf70638dd9b6a99c7b8661a2b9b6",
+      "oracle_forms_sha256": "4da70f5c32592c8004555b36a6431da8b760bf70638dd9b6a99c7b8661a2b9b6"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.ExactEquality",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "f1815338e72460c4986f004fa19ca352cb975cce9f8be02e6f141d48023b7549",
+      "native_forms_sha256": "d72e3b19f8a2259191264cc689abbf480af4c0dd5cb1f0da61a04c19edb3b051",
+      "oracle_forms_sha256": "d72e3b19f8a2259191264cc689abbf480af4c0dd5cb1f0da61a04c19edb3b051"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.ExtraRange",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "fe11fedca1555210682fed3a325268e9716a86a937ab103cf28b2c21ebe872f0",
+      "native_forms_sha256": "6a50631e847b16d69c8558fc7362fa389dc6c4e413268381448f5757e9bd94cf",
+      "oracle_forms_sha256": "6a50631e847b16d69c8558fc7362fa389dc6c4e413268381448f5757e9bd94cf"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.FunctionApplicationArgs",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "fb30580d110fd0f7a0702e48e160fed6d99717c41e8fe8bc05540db483f8dcbb",
+      "native_forms_sha256": "2b5f2d80962d2ee59a6e51b884802d59db7482782563ebfd34dc88bddaa3bf6b",
+      "oracle_forms_sha256": "2b5f2d80962d2ee59a6e51b884802d59db7482782563ebfd34dc88bddaa3bf6b"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.FunctionApplicationNoFun",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "7fc0fcf2ec84a63a9f253d9d96f71842f1627350f3ea6bbcac45a86414e15f8e",
+      "native_forms_sha256": "7bf492a6637d2fbf289685c9ae047036e97427dfe9cd0873943d978d026f822d",
+      "oracle_forms_sha256": "7bf492a6637d2fbf289685c9ae047036e97427dfe9cd0873943d978d026f822d"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.GuardFail",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "0ab13f5c16a352c83301f029fc8274c88c5d97ed0819dd72af5962b4e3e491ea",
+      "native_forms_sha256": "605759b80bb77b8ffa86f703847c46609f12310f3984fad6ffe48d396e55c9fa",
+      "oracle_forms_sha256": "605759b80bb77b8ffa86f703847c46609f12310f3984fad6ffe48d396e55c9fa"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.GuardFailPattern",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "9234f13991a0c5e67c09ed78bc8aa65ba165908390620ee998c686cae4c4b308",
+      "native_forms_sha256": "b0bc0ea778e2dfbca3518c393e9e089ce67ddd193d0c9c88678b512052eb1bb0",
+      "oracle_forms_sha256": "b0bc0ea778e2dfbca3518c393e9e089ce67ddd193d0c9c88678b512052eb1bb0"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.OpaqueEquality",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "9aef64c16a8b0c9d108e05bebce890b44dd57822894875618151c480098bc663",
+      "native_forms_sha256": "4f5cbb957123c927384419631301cb9c0149fcbe7f3a51c7bc19a5e80c41f957",
+      "oracle_forms_sha256": "4f5cbb957123c927384419631301cb9c0149fcbe7f3a51c7bc19a5e80c41f957"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.OpaqueEquality.Types",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "ab2a70a071ee4f1078e77dbe7475d5553f6f1e7780e8226c9615c8462c3de1b3",
+      "native_forms_sha256": "0f5ad460e04c739a57103efa1a7ef7508cc783b1dba161a85e9ee714e058eb04",
+      "oracle_forms_sha256": "0f5ad460e04c739a57103efa1a7ef7508cc783b1dba161a85e9ee714e058eb04"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.OpaqueMatch",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "3bcc6fff4860f80e43f82f93fe51d595299277122ac77ed77fb115c744b51a32",
+      "native_forms_sha256": "f77c1fbf3f51f3422e1e8a143c646486a8a26d16798e947a8a19fafabdac24be",
+      "oracle_forms_sha256": "f77c1fbf3f51f3422e1e8a143c646486a8a26d16798e947a8a19fafabdac24be"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.OpaqueMatch.Struct",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "279b3782b267d05d53d3946a72948b96453812edde28065a45a1764623d53b00",
+      "native_forms_sha256": "01f2f97320c41a5663b6dc89e5af38944ba93fe4759adf4808b025bfafb7a8f7",
+      "oracle_forms_sha256": "01f2f97320c41a5663b6dc89e5af38944ba93fe4759adf4808b025bfafb7a8f7"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.PatternMatch",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "838985cb78aa7cc36eea8dd94df16396a679837228493963d5713b06c78bacd3",
+      "native_forms_sha256": "5ee61043e1369a56caf625736a71e275ebf4994c4500960c4593a3aae1239786",
+      "oracle_forms_sha256": "5ee61043e1369a56caf625736a71e275ebf4994c4500960c4593a3aae1239786"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.PatternMuchCovered",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "7b83e37d01567377f4e8f681856c8b53539fe1927d8dbd133b38ec8466722e91",
+      "native_forms_sha256": "dc7cf2358446d2df888a0f7365eeef00df66209183aa266bfb4651188a61fac9",
+      "oracle_forms_sha256": "dc7cf2358446d2df888a0f7365eeef00df66209183aa266bfb4651188a61fac9"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.UnknownType",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "c6b37a299063275dd2bbe3cd09974827a5cc6e00235b20085cc831f7cbec3beb",
+      "native_forms_sha256": "e4211250290b4a2aae9cb766f7e46abbbf551cd999bcf2f3ca3261ff1b36a979",
+      "oracle_forms_sha256": "e4211250290b4a2aae9cb766f7e46abbbf551cd999bcf2f3ca3261ff1b36a979"
+    },
+    {
+      "module": "Elixir.Dialyxir.Examples.UnknownType.Missing",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "30547de4eaa5b9b09b72914c31288f86abb3acb80482a39fa2873a792ab1d266",
+      "native_forms_sha256": "8018917f22343c34a8d409bfa7996ce92b5e2cfec85c03138cc020f60312eeda",
+      "oracle_forms_sha256": "8018917f22343c34a8d409bfa7996ce92b5e2cfec85c03138cc020f60312eeda"
+    },
+    {
+      "module": "Elixir.Dialyzer.Assertions",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "cdc810aa53ae1af1ab820861289175dbe6eb239a21c89ba7b33093df17bb1a40",
+      "native_forms_sha256": "d2e2f5656de8de35fa515f8cb0a32d045b13e35fd727c61856cb7deabb7a72a5",
+      "oracle_forms_sha256": "d2e2f5656de8de35fa515f8cb0a32d045b13e35fd727c61856cb7deabb7a72a5"
+    },
+    {
+      "module": "Elixir.Dialyzer.BooleanCheck",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "9cb35877625a82ced1c77248f93310f25572919dab079d817ce757b563418a49",
+      "native_forms_sha256": "0ff139e60e2173daddc3ff61de0b44819e94ea8d56bcf5839069ec3d5565b934",
+      "oracle_forms_sha256": "0ff139e60e2173daddc3ff61de0b44819e94ea8d56bcf5839069ec3d5565b934"
+    },
+    {
+      "module": "Elixir.Dialyzer.Callback",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "990a31142f0dd0a96cd857490c41f48d258ff0c0ef397be18f0a0dcfc3a5dfae",
+      "native_forms_sha256": "9f583777c344283b1fa74efaa4ef39fe4b2ccb85a49349a93651850c99ca08c7",
+      "oracle_forms_sha256": "9f583777c344283b1fa74efaa4ef39fe4b2ccb85a49349a93651850c99ca08c7"
+    },
+    {
+      "module": "Elixir.Dialyzer.Callback.ImplAtom",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "e5dcf7134c5e18832fa0212476809de00c0248e511cb25b7f26d8a31007eb9d4",
+      "native_forms_sha256": "2f12d6507f47af871080264dab2bb948e1604d091135098b714d3fbb8365542b",
+      "oracle_forms_sha256": "2f12d6507f47af871080264dab2bb948e1604d091135098b714d3fbb8365542b"
+    },
+    {
+      "module": "Elixir.Dialyzer.Callback.ImplList",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "ed4510fc0820fc21bb34424f7fa973b621821491ee561e5c6879ff9d93812eac",
+      "native_forms_sha256": "852dec56f32098c91b6a9c48d81c6565cdec2a06b2717ab2ed1b1ca143a26bd1",
+      "oracle_forms_sha256": "852dec56f32098c91b6a9c48d81c6565cdec2a06b2717ab2ed1b1ca143a26bd1"
+    },
+    {
+      "module": "Elixir.Dialyzer.Cond",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "6ada427c1665b93f96a900a16fcd158dc8576b32b6ba05feae738c80b9a19702",
+      "native_forms_sha256": "2b1d2c20ca4d4a381e4c25d03369b683b43fb67f088ef2df5eed2669ada4b097",
+      "oracle_forms_sha256": "2b1d2c20ca4d4a381e4c25d03369b683b43fb67f088ef2df5eed2669ada4b097"
+    },
+    {
+      "module": "Elixir.Dialyzer.Defmacrop",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "a0a886b0768cfa607329a0842e0a9cebd025d97ddf67ee88955c50dc886db139",
+      "native_forms_sha256": "ac75abd939f7234ae40e5ccc6d8c025d3aabc945e278960ca98f3928d1d35102",
+      "oracle_forms_sha256": "ac75abd939f7234ae40e5ccc6d8c025d3aabc945e278960ca98f3928d1d35102"
+    },
+    {
+      "module": "Elixir.Dialyzer.ForBitstring",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "acd1e0ef3a42103fcfd71a68e5c4d92823854c0bcaf3523b9c97e7c2f6abf0fd",
+      "native_forms_sha256": "10d8d175ac17b40179bfbebde388988d5fbf02e945aa679e6b053f0b12276727",
+      "oracle_forms_sha256": "10d8d175ac17b40179bfbebde388988d5fbf02e945aa679e6b053f0b12276727"
+    },
+    {
+      "module": "Elixir.Dialyzer.ForBooleanCheck",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "3790c939b5d9f64195307340770fce875a34054a18a8667cd53a69ca35e09b50",
+      "native_forms_sha256": "93f2c4f76fb46ed423c228855d1835386090a10634cbde18c04014410fa2eb41",
+      "oracle_forms_sha256": "93f2c4f76fb46ed423c228855d1835386090a10634cbde18c04014410fa2eb41"
+    },
+    {
+      "module": "Elixir.Dialyzer.IsStruct",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "62eef90fa7970b5dca527ebb5f3ce595283b979c1b642254cfbe2d5612c8739a",
+      "native_forms_sha256": "8e3ee58937719a4f9aedc666e0ee414d4f2ef4f541b8634939e93bb00ce0ff99",
+      "oracle_forms_sha256": "8e3ee58937719a4f9aedc666e0ee414d4f2ef4f541b8634939e93bb00ce0ff99"
+    },
+    {
+      "module": "Elixir.Dialyzer.Macrocallback",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "568baa8ff6b75e1826f3745af7229ed0019d5f34888b05b897451170728b7bc7",
+      "native_forms_sha256": "c0285abe9ed6e30c4b3f62a0c1572f94898e729e7ee1b2d6e8e6e8219f4fe9b9",
+      "oracle_forms_sha256": "c0285abe9ed6e30c4b3f62a0c1572f94898e729e7ee1b2d6e8e6e8219f4fe9b9"
+    },
+    {
+      "module": "Elixir.Dialyzer.Macrocallback.Impl",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "7fd434adfc86ce17f7c9cc41378318bca723a7a63e0adab50a34271a41c72ce6",
+      "native_forms_sha256": "068b5bb4be2fdf8dfef52727c5cab11c7b79b5ea0940497382f783b918e0acdf",
+      "oracle_forms_sha256": "068b5bb4be2fdf8dfef52727c5cab11c7b79b5ea0940497382f783b918e0acdf"
+    },
+    {
+      "module": "Elixir.Dialyzer.Opaqueness",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "30891b4d754a37c606ffbaa58259ff0e6f58ef2cf6a0e4302e660aa664589258",
+      "native_forms_sha256": "e5e396c378df7ab993be6663ef6137baa3e6fad2a96514abd78691c45032b910",
+      "oracle_forms_sha256": "e5e396c378df7ab993be6663ef6137baa3e6fad2a96514abd78691c45032b910"
+    },
+    {
+      "module": "Elixir.Dialyzer.Raise",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "83e4e321fe08cc5d19b7085cb2787a4670e6b807fda3c98fd8775a935b5171f4",
+      "native_forms_sha256": "40d0579c1a90ecf73a4e61999dec7a78aa40ec750e7139ee9163003379772de1",
+      "oracle_forms_sha256": "40d0579c1a90ecf73a4e61999dec7a78aa40ec750e7139ee9163003379772de1"
+    },
+    {
+      "module": "Elixir.Dialyzer.Regressions",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "1a9d22d7f68694d96f44346deb16d690e1c6b8ae7a44b36710d776029f3f48c6",
+      "native_forms_sha256": "f4dd032e5774738a416b37a0d7e8eed16331b09e04fe98a1c91a8a40882d56c7",
+      "oracle_forms_sha256": "f4dd032e5774738a416b37a0d7e8eed16331b09e04fe98a1c91a8a40882d56c7"
+    },
+    {
+      "module": "Elixir.Dialyzer.RemoteCall",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "ffacfdae32bebc1731ee2f55e6a9c83167b2b47883d23156f1acfaddbe4a4431",
+      "native_forms_sha256": "9d254469d49c1cc7d1a833aa11786ca947ebc4a0b44d7b104359cfb98ebd29ba",
+      "oracle_forms_sha256": "9d254469d49c1cc7d1a833aa11786ca947ebc4a0b44d7b104359cfb98ebd29ba"
+    },
+    {
+      "module": "Elixir.Dialyzer.Rewrite",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "9836b5dc0c3630f6d0cdb1082560f3b846519364ad8c85c6c0a15bbb6f7dc166",
+      "native_forms_sha256": "c1ee55387fe299bb3a60b6c4e5d41d44efe05b04b88b073dd2a5bc31169cb054",
+      "oracle_forms_sha256": "c1ee55387fe299bb3a60b6c4e5d41d44efe05b04b88b073dd2a5bc31169cb054"
+    },
+    {
+      "module": "Elixir.Dialyzer.Try",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "dd6ec73e01d5eb1e0fa96c894aaa1174c19bce130bb10bddfc07c40ed9a0e555",
+      "native_forms_sha256": "3ba0d2bc89d2bc3701ed7d6ce50896bf2e1841fab03936b7a05154e591180ea2",
+      "oracle_forms_sha256": "3ba0d2bc89d2bc3701ed7d6ce50896bf2e1841fab03936b7a05154e591180ea2"
+    },
+    {
+      "module": "Elixir.Dialyzer.With",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "bcc88a6556e6cfa78d4bf3532c1f323c0ab2cb7f59bb1624d8a17fed3701bb00",
+      "native_forms_sha256": "989559db715b26da73c9231e036c9ba9cb7281c04d7000605fc603f64d2f9d2b",
+      "oracle_forms_sha256": "989559db715b26da73c9231e036c9ba9cb7281c04d7000605fc603f64d2f9d2b"
+    },
+    {
+      "module": "Elixir.Dialyzer.WithNoReturn",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "02d01607785a69874f99bd7aebdf24bf8b94344c6d2914a9ca97e2e2758a10d1",
+      "native_forms_sha256": "f45772ff617751124a7c3ec04d45812d48b7cba9da939c69db44ec9310d0f2e5",
+      "oracle_forms_sha256": "f45772ff617751124a7c3ec04d45812d48b7cba9da939c69db44ec9310d0f2e5"
+    },
+    {
+      "module": "Elixir.Dialyzer.WithThrowingElse",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "c64bde5f03b2fcdc48902c16b506d7949e72742771ab8cfd37654cd531df27b3",
+      "native_forms_sha256": "21815b0fe7df3b77dab31f4827feb7ca4ebbc9497d604577736e24cde2cd80c6",
+      "oracle_forms_sha256": "21815b0fe7df3b77dab31f4827feb7ca4ebbc9497d604577736e24cde2cd80c6"
+    },
+    {
+      "module": "Elixir.Tiny.Issues",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "3ec2a4306640e7b58f35032cbca1b8c7292fdb2dd8c470ee255af68d204d3828",
+      "native_forms_sha256": "f5b190b4ba396acfec3b9da6a56f72eefa4a0663490fdb91ca01c9714016f1d6",
+      "oracle_forms_sha256": "f5b190b4ba396acfec3b9da6a56f72eefa4a0663490fdb91ca01c9714016f1d6"
+    },
+    {
+      "module": "Elixir.Tiny.Macros",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "e3029413ddf424ff0d92ef4492a82fa4cd21b170d6174df4744c63e35364c33a",
+      "native_forms_sha256": "ba32c02b41a94adea799241b8e96856d77ec0ceb53a349a14e599ed8e0ecb496",
+      "oracle_forms_sha256": "ba32c02b41a94adea799241b8e96856d77ec0ceb53a349a14e599ed8e0ecb496"
+    },
+    {
+      "module": "Elixir.Tiny.Math",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "a33b3ec838bc236d14aa42ee7d605f64a64c578df25d4e01c2353f760c94de5c",
+      "native_forms_sha256": "07d055a6a28e42c323f352a7902ef568020ef1619ef04c24d2be9c5b9061fea8",
+      "oracle_forms_sha256": "07d055a6a28e42c323f352a7902ef568020ef1619ef04c24d2be9c5b9061fea8"
+    },
+    {
+      "module": "Elixir.Tiny.Values",
+      "equal": true,
+      "detail": "equal",
+      "metadata_sha256": "ff39781cc2653c7fd8189a8ffbac00fabe53b1c2c3d3870a571c7baa0f2d5bfd",
+      "native_forms_sha256": "cbfa88f421fac58f4f3a73d0a2b1d3c8db38d6b369e666fccca04f8fa92b5236",
+      "oracle_forms_sha256": "cbfa88f421fac58f4f3a73d0a2b1d3c8db38d6b369e666fccca04f8fa92b5236"
+    }
+  ]
+}

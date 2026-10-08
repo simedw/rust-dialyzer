@@ -1,0 +1,26 @@
+{
+  "cases": 13,
+  "measurements_ms": {
+    "native_debug_frontend": [
+      468.51516608148813,
+      426.3158750254661,
+      422.6505419937894
+    ],
+    "existing_oracle_bridge": [
+      629.7182909911498,
+      538.3578750770539,
+      542.7384590730071
+    ]
+  },
+  "median_ms": {
+    "native_debug_frontend": 426.3158750254661,
+    "existing_oracle_bridge": 542.7384590730071
+  },
+  "scope": "frontend only; warm filesystem cache; debug native binaries; current bridge includes VM startup, dynamic helper compilation and OTP reference-Core validation; no analyzer, incremental or release-speed claim",
+  "sha256": {
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/run/measure_frontend.py": "ee0950e7382f901fc5abfcfec8cd072ad7fb83996fb0dc538548e9d465b10f24",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/run/frontend_timing.exs": "ff91bbabdc18ef47bec078b71f7d17f9b721c2108fc3d36c8015b00c58baa4f4",
+    "/private/tmp/dialyzer-firefly-prototype/input/target/debug/native-beam-seed": "ca2632feab031e4ed4d39c0fbdf57596c4a64fce02d62d3a2e480662bf0f0460",
+    "/private/tmp/dialyzer-firefly-prototype/adapter/target/debug/adapt-beam": "4e4500dbce8005489bda0a28a40ef7f0e16f93b6a1f3f4b35cfef913e04305ff"
+  }
+}

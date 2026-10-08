@@ -1,0 +1,57 @@
+--- a/scripts/core_export.exs
++++ b/scripts/core_export.exs
+@@ -207,7 +207,7 @@
+     contract_variable_maps(children ++ pending, maps)
+   end
+ 
+-  def export_module(name, forms, core) do
++  def capture_module(name, forms, core) do
+     Process.put(:core_terms_cache, %{})
+     Process.put(:core_terms_count, 0)
+     Process.put(:core_terms, [])
+@@ -219,6 +219,11 @@
+     exported = %{name: Atom.to_string(name), source_forms: source_forms, core: root,
+                  contract_variable_maps: variable_maps, terms: Enum.reverse(Process.get(:core_terms)), nodes: Enum.reverse(Process.get(:core_nodes))}
+     Enum.each([:core_terms_cache, :core_terms_count, :core_terms, :core_nodes_count, :core_nodes], &Process.delete/1)
++    exported
++  end
++
++  def export_module(name, forms, core) do
++    exported = capture_module(name, forms, core)
+     decoded = exported |> :json.encode() |> IO.iodata_to_binary() |> :json.decode()
+     {decoded_forms, decoded_core} = rebuild_module(decoded)
+     if :erlang.term_to_binary(decoded_forms) !== :erlang.term_to_binary(forms), do: raise("source term roundtrip differs: #{name}")
+@@ -226,11 +231,21 @@
+     exported
+   end
+ 
+-  def module(path) do
++  defp compile_module(path) do
+     {:ok, {name, [debug_info: {:debug_info_v1, backend, metadata}, abstract_code: {:raw_abstract_v1, forms}]}} =
+       :beam_lib.chunks(String.to_charlist(path), [:debug_info, :abstract_code])
+     {:ok, unclean} = backend.debug_info(:core_v1, name, metadata, @options)
+     core = :dialyzer_clean_core.clean(unclean)
++    {name, forms, core}
++  end
++
++  def capture_module(path) do
++    {name, forms, core} = compile_module(path)
++    capture_module(name, forms, core)
++  end
++
++  def module(path) do
++    {name, forms, core} = compile_module(path)
+     {:ok, reference_core} = :dialyzer_utils.get_core_from_beam(String.to_charlist(path))
+     if reference_core !== core, do: raise("OTP compiler profile differs: #{path}")
+     export_module(name, forms, core)
+--- a/scripts/compiled_bundle.exs
++++ b/scripts/compiled_bundle.exs
+@@ -82,7 +82,7 @@
+     headers = timed("prior_headers", fn -> Enum.map(prior_paths,fn path -> path |> File.read!() |> :erlang.binary_to_term() end) end)
+     try do
+       modules = if compile_targets,
+-        do: timed("modules", fn -> Enum.map(paths, &CoreExport.module/1) |> Enum.sort_by(& &1.name) end), else: []
++        do: timed("modules", fn -> Enum.map(paths, &CoreExport.capture_module/1) |> Enum.sort_by(& &1.name) end), else: []
+       atoms = Enum.map(request["layout_atoms"] || [], &String.to_atom/1)
+       layout = timed("atom_layout", fn -> CoreExport.atom_layout(modules, [headers, context, ExportDependencies.raw_tables(plt), atoms]) end)
+       result = %{

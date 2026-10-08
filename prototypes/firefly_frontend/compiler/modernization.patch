@@ -1,0 +1,677 @@
+--- a/library/beam/src/code/mod.rs
++++ b/library/beam/src/code/mod.rs
+@@ -39,6 +39,12 @@
+     pub forms: Vec<Form>,
+ }
+ impl AbstractCode {
++    pub fn from_abstract_forms(bytes: &[u8]) -> Result<Self, FromBeamError> {
++        let term = etf::Term::decode(std::io::Cursor::new(bytes))?;
++        let forms = term.as_match(VarList(to!(Form))).map_err(|_| FromBeamError::NoDebugInfo)?;
++        Ok(Self { forms })
++    }
++
+     pub fn from_beam_file<P: AsRef<Path>>(path: P) -> Result<Self, FromBeamError> {
+         use crate::serialization::etf::Term;
+ 
+@@ -156,6 +162,7 @@
+         let e = return_if_ok!(term.as_match(to!(TypeDef))).max_depth(e);
+         let e = return_if_ok!(term.as_match(to!(SpecAttr))).max_depth(e);
+         let e = return_if_ok!(term.as_match(to!(CallbackAttr))).max_depth(e);
++        let e = return_if_ok!(term.as_match(to!(OptionalCallbacksAttr))).max_depth(e);
+         let e = return_if_ok!(term.as_match(to!(OnLoadAttr))).max_depth(e);
+         let e = return_if_ok!(term.as_match(to!(NifsAttr))).max_depth(e);
+         let e = return_if_ok!(term.as_match(to!(UserAttr))).max_depth(e);
+@@ -940,6 +947,18 @@
+     }
+ }
+ 
++impl<'a> FromTerm<'a> for OptionalCallbacksAttr {
++    fn try_from(term: &'a etf::Term) -> Result<Self, Unmatch<'a>> {
++        term.as_match((
++            "attribute",
++            pattern::Location,
++            "optional_callbacks",
++            VarList(pattern::FunctionName),
++        ))
++        .map(|(_, loc, _, functions)| Self::new(loc, functions))
++    }
++}
++
+ impl<'a> FromTerm<'a> for ExportAttr {
+     fn try_from(term: &'a etf::Term) -> Result<Self, Unmatch<'a>> {
+         term.as_match((
+--- a/library/beam/src/serialization/etf/pattern.rs
++++ b/library/beam/src/serialization/etf/pattern.rs
+@@ -858,6 +858,21 @@
+ impl<'a> Pattern<'a> for Location {
+     type Output = crate::ast::Location;
+     fn try_match(&self, input: &'a Term) -> MatchResult<'a, Self::Output> {
++        if let Term::List(list) = input {
++            let mut location = None;
++            let mut generated = false;
++            for entry in &list.elements {
++                if let Ok((key, value)) = entry.as_match((AtomName, any::<Term>())) {
++                    match key.as_str().get() {
++                        "location" => location = Some(value),
++                        "generated" => generated = value.as_match("true").is_ok(),
++                        _ => {},
++                    }
++                }
++            }
++            if generated { return Ok(crate::ast::Location { line: 0, column: 1 }); }
++            return location.ok_or_else(|| self.unmatched(input)).and_then(|loc| self.try_match(loc));
++        }
+         input.as_match(Or(((U32, U32), U32))).map(|loc| match loc {
+             Union2::A(loc) => loc.into(),
+             Union2::B(line) => crate::ast::Location { line, column: 1 },
+--- a/library/system/src/lib.rs
++++ b/library/system/src/lib.rs
+@@ -8,7 +8,6 @@
+ #![feature(slice_ptr_get)]
+ #![feature(slice_ptr_len)]
+ // Used for OnceLock impl
+-#![feature(const_default_impls)]
+ #![feature(const_trait_impl)]
+ #![feature(dropck_eyepatch)]
+ #![feature(never_type)]
+--- a/library/system/src/sync/once.rs
++++ b/library/system/src/sync/once.rs
+@@ -375,7 +375,7 @@
+ impl<T: RefUnwindSafe + UnwindSafe> RefUnwindSafe for OnceLock<T> {}
+ impl<T: UnwindSafe> UnwindSafe for OnceLock<T> {}
+ 
+-impl<T> const Default for OnceLock<T> {
++impl<T> Default for OnceLock<T> {
+     /// Creates a new empty cell.
+     ///
+     /// # Example
+--- a/compiler/syntax_erl/src/lib.rs
++++ b/compiler/syntax_erl/src/lib.rs
+@@ -3,7 +3,6 @@
+ #![feature(map_try_insert)]
+ #![feature(iterator_try_collect)]
+ #![feature(box_patterns)]
+-#![feature(once_cell)]
+ 
+ #[macro_use]
+ mod macros;
+--- a/compiler/syntax_erl/src/passes/sema/inject.rs
++++ b/compiler/syntax_erl/src/passes/sema/inject.rs
+@@ -327,19 +327,15 @@
+                     .callbacks
+                     .iter()
+                     .fold(nil!(default_span), |acc, (cbname, cb)| {
+-                        if cb.optional {
++                        cons!(
++                            cb.span,
++                            tuple!(
++                                cb.span,
++                                atom!(cb.span, cbname.function),
++                                int!(cb.span, (cbname.arity as i64).into())
++                            ),
+                             acc
+-                        } else {
+-                            cons!(
+-                                cb.span,
+-                                tuple!(
+-                                    cb.span,
+-                                    atom!(cb.span, cbname.function),
+-                                    int!(cb.span, (cbname.arity as i64).into())
+-                                ),
+-                                acc
+-                            )
+-                        }
++                        )
+                     });
+             let opt_callbacks =
+                 module
+--- a/compiler/syntax_erl/src/passes/sema/verify.rs
++++ b/compiler/syntax_erl/src/passes/sema/verify.rs
+@@ -228,7 +228,7 @@
+                 imports: &imports,
+                 has_errors: false,
+             };
+-            visitor.visit_mut_function(function);
++            let _ = visitor.visit_mut_function(function);
+             if visitor.has_errors {
+                 has_errors = true;
+             }
+@@ -309,53 +309,6 @@
+                         // These deprecation types have all been converted to Deprecation::Function
+                         Some(Deprecation::FunctionAnyArity { .. }) => unreachable!(),
+                     }
+-                }
+-                (None, Some(f)) => {
+-                    let name = FunctionName::new_local(f.name, arity);
+-                    if !self.locals.contains(&name) {
+-                        match self.imports.get(&name) {
+-                            None => {
+-                                let message = format!(
+-                                    "the function {} is not defined or imported in this module",
+-                                    &name
+-                                );
+-                                self.has_errors = true;
+-                                self.diagnostics
+-                                    .diagnostic(Severity::Error)
+-                                    .with_message("reference to undefined function")
+-                                    .with_primary_label(f.span, message)
+-                                    .emit();
+-                            }
+-                            Some(imported) => match self.app.get_function_deprecation(&imported) {
+-                                None => (),
+-                                Some(Deprecation::Module { span: dspan, flag }) => {
+-                                    let note =
+-                                        format!("this function will be deprecated {}", &flag);
+-                                    self.diagnostics
+-                                        .diagnostic(Severity::Warning)
+-                                        .with_message("use of deprecated module")
+-                                        .with_primary_label(f.span, note)
+-                                        .with_secondary_label(dspan, "deprecated here")
+-                                        .emit();
+-                                }
+-                                Some(Deprecation::Function {
+-                                    span: dspan, flag, ..
+-                                }) => {
+-                                    let note =
+-                                        format!("this function will be deprecated {}", &flag);
+-                                    self.diagnostics
+-                                        .diagnostic(Severity::Warning)
+-                                        .with_message("use of deprecated function")
+-                                        .with_primary_label(f.span, note)
+-                                        .with_secondary_label(dspan, "deprecated here")
+-                                        .emit();
+-                                }
+-                                // These deprecation types have all been converted to Deprecation::Function
+-                                Some(Deprecation::FunctionAnyArity { .. }) => unreachable!(),
+-                            },
+-                        }
+-                    }
+-                    ControlFlow::Continue(())
+                 }
+                 _ => ControlFlow::Continue(()),
+             },
+@@ -638,3 +591,28 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod native_remote_tests {
++    use super::*;
++    use std::sync::Arc;
++    use firefly_intern::Ident;
++
++    #[test]
++    fn native_dynamic_module_call_is_not_a_local_reference() {
++        let codemap = Arc::new(CodeMap::new());
++        let emitter = Arc::new(CaptureEmitter::new());
++        let diagnostics = DiagnosticsHandler::new(DiagnosticsConfig::default(), codemap, emitter);
++        let app = ApplicationMetadata { name: Symbol::intern("test"), modules: BTreeMap::new() };
++        let locals = BTreeSet::new();
++        let imports = BTreeMap::new();
++        let mut visitor = VerifyCallsVisitor { diagnostics: &diagnostics, app: &app, module: Symbol::intern("test"), locals: &locals, imports: &imports, has_errors: false };
++        let span = SourceSpan::UNKNOWN;
++        let module = Expr::Var(Var(Ident::new(Symbol::intern("M"), span)));
++        let function = Expr::Literal(Literal::Atom(Ident::new(Symbol::intern("missing_local"), span)));
++        let mut call = Apply::new(span, Expr::Remote(Remote::new(span, module, function)), vec![]);
++        assert!(visitor.visit_mut_apply(&mut call).is_continue());
++        assert!(!visitor.has_errors);
++        assert!(!diagnostics.has_errors());
++    }
++}
+--- a/compiler/syntax_erl/src/passes/transforms/expand_unqualified_calls.rs
++++ b/compiler/syntax_erl/src/passes/transforms/expand_unqualified_calls.rs
+@@ -45,7 +45,7 @@
+             Expr::Literal(Literal::Atom(ident)) => {
+                 let local = FunctionName::new_local(ident.name, arity);
+                 if self.module.is_local(&local) {
+-                    FunctionVar::Resolved(Span::new(span, local.resolve(self.module.name())))
++                    FunctionVar::PartiallyResolved(Span::new(span, local))
+                 } else if self.module.is_import(&local) {
+                     let resolved = self.module.imports.get(&local).unwrap();
+                     FunctionVar::Resolved(Span::new(span, local.resolve(resolved.module)))
+@@ -76,9 +76,9 @@
+                 let span = local.span();
+                 let function = local.function;
+                 let arity = local.arity;
+-                *name = FunctionVar::Resolved(Span::new(
++                *name = FunctionVar::PartiallyResolved(Span::new(
+                     span,
+-                    FunctionName::new(self.module.name(), function, arity),
++                    FunctionName::new_local(function, arity),
+                 ));
+             } else if self.module.is_import(local) {
+                 let span = local.span();
+--- a/compiler/syntax_erl/src/passes/translate/abstr_to_ast.rs
++++ b/compiler/syntax_erl/src/passes/translate/abstr_to_ast.rs
+@@ -49,6 +49,15 @@
+             _ => bail!("expected module declaration to be the second form"),
+         };
+ 
++        let optional_callbacks = ast.forms.iter().filter_map(|form| match form {
++            abstr::Form::OptionalCallbacks(attr) => Some(attr.funs.iter()),
++            _ => None,
++        }).flatten().map(|name| FunctionName {
++            module: name.module,
++            function: name.name,
++            arity: name.arity,
++        }).collect::<Vec<_>>();
++
+         let mut tls = Vec::with_capacity(ast.forms.len() - 2);
+         for form in ast.forms.drain(..).skip(2) {
+             match self.translate_form(source_id, form, &mut tls) {
+@@ -60,6 +69,12 @@
+                 Some(Ok(Right(new_source_id))) => {
+                     source_id = new_source_id;
+                 }
++            }
++        }
++
++        for tl in &mut tls {
++            if let TopLevel::Attribute(Attribute::Callback(callback)) = tl {
++                callback.optional = optional_callbacks.iter().any(|name| callback.is_impl(name));
+             }
+         }
+ 
+@@ -77,7 +92,7 @@
+         &mut self,
+         source_id: SourceId,
+         form: abstr::Form,
+-        top_levels: &mut [TopLevel],
++        _top_levels: &mut [TopLevel],
+     ) -> Option<anyhow::Result<Either<TopLevel, SourceId>>> {
+         match form {
+             // Duplicate module declaration
+@@ -159,28 +174,7 @@
+                     },
+                 )))))
+             }
+-            abstr::Form::OptionalCallbacks(mut attr) => {
+-                // Find any referenced callbacks already seen and mark them optional
+-                for fun in attr.funs.drain(..).map(|name| FunctionName {
+-                    module: name.module,
+-                    function: name.name,
+-                    arity: name.arity,
+-                }) {
+-                    for tl in top_levels.iter_mut() {
+-                        match tl {
+-                            TopLevel::Attribute(Attribute::Callback(ref mut cb)) => {
+-                                if cb.is_impl(&fun) {
+-                                    cb.optional = true;
+-                                    // Once we've seen a callback, we don't need to check remaining forms
+-                                    break;
+-                                }
+-                            }
+-                            _ => continue,
+-                        }
+-                    }
+-                }
+-                None
+-            }
++            abstr::Form::OptionalCallbacks(_) => None,
+             abstr::Form::Spec(attr) => {
+                 let span = self.loc_to_span(source_id, attr.loc());
+                 Some(Ok(Left(TopLevel::Attribute(Attribute::Spec(TypeSpec {
+@@ -1335,14 +1329,68 @@
+ 
+     fn file_to_source_id(&mut self, file: &abstr::FileAttr) -> anyhow::Result<SourceId> {
+         let path = PathBuf::from(file.original_file.as_str().get());
++        if let Some(source_id) = self.codemap.get_file_id(&path.clone().into()) {
++            return Ok(source_id);
++        }
+         let content = std::fs::read_to_string(&path)?;
+         Ok(self.codemap.add(path, content))
+     }
+ 
+     #[inline]
+     fn loc_to_span(&mut self, source_id: SourceId, loc: abstr::Location) -> SourceSpan {
++        if loc.line == 0 { return SourceSpan::UNKNOWN; }
+         self.codemap
+-            .line_column_to_span(source_id, loc.line - 1, loc.column - 1)
++            .line_column_to_span(source_id, loc.line.saturating_sub(1), loc.column.saturating_sub(1))
+             .unwrap()
+     }
+ }
++
++#[cfg(test)]
++mod native_callback_tests {
++    use super::*;
++    use firefly_intern::Symbol;
++    use std::sync::Arc;
++
++    #[test]
++    fn native_optional_callbacks_decode_as_structural_attribute() {
++        let atom = |name: &str| etf::Term::Atom(etf::Atom::from(Symbol::intern(name)));
++        let function = etf::Term::Tuple(vec![atom("MACRO-optional"), etf::Term::Integer(2.into())].into());
++        let attr = etf::Term::Tuple(vec![atom("attribute"), etf::Term::Integer(3.into()), atom("optional_callbacks"), etf::Term::List(vec![function].into())].into());
++        let term = etf::Term::List(vec![attr].into());
++        let mut bytes = vec![];
++        term.encode(&mut bytes).unwrap();
++        let code = firefly_beam::AbstractCode::from_abstract_forms(&bytes).unwrap();
++        let abstr::Form::OptionalCallbacks(attr) = &code.forms[0] else {
++            panic!("optional_callbacks must not become a generic user attribute");
++        };
++        assert_eq!(attr.funs.len(), 1);
++        assert_eq!(attr.funs[0].name, Symbol::intern("MACRO-optional"));
++        assert_eq!(attr.funs[0].arity, 2);
++    }
++
++    #[test]
++    fn native_optional_callback_resolves_before_or_after_callback() {
++        for optional_first in [true, false] {
++            let codemap = Arc::new(CodeMap::new());
++            codemap.add(PathBuf::from("native-callback.erl"), "-module(test).\n".to_owned());
++            let emitter = Arc::new(CaptureEmitter::new());
++            let diagnostics = DiagnosticsHandler::new(DiagnosticsConfig::default(), codemap.clone(), emitter);
++            let loc = (1, 1).into();
++            let name = Symbol::intern("optional");
++            let callback = abstr::Form::Callback(abstr::CallbackAttr {
++                loc,
++                name: abstr::FunctionName::new(name, 0),
++                clauses: vec![abstr::Type::AnyFun(Box::new(abstr::AnyFunType::new(loc, None)))],
++            });
++            let optional = abstr::Form::OptionalCallbacks(abstr::OptionalCallbacksAttr::new(loc, vec![abstr::FunctionName::new(name, 0)]));
++            let mut forms = vec![
++                abstr::Form::File(abstr::FileAttr::new(loc, Symbol::intern("native-callback.erl"), 1)),
++                abstr::Form::Module(abstr::ModuleAttr::new(loc, Symbol::intern("test"))),
++            ];
++            if optional_first { forms.extend([optional, callback]); }
++            else { forms.extend([callback, optional]); }
++            let module = AbstractErlangToAst::new(&diagnostics, &codemap).run(abstr::Ast { forms }).unwrap();
++            assert!(module.callbacks[&FunctionName::new_local(name, 0)].optional);
++        }
++    }
++}
+--- a/compiler/syntax_erl/src/passes/translate/ast_to_core.rs
++++ b/compiler/syntax_erl/src/passes/translate/ast_to_core.rs
+@@ -79,6 +79,17 @@
+ use anyhow::bail;
+ 
+ const COLLAPSE_MAX_SIZE_SEGMENT: usize = 1024;
++
++fn generated_rethrow(span: SourceSpan, tag: &Var, value: &Var, info: &Var) -> IExpr {
++    let mut op = IPrimOp::new(span, symbols::Raise, vec![
++        IExpr::Var(tag.clone()),
++        IExpr::Var(value.clone()),
++        IExpr::Var(info.clone()),
++    ]);
++    op.annotations = Annotations::default_compiler_generated();
++    op.annotations.insert_mut(Symbol::intern("generated_rethrow"), Annotation::Unit);
++    IExpr::PrimOp(op)
++}
+ 
+ /// This pass transforms an AST function into its Core IR form for further analysis and eventual lowering to Kernel IR
+ ///
+@@ -1475,6 +1486,20 @@
+                 ast::Expr::FunctionVar(name) => {
+                     let nspan = name.span();
+                     let (m, f, _) = name.mfa();
++                    if m.is_none() {
++                        let (args, pre) = self.safe_list(span, args)?;
++                        let callee = IExpr::Var(Var {
++                            annotations: Annotations::default(),
++                            name: Ident::new(name.function().expect("local function name"), nspan),
++                            arity: Some(args.len()),
++                        });
++                        return Ok((IExpr::Apply(IApply {
++                            span,
++                            annotations: Annotations::default(),
++                            callee: vec![callee],
++                            args,
++                        }), pre));
++                    }
+                     let remote = ast::Expr::Remote(ast::Remote {
+                         span: nspan,
+                         module: Box::new(m.unwrap()),
+@@ -2918,15 +2943,7 @@
+             annotations: Annotations::default_compiler_generated(),
+             patterns: evars.clone(),
+             guards: vec![],
+-            body: vec![IExpr::PrimOp(IPrimOp::new(
+-                span,
+-                symbols::Raise,
+-                vec![
+-                    IExpr::Var(tag.clone()),
+-                    IExpr::Var(value.clone()),
+-                    IExpr::Var(info.clone()),
+-                ],
+-            ))],
++            body: vec![generated_rethrow(span, &tag, &value, &info)],
+         });
+         let handler = IExpr::Case(ICase {
+             span,
+@@ -3042,15 +3059,7 @@
+             IExpr::Var(value.clone()),
+             IExpr::Var(info.clone()),
+         ];
+-        after.push(IExpr::PrimOp(IPrimOp::new(
+-            span,
+-            symbols::Raise,
+-            vec![
+-                IExpr::Var(tag.clone()),
+-                IExpr::Var(info.clone()),
+-                IExpr::Var(value.clone()),
+-            ],
+-        )));
++        after.push(generated_rethrow(span, &tag, &value, &info));
+         let handler = IExpr::Case(ICase {
+             span,
+             annotations: Annotations::default(),
+@@ -3932,9 +3941,37 @@
+         expr if expr.is_safe() => (expr, vec![]),
+         expr => {
+             let span = expr.span();
+-            let v = context.next_var(Some(span));
++            let mut v = context.next_var(Some(span));
++            if !span.is_unknown() && !expr.is_compiler_generated() {
++                v.annotations.remove_mut(symbols::CompilerGenerated);
++            }
+             let var = IExpr::Var(v.clone());
+             (var, vec![IExpr::Set(ISet::new(span, v, expr))])
+         }
+     }
+ }
++
++#[cfg(test)]
++mod native_provenance_tests {
++    use super::*;
++
++    #[test]
++    fn native_hoisted_result_keeps_real_source_origin() {
++        let codemap = CodeMap::new();
++        let id = codemap.add("native-provenance.erl", "source call".to_owned());
++        let span = codemap.line_column_to_span(id, 0, 0).unwrap();
++        let mut context = FunctionContext::new(span, FunctionName::new_local(Symbol::intern("test"), 0), 0, 0, false);
++        let call = IExpr::Call(ICall::new(span, Symbol::intern("other"), Symbol::intern("get"), vec![]));
++        let (result, pre) = force_safe(&mut context, call.clone());
++        assert_eq!(result.span(), span);
++        assert!(!result.is_compiler_generated());
++        assert_eq!(pre.len(), 1);
++        let mut generated = call;
++        generated.mark_compiler_generated();
++        let (result, _) = force_safe(&mut context, generated);
++        assert!(result.is_compiler_generated());
++        let (result, _) = force_safe(&mut context, IExpr::Call(ICall::new(SourceSpan::UNKNOWN, Symbol::intern("other"), Symbol::intern("get"), vec![])));
++        assert!(result.is_compiler_generated());
++        assert!(context.next_var(Some(span)).is_compiler_generated());
++    }
++}
+--- a/compiler/util/src/fs.rs
++++ b/compiler/util/src/fs.rs
+@@ -174,7 +174,7 @@
+     }
+ }
+ 
+-#[cfg(all(unix, target_env = "wasi"))]
++#[cfg(target_os = "wasi")]
+ pub fn path_to_c_string(p: &Path) -> CString {
+     use std::ffi::OsStr;
+     use std::os::wasi::ffi::OsStrExt;
+@@ -182,7 +182,7 @@
+     CString::new(p.as_bytes()).unwrap()
+ }
+ 
+-#[cfg(all(unix, not(target_env = "wasi")))]
++#[cfg(unix)]
+ pub fn path_to_c_string(p: &Path) -> CString {
+     use std::ffi::OsStr;
+     use std::os::unix::ffi::OsStrExt;
+--- a/compiler/syntax_core/src/lib.rs
++++ b/compiler/syntax_core/src/lib.rs
+@@ -1,7 +1,6 @@
+ #![deny(warnings)]
+ #![feature(iterator_try_collect)]
+ #![feature(box_patterns)]
+-#![feature(slice_take)]
+ 
+ mod ir;
+ pub mod macros;
+--- a/compiler/syntax_core/src/passes/rewrites/receive.rs
++++ b/compiler/syntax_core/src/passes/rewrites/receive.rs
+@@ -511,7 +511,7 @@
+         args: &[Expr],
+         anno: Annotations,
+     ) -> Option<(Case, Vec<Clause>)> {
+-        match clauses.take_first() {
++        match clauses.split_off_first() {
+             None => None,
+             Some(clause) => match self.split_clauses(clauses, args, anno.clone()) {
+                 None => match self.split_clause(clause) {
+@@ -620,7 +620,7 @@
+     }
+ 
+     fn split_pats(&mut self, mut patterns: &[Expr]) -> Option<(Vec<Expr>, Option<Box<Split>>)> {
+-        match patterns.take_first() {
++        match patterns.split_off_first() {
+             None => None,
+             Some(pattern) => match self.split_pats(patterns) {
+                 None => match self.split_pat(pattern) {
+@@ -734,7 +734,7 @@
+         map: Map,
+         mut acc: Vec<MapPair>,
+     ) -> Option<(Expr, Option<Box<Split>>)> {
+-        match pairs.take_first() {
++        match pairs.split_off_first() {
+             None => None,
+             Some(MapPair { op, key, value }) => match key.as_ref() {
+                 Expr::Var(_) | Expr::Literal(_) => match self.split_pat(value.as_ref()) {
+@@ -864,7 +864,7 @@
+         mut elements: &[Expr],
+         mut acc: Vec<Expr>,
+     ) -> Option<(Vec<Expr>, Option<Box<Split>>)> {
+-        match elements.take_first() {
++        match elements.split_off_first() {
+             None => None,
+             Some(e) => match self.split_pat(e) {
+                 None => {
+@@ -888,7 +888,7 @@
+         mut acc: Vec<Bitstring>,
+     ) -> Option<(Var, Option<Box<WrapperFn>>, Vec<Bitstring>, Vec<Bitstring>)> {
+         let osegments = &segments[..];
+-        match segments.take_first() {
++        match segments.split_off_first() {
+             None => None,
+             Some(s0) => {
+                 let vars = match s0.value.as_ref() {
+--- a/compiler/syntax_base/src/lib.rs
++++ b/compiler/syntax_base/src/lib.rs
+@@ -1,7 +1,6 @@
+ #![deny(warnings)]
+ 
+ mod macros;
+-pub use self::macros::*;
+ 
+ mod annotations;
+ pub mod bifs;
+--- a/compiler/macros/src/lib.rs
++++ b/compiler/macros/src/lib.rs
+@@ -1,6 +1,5 @@
+ #![feature(proc_macro_diagnostic)]
+ #![feature(proc_macro_def_site)]
+-#![feature(box_syntax)]
+ #![feature(box_patterns)]
+ #![feature(iterator_try_collect)]
+ extern crate proc_macro;
+--- a/library/binary/src/bitvec.rs
++++ b/library/binary/src/bitvec.rs
+@@ -280,7 +280,7 @@
+             Endianness::Little => n.to_le_bytes(),
+         };
+         let mut bytes = bytes.as_slice();
+-        self.push_bits(bytes.take(padding_bytes..).unwrap(), bitsize)
++        self.push_bits(&bytes[padding_bytes..], bitsize)
+     }
+ 
+     /// Writes a big integer value to the buffer in the specified endianness.
+--- a/library/binary/src/helpers.rs
++++ b/library/binary/src/helpers.rs
+@@ -14,7 +14,7 @@
+ #[inline(always)]
+ pub const fn bitmask_le(n: u8) -> u8 {
+     debug_assert!(n <= 8);
+-    u8::MAX.checked_shr(8 - (n as u32)).unwrap_or(0)
++    match u8::MAX.checked_shr(8 - (n as u32)) { Some(value) => value, None => 0 }
+ }
+ 
+ /// Creates a mask which can be used to extract `n` bits from a byte,
+@@ -29,7 +29,7 @@
+ #[inline(always)]
+ pub const fn bitmask_be(n: u8) -> u8 {
+     debug_assert!(n <= 8);
+-    u8::MAX.checked_shl(8 - (n as u32)).unwrap_or(0)
++    match u8::MAX.checked_shl(8 - (n as u32)) { Some(value) => value, None => 0 }
+ }
+ 
+ /// Combine bits from bytes `x` and `y` at the given offset.
+--- a/library/binary/src/select.rs
++++ b/library/binary/src/select.rs
+@@ -653,7 +653,7 @@
+                     *self = Self::Empty;
+                     return None;
+                 }
+-                bytes.take_first().copied()
++                bytes.split_off_first().copied()
+             }
+             Self::AlignedBitstring(ref mut bytes, last) => match bytes.len() {
+                 0 => {
+@@ -662,11 +662,11 @@
+                     Some(byte)
+                 }
+                 1 => {
+-                    let byte = bytes.take_first().copied();
++                    let byte = bytes.split_off_first().copied();
+                     *self = Self::Byte(*last);
+                     byte
+                 }
+-                _ => bytes.take_first().copied(),
++                _ => bytes.split_off_first().copied(),
+             },
+             Self::Binary(l, mut bytes, r) => {
+                 let x = l.byte();
+@@ -676,7 +676,7 @@
+                     *self = Self::Empty;
+                     return Some(x | y);
+                 }
+-                let next = bytes.take_first().copied().unwrap();
++                let next = bytes.split_off_first().copied().unwrap();
+                 let y = next >> l.size;
+                 let byte = x | y;
+                 let remaining_bits = 8 - l.size;
+@@ -691,7 +691,7 @@
+                     *self = Self::Empty;
+                     return Some(x);
+                 }
+-                let next = bytes.take_first().copied().unwrap();
++                let next = bytes.split_off_first().copied().unwrap();
+                 let y = next >> l.size;
+                 let byte = x | y;
+                 let remaining_bits = 8 - l.size;
+@@ -719,7 +719,7 @@
+                     }
+                 }
+ 
+-                let next = bytes.take_first().copied().unwrap();
++                let next = bytes.split_off_first().copied().unwrap();
+                 let y = next >> l.size;
+                 let byte = x | y;
+                 let remaining_bits = 8 - l.size;

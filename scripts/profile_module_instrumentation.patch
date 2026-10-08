@@ -1,0 +1,44 @@
+--- a/scripts/core_export.exs
++++ b/scripts/core_export.exs
+@@ -207,6 +207,13 @@
+     contract_variable_maps(children ++ pending, maps)
+   end
+ 
++  defp timed_module(name, fun) do
++    started = System.monotonic_time(:microsecond)
++    result = fun.()
++    if System.get_env("RUST_DIALYZER_TRACE"), do: IO.puts(:stderr, "PERF export.module_#{name} #{(System.monotonic_time(:microsecond) - started) / 1_000_000}")
++    result
++  end
++
+   def export_module(name, forms, core) do
+     Process.put(:core_terms_cache, %{})
+     Process.put(:core_terms_count, 0)
+@@ -219,8 +226,10 @@
+     exported = %{name: Atom.to_string(name), source_forms: source_forms, core: root,
+                  contract_variable_maps: variable_maps, terms: Enum.reverse(Process.get(:core_terms)), nodes: Enum.reverse(Process.get(:core_nodes))}
+     Enum.each([:core_terms_cache, :core_terms_count, :core_terms, :core_nodes_count, :core_nodes], &Process.delete/1)
+-    decoded = exported |> :json.encode() |> IO.iodata_to_binary() |> :json.decode()
+-    {decoded_forms, decoded_core} = rebuild_module(decoded)
++    {decoded_forms, decoded_core} = timed_module("roundtrip", fn ->
++      decoded = exported |> :json.encode() |> IO.iodata_to_binary() |> :json.decode()
++      rebuild_module(decoded)
++    end)
+     if :erlang.term_to_binary(decoded_forms) !== :erlang.term_to_binary(forms), do: raise("source term roundtrip differs: #{name}")
+     if :erlang.term_to_binary(decoded_core) !== :erlang.term_to_binary(core), do: raise("Core roundtrip differs: #{name}")
+     exported
+@@ -228,10 +237,10 @@
+ 
+   def module(path) do
+     {:ok, {name, [debug_info: {:debug_info_v1, backend, metadata}, abstract_code: {:raw_abstract_v1, forms}]}} =
+-      :beam_lib.chunks(String.to_charlist(path), [:debug_info, :abstract_code])
+-    {:ok, unclean} = backend.debug_info(:core_v1, name, metadata, @options)
+-    core = :dialyzer_clean_core.clean(unclean)
+-    {:ok, reference_core} = :dialyzer_utils.get_core_from_beam(String.to_charlist(path))
++      timed_module("read", fn -> :beam_lib.chunks(String.to_charlist(path), [:debug_info, :abstract_code]) end)
++    {:ok, unclean} = timed_module("compile", fn -> backend.debug_info(:core_v1, name, metadata, @options) end)
++    core = timed_module("clean", fn -> :dialyzer_clean_core.clean(unclean) end)
++    {:ok, reference_core} = timed_module("reference_compile", fn -> :dialyzer_utils.get_core_from_beam(String.to_charlist(path)) end)
+     if reference_core !== core, do: raise("OTP compiler profile differs: #{path}")
+     export_module(name, forms, core)
+   end

@@ -1,0 +1,60 @@
+--- a/scripts/dependency_export.exs
++++ b/scripts/dependency_export.exs
+@@ -17,7 +17,9 @@
+       end), arguments: Enum.map(arguments, &NativeTypes.term/1), forms: CoreExport.export_terms(forms)}
+   end
+   def build(plt, path), do: build(plt, path, false)
+-  def build(plt, path, compact) do
++  def build(plt, path, compact), do: build(plt, path, compact, :read_from_file)
++
++  def build(plt, path, compact, snapshot) do
+       capture = if compact, do: &CoreExport.capture_terms/1, else: &CoreExport.export_terms/1
+       modules = :dialyzer_plt.all_modules(plt) |> :sets.to_list() |> Enum.sort()
+       contracts = :dialyzer_plt.get_all_contracts(plt)
+@@ -28,8 +30,12 @@
+       end
+       end)
+       source = timed("source", fn ->
+-      bytes = File.read!(path)
+-      header = timed("source_header", fn -> :erlang.binary_to_term(bytes) end)
++      {bytes, header} = case snapshot do
++        :read_from_file ->
++          bytes = File.read!(path)
++          {bytes, timed("source_header", fn -> :erlang.binary_to_term(bytes) end)}
++        {bytes, header} -> {bytes, header}
++      end
+       {source_kind, files} = case elem(header, 0) do
+         :file_plt ->
+           files = timed("source_info", fn -> for {file, _digest} <- elem(header, 2), do: file end)
+--- a/scripts/compiled_bundle.exs
++++ b/scripts/compiled_bundle.exs
+@@ -63,7 +63,10 @@
+     if compile_targets and paths == [], do: raise("no target BEAM files")
+     prior_paths = Enum.map(request["prior_plts"] || [request["prior_plt"]], &Path.expand/1)
+     prior_path = hd(prior_paths)
+-    header = timed("prior_header", fn -> prior_path |> File.read!() |> :erlang.binary_to_term() end)
++    {prior_bytes, header} = timed("prior_header", fn ->
++      bytes = File.read!(prior_path)
++      {bytes, :erlang.binary_to_term(bytes)}
++    end)
+     true = tuple_size(header) == 10
+     {plt, context} = timed("prior_load", fn -> case elem(header, 0) do
+       :file_plt -> {:dialyzer_cplt.from_file(String.to_charlist(prior_path)), nil}
+@@ -79,7 +82,7 @@
+       others=Enum.map(tl(prior_paths),fn path -> :dialyzer_cplt.from_file(String.to_charlist(path)) end)
+       :dialyzer_cplt.merge_plts_or_report_conflicts(Enum.map(prior_paths,&String.to_charlist/1), [plt|others])
+     else plt end
+-    headers = timed("prior_headers", fn -> Enum.map(prior_paths,fn path -> path |> File.read!() |> :erlang.binary_to_term() end) end)
++    headers = timed("prior_headers", fn -> [header | Enum.map(tl(prior_paths),fn path -> path |> File.read!() |> :erlang.binary_to_term() end)] end)
+     try do
+       modules = if compile_targets,
+         do: timed("modules", fn -> Enum.map(paths, &CoreExport.module/1) |> Enum.sort_by(& &1.name) end), else: []
+@@ -87,7 +90,7 @@
+       layout = timed("atom_layout", fn -> CoreExport.atom_layout(modules, [headers, context, ExportDependencies.raw_tables(plt), atoms]) end)
+       result = %{
+         version: 1,
+-        prior: timed("prior", fn -> ExportDependencies.build(plt, prior_path, true) end),
++        prior: timed("prior", fn -> ExportDependencies.build(plt, prior_path, true, {prior_bytes, header}) end),
+         atom_layout: layout,
+         implementation_sha256: identity
+       }

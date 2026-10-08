@@ -1,0 +1,73 @@
+{
+  "status": "PASS_WITH_LIMITATIONS",
+  "upstream_commit": "c672f3ad5bebd3d6e9e2fe6056a154ed92fd1d07",
+  "rust": "1.88.0-aarch64-apple-darwin",
+  "bootstrap_required": true,
+  "full_frontend_build": true,
+  "native_runtime": true,
+  "vm_subprocesses": 0,
+  "fixtures_passed": 13,
+  "fixtures": [
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/flow/structural/beams/engine_structural.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_anonymous.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_binary.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_case_guard.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_discarded_fun.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_equality.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_improper_cons.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_local_identity.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_local_narrow.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_map_exact.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_no_return.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_recursion.beam",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/whole_modules/fixtures/whole_module_try.beam"
+  ],
+  "binary_library_tests": {
+    "passed": 47,
+    "failed": 0
+  },
+  "upstream_frontend_tests": "blocked offline: pretty_assertions dependency missing",
+  "reproduction_patch_exact": true,
+  "core_parity": false,
+  "warning_parity": false,
+  "source_metadata": "synthetic registered codemap; original source files not read",
+  "limits": [
+    "requires RUSTC_BOOTSTRAP; stable port unfinished",
+    "Elixir debug backend unsupported",
+    "contract preservation and analyzer conversion handled separately",
+    "synthetic source probe only; production location representation pending",
+    "all current Erlang fixtures lower, but semantic equivalence not established"
+  ],
+  "local_remote_identity": {
+    "typed_regressions_passed": 2,
+    "typed_regressions_failed": 0,
+    "local_apply": true,
+    "explicit_remote_self_call_preserved": true,
+    "local_capture_fnvar": true,
+    "remote_capture_make_fun": true,
+    "nested_closure_local_apply": true,
+    "broad_lowering_passed_after_fix": 13
+  },
+  "generated_rethrow": {
+    "typed_tests_passed": 2,
+    "prior_identity_tests_passed": 2,
+    "catch_order": [
+      "class",
+      "reason",
+      "info"
+    ],
+    "after_order": [
+      "class",
+      "reason",
+      "info"
+    ],
+    "annotation": "generated_rethrow",
+    "otp27_oracle_args": [
+      "info",
+      "reason"
+    ],
+    "explicit_raise_retains_three_args": true,
+    "native_broad_lowering_passed": 13,
+    "runtime_exception_equivalence_proven": false
+  }
+}

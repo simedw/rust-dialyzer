@@ -1,0 +1,20 @@
+[
+  "library/beam/src/code/mod.rs",
+  "library/beam/src/serialization/etf/pattern.rs",
+  "library/system/src/lib.rs",
+  "library/system/src/sync/once.rs",
+  "compiler/syntax_erl/src/lib.rs",
+  "compiler/syntax_erl/src/passes/sema/inject.rs",
+  "compiler/syntax_erl/src/passes/sema/verify.rs",
+  "compiler/syntax_erl/src/passes/transforms/expand_unqualified_calls.rs",
+  "compiler/syntax_erl/src/passes/translate/abstr_to_ast.rs",
+  "compiler/syntax_erl/src/passes/translate/ast_to_core.rs",
+  "compiler/util/src/fs.rs",
+  "compiler/syntax_core/src/lib.rs",
+  "compiler/syntax_core/src/passes/rewrites/receive.rs",
+  "compiler/syntax_base/src/lib.rs",
+  "compiler/macros/src/lib.rs",
+  "library/binary/src/bitvec.rs",
+  "library/binary/src/helpers.rs",
+  "library/binary/src/select.rs"
+]

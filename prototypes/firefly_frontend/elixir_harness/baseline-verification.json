@@ -1,0 +1,142 @@
+{
+  "cases": 21,
+  "exact_warning_matches": 21,
+  "warnings": 33,
+  "scope": "OTP Core baseline only; not evidence of native Elixir frontend correctness",
+  "checks": [
+    {
+      "id": "tiny",
+      "warnings": 6,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/01_no_warnings_on_specdiffs",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/02_no_warnings_on_valid_remote_calls",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/03_no_warnings_on_rewrites",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/04_no_warnings_on_raise",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/05_no_warnings_on_macrocallback",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/06_no_warnings_on_callback",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/07_no_warnings_on_and_2_and_or_2",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/08_no_warnings_on_cond",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/09_no_warnings_on_for_comprehensions_with_bitstrings",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/10_no_warnings_on_for_falsy_check_that_always_boolean",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/11_no_warnings_on_with_else",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/12_no_warnings_on_with_when_else_has_a_no_return_type",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/13_no_warnings_on_with_when_multiple_else_clauses_and_one_is_a_no_return",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/14_no_warnings_on_defmacrop",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/15_no_warnings_on_try",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/16_no_warning_on_is_struct_2",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/17_no_warning_on_exunit_assertions",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/18_no_warning_due_to_opaqueness_edge_cases",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "elixir/19_no_warning_in_various_non_regression_cases",
+      "warnings": 0,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    },
+    {
+      "id": "dialyxir/examples",
+      "warnings": 27,
+      "exact_warning_match": true,
+      "cleanup_warnings": 0
+    }
+  ],
+  "sha256": {
+    "prototypes/firefly_frontend/elixir_harness/generate.exs": "384979650e948df2bb045fd4d86753027745f893e020a4e3ee82929950c38068",
+    "prototypes/firefly_frontend/elixir_harness/run_baseline.py": "df6639cdbaf5ee8964574fe9cbf0bbd7ea8fe5f994742f84510d70696eb41ddf",
+    "prototypes/firefly_frontend/elixir_harness/generated/oracle/oracle-rows.jsonl": "eea7ae2e1fa283d904b1d720d937b0fd38483823f17524627404bb1c1aeedf36",
+    "prototypes/firefly_frontend/elixir_harness/generated/oracle/baseline-results.jsonl": "df56c785e88b35342632f158a6d114516ad7715f2ec231aafe3893841f6aae99",
+    "prototypes/firefly_frontend/elixir_harness/generated/oracle/prior-library.json": "1f163f1a4ea19934f833f0967f570de6fc9b42dd6b35deb09d1aeb18ea2dcba9",
+    "prototypes/firefly_frontend/elixir_harness/generated/oracle/closure-profile.json": "0c6f6891d6efcadd825ddcc65614a727e06e282a4859af67e6248510b206ec01"
+  }
+}

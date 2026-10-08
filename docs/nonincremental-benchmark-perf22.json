@@ -1,0 +1,44 @@
+{
+  "results": [
+    {
+      "workload": "tiny",
+      "groups": 1,
+      "modules": 4,
+      "samples": {
+        "native": [
+          0.5404654169688001
+        ],
+        "rust": [
+          2.752737292088568
+        ]
+      },
+      "median_seconds": {
+        "native": 0.5404654169688001,
+        "rust": 2.752737292088568
+      },
+      "rust_over_native": 5.093271846193773
+    },
+    {
+      "workload": "elixir_suite",
+      "groups": 19,
+      "modules": 22,
+      "samples": {
+        "native": [
+          9.935965080047026
+        ],
+        "rust": [
+          47.90957437281031
+        ]
+      },
+      "median_seconds": {
+        "native": 9.935965080047026,
+        "rust": 47.90957437281031
+      },
+      "rust_over_native": 4.821834012784549
+    }
+  ],
+  "warnings_exact": true,
+  "inputs_unchanged": true,
+  "rounds": 1,
+  "scope": "Full analysis with an existing dependency PLT; CLI startup, compiler export, inference and rendering included; no incremental result cache; PLT construction and Mix compilation excluded."
+}

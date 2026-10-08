@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-07T17:01:48.506332+00:00",
+  "cases": 21,
+  "unique_modules": 48,
+  "warnings": 33,
+  "warning_and_type_parity": true,
+  "metadata_parity": true,
+  "native_process_count": 1,
+  "intermediate_frontend_files": false,
+  "oracle_warnings_input": false,
+  "source_audit_no_child_launches": true,
+  "timer_records": 385,
+  "recorded_build_modes": [
+    "release"
+  ],
+  "sources_sha256": {
+    "prototypes/firefly_frontend/adapter/Cargo.lock": "5f48f24b51d0b2b9c3a880d2ef097f4201536064e26f72c03cf9204cfcfa3b15",
+    "prototypes/firefly_frontend/adapter/Cargo.toml": "46b9fbc8d59f7bc1cd420db18e230cb0423ac780de1b560e416bb05f0a9e8276",
+    "prototypes/firefly_frontend/adapter/driver.rs": "928ab0fb7d4f3e95172e3c4ca5ea52c02d80b0aaa920bcf64c5beb223f5fb65b",
+    "prototypes/firefly_frontend/adapter/frontend.rs": "25da09c87755d91d2610844935ba25066780ec648acb039ba4bed5a7d9f84207",
+    "prototypes/firefly_frontend/adapter/source.rs": "54202aabe277efeefb9436594a1c06d687b845f3d805d71f381496eed48293d2",
+    "prototypes/firefly_frontend/elixir_harness/benchmark.py": "d088e61a1f1e9560a59cd6d6a84edd32774774ac6153fc4ab0115bd8cfd3cdf4",
+    "prototypes/firefly_frontend/elixir_harness/compare_merged.py": "8bc534cfb7c311c291220fd82937e1bcf1dfc2ecb44cba881d92da75654adce2",
+    "prototypes/firefly_frontend/elixir_harness/native_requests.py": "5daae4973e2ace40b8c2567546c2ab49d9d99eb22bf726ccab7aae03e1cb40ca",
+    "prototypes/firefly_frontend/elixir_harness/run_native.py": "68651237ced6157ee6039b2c800d9b3e13815361ae4e14ecfc891bd1c5757028",
+    "prototypes/firefly_frontend/input/Cargo.lock": "d5259cbdcb7d42746c6f66acb8a7e4d05a021aed9a3ebb297cab72b72dafef10",
+    "prototypes/firefly_frontend/input/Cargo.toml": "5f9469896899c81eafd5c179bbd9cf05ffbcabec923eb3853927f02b46153024",
+    "prototypes/firefly_frontend/input/lib.rs": "46bade13e12e80453636b755787d978082cb055d56cc53dcf1e068843b05bedf",
+    "prototypes/firefly_frontend/input/main.rs": "c842fe98b78d25e35c6f6847212972e409d0dee5b5dfd6326b87f85225bc1ff3",
+    "prototypes/firefly_frontend/native/Cargo.lock": "e2b34ba047b5bb9ad4d1b58d76e1cd48721a9b38ce90fdc2fb39292f6126f0f3",
+    "prototypes/firefly_frontend/native/Cargo.toml": "15be3b524b902525d20936ceac878644eaa7773183edd7ba39077a453d5a8335",
+    "prototypes/firefly_frontend/native/main.rs": "49ff48922108bedc86b87cbac2e081ce97f47f44f06a1762eab693971eed884d",
+    "src/bin/compiled_analysis_probe.rs": "60318dfbe49a68929600a58119c17ad93830b839650efc8619bbd1de9dbf8ac3",
+    "src/compiled_probe.rs": "5540474d28daaf56614b2f1f656d8c87cd53e1c5b9c71819068b8facab056513",
+    "src/core.rs": "98d5977a569cf72d67f849204d4ae361fe1ff811b96a6fefc90107b3c96a0c41",
+    "src/lib.rs": "7f8fc39fddf5ec63e878a14cd192c446081f06432eb43284dc57ce956ae28eec"
+  },
+  "executables_sha256": {
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/native-elixir-dialyzer": "92850b49bbb9aa6611cd4667cd156d7a5b8df421a10a89bbd2f764446356f744"
+  },
+  "evidence": [
+    "elixir-merged-gate.json",
+    "elixir-merged-comparison.json",
+    "elixir-merged-phase-timings.json",
+    "elixir-merged-boundary-verification.json"
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "invalid_context_rejected": true,
+  "missing_beam_rejected": true,
+  "nonzero_error_exit": true
+}

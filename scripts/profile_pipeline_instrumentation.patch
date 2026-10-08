@@ -1,0 +1,56 @@
+--- a/src/analysis_inputs.rs
++++ b/src/analysis_inputs.rs
+@@ -14,6 +14,7 @@
+ impl CallWorld {
+     pub fn from_library(library: &Store) -> Result<Self, String> {
+         let mut world = Self::default();
++        let summaries_span = crate::perf_trace::Span::new("pipeline.world_signatures");
+         for name in library.summary_names() {
+             let summary = library.summary(name)?.expect("listed library summary");
+             world.named_signatures.insert(
+@@ -24,6 +25,8 @@
+                 },
+             );
+         }
++        drop(summaries_span);
++        let contracts_span = crate::perf_trace::Span::new("pipeline.world_contracts");
+         for (name, contract) in &library.contracts {
+             world.active_contracts.insert(
+                 name.clone(),
+@@ -33,6 +36,7 @@
+                 },
+             );
+         }
++        drop(contracts_span);
+         Ok(world)
+     }
+ }
+--- a/src/core_pipeline.rs
++++ b/src/core_pipeline.rs
+@@ -91,7 +91,10 @@
+     let allocator = ScopedReferenceAllocator::new(scope)
+         .map_err(|error| PipelineError::Boundary(format!("{error:?}")))?;
+     let mut schedule = SourceSchedule::new(runtime, allocator).map_err(PipelineError::Schedule)?;
++    let setup_span = crate::perf_trace::Span::new("pipeline.setup");
+     let mut phases = CorePhases::new(inputs, library, solvers).map_err(PipelineError::Phase)?;
++    drop(setup_span);
++    let inference_span = crate::perf_trace::Span::new("pipeline.inference");
+     let state = analyzer
+         .run(
+             AnalysisState {
+@@ -102,6 +105,7 @@
+             &mut schedule,
+         )
+         .map_err(|error| PipelineError::Analysis(Box::new(error)))?;
++    drop(inference_span);
+     if mode == AnalysisMode::PltBuild {
+         return Ok(CollectedAnalysis {
+             state,
+@@ -109,6 +113,7 @@
+             raw_warnings: Vec::new(),
+         });
+     }
++    let _diagnostics_span = crate::perf_trace::Span::new("pipeline.diagnostics");
+     let diagnostics = DiagnosticInputs {
+         nodes: phases.nodes,
+         program: phases.program,

@@ -1,0 +1,13 @@
+**/target/
+**/cargo-home/
+**/__pycache__/
+compiler/replay*/
+corpus-native/
+harness/*.json
+harness/*.jsonl
+harness/*.etf
+harness/oracle-warnings.txt
+harness/beams/
+harness/corpus/
+harness/*-generation.log
+harness/corpus-beams/

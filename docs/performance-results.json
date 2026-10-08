@@ -1,0 +1,956 @@
+{
+  "results": [
+    {
+      "case": "tiny-compact-local-proof",
+      "baseline_seconds": 17.12246199999936,
+      "candidate_seconds": 9.520613999920897,
+      "reduction_percent": 44.39693310505666,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-307-proof",
+      "baseline_seconds": 14.232412957935594,
+      "candidate_seconds": 7.934686583001167,
+      "reduction_percent": 44.24918243693169,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-308-proof",
+      "baseline_seconds": 17.830938291968778,
+      "candidate_seconds": 9.061449791071936,
+      "reduction_percent": 49.18130699182949,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-308-step2-proof",
+      "baseline_kind": "compact step1 binary",
+      "baseline_seconds": 8.330217374954373,
+      "candidate_seconds": 6.729002083069645,
+      "reduction_percent": 19.221770811154826,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-309-proof",
+      "baseline_kind": "compact step1 binary",
+      "baseline_seconds": 8.413635000004433,
+      "candidate_seconds": 6.7492551249451935,
+      "reduction_percent": 19.781935810839933,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-310-proof",
+      "baseline_kind": "compact step1 binary",
+      "baseline_seconds": 8.321167540969327,
+      "candidate_seconds": 6.544022832997143,
+      "reduction_percent": 21.35691535139028,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-310-step3-proof",
+      "baseline_kind": "compact step2 binary",
+      "baseline_seconds": 9.580549000063911,
+      "candidate_seconds": 6.594699584064074,
+      "reduction_percent": 31.165744426336307,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-311-step4-proof",
+      "baseline_kind": "metadata-reduced step3 binary",
+      "baseline_seconds": 3.999574457993731,
+      "candidate_seconds": 3.7630350419785827,
+      "reduction_percent": 5.914114576424245,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-312-step5-proof",
+      "baseline_kind": "set-collector step4 binary",
+      "baseline_seconds": 3.715622790972702,
+      "candidate_seconds": 3.5840962500078604,
+      "reduction_percent": 3.539824905918665,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-313-step7-untraced-proof",
+      "baseline_kind": "accepted step5 binary",
+      "trace": "none",
+      "baseline_seconds": 3.2527532090898603,
+      "candidate_seconds": 3.099138249992393,
+      "reduction_percent": 4.722613405412634,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true
+    },
+    {
+      "case": "elixir-314-step11-proof",
+      "change": "Move uniquely owned forms arena instead of cloning it",
+      "trace": "none",
+      "baseline_kind": "instrumented step8 binary",
+      "baseline_seconds": 3.1455761659890413,
+      "candidate_seconds": 3.1109577079769224,
+      "reduction_percent": 1.1005442623333916,
+      "exact_warnings_types_documentation": true,
+      "inputs_unchanged": true,
+      "note": "Small noisy improvement; no major speedup claimed. One-line copy removal retained without copier redesign."
+    }
+  ],
+  "baseline_bundle_bytes": 111419523,
+  "compact_bundle_bytes": 27407708,
+  "imported_contract_callback_terms_exact": 3314,
+  "notes": [
+    "Machine background CPU contention was present.",
+    "Timings compare the preserved development binary and isolated candidate; the main repository CLI still uses its earlier prototype.",
+    "Final formatted source and required-field validation were verified by the elixir-307 case.",
+    "Current perf-3 final release binary matches Native warning output across tiny and all19 Elixir groups. One measured round after warmup; no final full327 or complete operational acceptance is implied."
+  ],
+  "all_imported_signatures_exact": 5407,
+  "legacy_imports_accepted": [
+    "tiny-base",
+    "tiny-app",
+    "otp-base",
+    "otp-app"
+  ],
+  "checked_capture_equivalence": {
+    "checked_exports_exact": true,
+    "cases": [
+      {
+        "name": "header",
+        "terms": 255722,
+        "exact": true
+      },
+      {
+        "name": "table_1",
+        "terms": 31846,
+        "exact": true
+      },
+      {
+        "name": "table_2",
+        "terms": 46896,
+        "exact": true
+      },
+      {
+        "name": "table_3",
+        "terms": 186065,
+        "exact": true
+      },
+      {
+        "name": "table_4",
+        "terms": 7324,
+        "exact": true
+      },
+      {
+        "name": "table_5",
+        "terms": 1629,
+        "exact": true
+      },
+      {
+        "name": "scalars",
+        "terms": 9,
+        "exact": true
+      },
+      {
+        "name": "improper",
+        "terms": 6,
+        "exact": true
+      },
+      {
+        "name": "maps",
+        "terms": 388,
+        "exact": true
+      }
+    ],
+    "prior_sha256": "573d6b6f76baf86026e6ed855a238266a2d36b89919a88ce5211465196227f56"
+  },
+  "current_native_full_analysis_comparison": {
+    "results": [
+      {
+        "workload": "tiny",
+        "groups": 1,
+        "modules": 4,
+        "samples": {
+          "native": [
+            0.8195217499742284
+          ],
+          "rust": [
+            7.192219458986074
+          ]
+        },
+        "median_seconds": {
+          "native": 0.8195217499742284,
+          "rust": 7.192219458986074
+        },
+        "rust_over_native": 8.776117850700421
+      },
+      {
+        "workload": "elixir_suite",
+        "groups": 19,
+        "modules": 22,
+        "samples": {
+          "native": [
+            9.662248375942
+          ],
+          "rust": [
+            69.95070449984632
+          ]
+        },
+        "median_seconds": {
+          "native": 9.662248375942,
+          "rust": 69.95070449984632
+        },
+        "rust_over_native": 7.239588735269563
+      }
+    ],
+    "warnings_exact": true,
+    "inputs_unchanged": true,
+    "rounds": 1,
+    "scope": "Full analysis with an existing dependency PLT; CLI startup, compiler export, inference and rendering included; no incremental result cache; PLT construction and Mix compilation excluded.",
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-3",
+    "note": "Historical Native comparison; later accepted optimizations require a fresh full-suite comparison."
+  },
+  "current_native_combined_analysis_comparison": {
+    "modules": 21,
+    "warmup": {
+      "native": 0.6744729169877246,
+      "rust": 4.5586139999795705
+    },
+    "seconds": {
+      "rust": 4.747262915945612,
+      "native": 0.6021147499559447
+    },
+    "rust_over_native": 7.884315931959743,
+    "warnings_exact": true,
+    "inputs_unchanged": true,
+    "rounds": 1,
+    "scope": "One full-analysis invocation over 21 unique Elixir fixture modules. Identical duplicate BEAM collapsed. Existing PLT; compilation and PLT build excluded.",
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-3",
+    "note": "Historical Native comparison; later accepted optimizations require a fresh full-suite comparison."
+  },
+  "atom_collection_equivalence": {
+    "cases": [
+      {
+        "name": "prior_and_modules",
+        "samples": [
+          {
+            "Elixir.BaselineCoreExport": 0.411998,
+            "Elixir.CoreExport": 0.190133
+          },
+          {
+            "Elixir.BaselineCoreExport": 0.454936,
+            "Elixir.CoreExport": 0.199354
+          },
+          {
+            "Elixir.BaselineCoreExport": 0.411923,
+            "Elixir.CoreExport": 0.199733
+          }
+        ],
+        "exact": true,
+        "warmup": {
+          "Elixir.BaselineCoreExport": 0.578304,
+          "Elixir.CoreExport": 0.246486
+        }
+      },
+      {
+        "name": "nested_and_improper",
+        "samples": [
+          {
+            "Elixir.BaselineCoreExport": 4e-06,
+            "Elixir.CoreExport": 4e-06
+          },
+          {
+            "Elixir.BaselineCoreExport": 5e-06,
+            "Elixir.CoreExport": 4e-06
+          },
+          {
+            "Elixir.BaselineCoreExport": 3e-06,
+            "Elixir.CoreExport": 4e-06
+          }
+        ],
+        "exact": true,
+        "warmup": {
+          "Elixir.BaselineCoreExport": 3.1e-05,
+          "Elixir.CoreExport": 9e-06
+        }
+      },
+      {
+        "name": "repeated_atoms",
+        "samples": [
+          {
+            "Elixir.BaselineCoreExport": 0.009416,
+            "Elixir.CoreExport": 0.005842
+          },
+          {
+            "Elixir.BaselineCoreExport": 0.009121,
+            "Elixir.CoreExport": 0.005494
+          },
+          {
+            "Elixir.BaselineCoreExport": 0.010615,
+            "Elixir.CoreExport": 0.00548
+          }
+        ],
+        "exact": true,
+        "warmup": {
+          "Elixir.BaselineCoreExport": 0.010417,
+          "Elixir.CoreExport": 0.005633
+        }
+      }
+    ],
+    "native_atom_metadata_exact": true
+  },
+  "prior_source_export_equivalence": {
+    "complete_export_exact": true,
+    "native_source_files_exact": true,
+    "source_files": 221,
+    "baseline_seconds": 1.012442,
+    "candidate_seconds": 0.740341,
+    "excluded_field": "source.exporter_sha256 identifies the intentionally changed helper"
+  },
+  "rejected_candidates": [
+    {
+      "case": "elixir/07_no_warnings_on_and_2_and_or_2",
+      "candidate_root": "/private/tmp/rust-dialyzer-perf-6",
+      "change": "Conditional compiler-helper require on identity requests",
+      "median_seconds": {
+        "baseline": 3.477527500013821,
+        "candidate": 3.6476631249533966
+      },
+      "correctness_exact": true,
+      "reason": "Measured latency regressed; missing helper compilation warnings remain. Keep accepted perf-5."
+    },
+    {
+      "case": "elixir/08_no_warnings_on_cond",
+      "candidate_root": "/private/tmp/rust-dialyzer-perf-9",
+      "change": "Separate sparse hash collections",
+      "median_seconds": {
+        "baseline": 3.0529109159251675,
+        "candidate": 3.0388962080469355
+      },
+      "correctness_exact": true,
+      "reason": "Untraced median improvement below1%; decline added copier machinery. Retain correctness proof as evidence, not an accepted speedup."
+    },
+    {
+      "case": "elixir/08_no_warnings_on_cond",
+      "candidate_root": "/private/tmp/rust-dialyzer-perf-10",
+      "change": "Reusable sparse copier",
+      "median_seconds": {
+        "baseline": 3.0326241669245064,
+        "candidate": 3.016072957892902
+      },
+      "correctness_exact": true,
+      "reason": "Untraced median improvement below1%; decline added copier machinery. Retain correctness proof as evidence, not an accepted speedup."
+    }
+  ],
+  "prior_source_root_export_equivalence": {
+    "complete_export_exact": true,
+    "native_source_files_exact": true,
+    "source_files": 221,
+    "baseline_seconds": 1.029655,
+    "candidate_seconds": 0.801402,
+    "excluded_field": "source.exporter_sha256 identifies the intentionally changed helper"
+  },
+  "accepted_candidate_valid_plt_build": {
+    "all_five_native_tables_exact": true,
+    "table_rows": [
+      35,
+      0,
+      19,
+      0,
+      0
+    ],
+    "warnings_exact": true,
+    "inputs_unchanged": true,
+    "input_sha256": {
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/otp/base.plt": "573d6b6f76baf86026e6ed855a238266a2d36b89919a88ce5211465196227f56",
+      "/private/tmp/rust-dialyzer-perf-7/target/release/rust-dialyzer-poc": "a71677ccc7e0bb85966eeb459415d1f9300561963fa38fd2d49b7933aaf43cc2",
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/examples/tiny/_build/dev/lib/tiny/ebin/Elixir.Tiny.Issues.beam": "edb6c3c4ea0a1ab4f7f094a0f217f62361ea7fd021c7e63e6c69a708b3c14945",
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/examples/tiny/_build/dev/lib/tiny/ebin/Elixir.Tiny.Macros.beam": "565aafe34f4f8f533fb0d2d600a46c03eedd3062b2d18a8db79d34a145348cbd",
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/examples/tiny/_build/dev/lib/tiny/ebin/Elixir.Tiny.Math.beam": "858419a47fce6e71ed4797213025693571068c75d4ba9725a03b103a11effe21",
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/examples/tiny/_build/dev/lib/tiny/ebin/Elixir.Tiny.Values.beam": "6a2a3ce291ba8d32e755545acf23b29de9c01360e5a3e6cc46d1dde4c3700c9a"
+    }
+  },
+  "accepted_candidate_patch_replay": {
+    "root": "/private/tmp/rust-dialyzer-perf-replay-11",
+    "all_fourteen_changed_files_exact": true
+  },
+  "identity_digest_equivalence": {
+    "native_identity_digest_exact": true,
+    "implementation_inputs_exact": true,
+    "cases": [
+      {
+        "inputs": 70,
+        "digest": "80acb15cbc1b26f6d298625a7400d0531618023c1713aebb57bb0a7412c669d6",
+        "exact": true
+      },
+      {
+        "inputs": 71,
+        "digest": "80acb15cbc1b26f6d298625a7400d0531618023c1713aebb57bb0a7412c669d6",
+        "exact": true
+      },
+      {
+        "inputs": 70,
+        "digest": "80acb15cbc1b26f6d298625a7400d0531618023c1713aebb57bb0a7412c669d6",
+        "exact": true
+      }
+    ]
+  },
+  "identity_mutation_rejection": {
+    "source_mutation_rejected": true,
+    "prepared_output_not_created": true,
+    "implementation_inputs": [
+      "/Users/simedw/.asdf/installs/erlang/28.3/lib/dialyzer-5.4/ebin/erl_bif_types.beam",
+      "/Users/simedw/.asdf/installs/erlang/28.3/lib/dialyzer-5.4/ebin/erl_types.beam"
+    ]
+  },
+  "accepted_candidate_classic_lifecycle": {
+    "requested": 5,
+    "passed": 5,
+    "ids": [
+      "cplt_SUITE/update_plt",
+      "cplt_SUITE/run_plt_check",
+      "cplt_SUITE/remove_plt",
+      "cplt_SUITE/run_succ_typings",
+      "cplt_SUITE/merge_plts"
+    ],
+    "native_target_facts_as_rust_inputs": false,
+    "report": "/private/tmp/rust-dialyzer-perf-7/operational-proof/report.json"
+  },
+  "next_case_prior_import_profile": {
+    "case": "elixir/08_no_warnings_on_cond",
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-8",
+    "instrumentation_only": true,
+    "optimization_claimed": false,
+    "exact_warnings_types_documentation": true,
+    "inputs_unchanged": true,
+    "measured_seconds": {
+      "prior.transport_json": 0.05293,
+      "prior.raw_summaries": 0.027843,
+      "prior.raw_contracts": 0.260407,
+      "analysis.prior": 0.427633,
+      "analysis.pipeline": 0.314901
+    },
+    "report": "/private/tmp/rust-dialyzer-perf-8/elixir-314-profile/report.json"
+  },
+  "step11_library_data_equivalence": {
+    "contracts": {
+      "exact_bytes": true,
+      "rows": 3314,
+      "sha256": "409eff82e9c76ee517d9ee992373a778f34f73fcdf42ef43a40a0e74b6792a3e"
+    },
+    "signatures": {
+      "exact_bytes": true,
+      "rows": 5407,
+      "sha256": "067f0f96ee3645b24fcc634dd480dbd2e386d91981ed603709ab4c5570fe3294"
+    }
+  },
+  "root_copy_removal_library_tests": {
+    "passed": 157,
+    "command": "CARGO_INCREMENTAL=0 cargo test --offline --locked --lib"
+  },
+  "excluded_timing_reports": {
+    "report": "/private/tmp/rust-dialyzer-perf-11/elixir-314-trace/report.json",
+    "reason": "Root test compilation ran concurrently; trace timings are excluded. Exact outputs still matched."
+  },
+  "step11_valid_plt_build": {
+    "all_five_native_tables_exact": true,
+    "table_rows": [
+      35,
+      0,
+      19,
+      0,
+      0
+    ],
+    "warnings_exact": true,
+    "inputs_unchanged": true,
+    "input_sha256": {
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/otp/base.plt": "573d6b6f76baf86026e6ed855a238266a2d36b89919a88ce5211465196227f56",
+      "/private/tmp/rust-dialyzer-perf-11/target/release/rust-dialyzer-poc": "eb8225c1be6bf40dec7c13956d84dc4abfbc7edbe545e84ba5a1418707f5dd0f",
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/examples/tiny/_build/dev/lib/tiny/ebin/Elixir.Tiny.Issues.beam": "edb6c3c4ea0a1ab4f7f094a0f217f62361ea7fd021c7e63e6c69a708b3c14945",
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/examples/tiny/_build/dev/lib/tiny/ebin/Elixir.Tiny.Macros.beam": "565aafe34f4f8f533fb0d2d600a46c03eedd3062b2d18a8db79d34a145348cbd",
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/examples/tiny/_build/dev/lib/tiny/ebin/Elixir.Tiny.Math.beam": "858419a47fce6e71ed4797213025693571068c75d4ba9725a03b103a11effe21",
+      "/Users/simedw/Documents/ChatGPT/rust-dialyzer/examples/tiny/_build/dev/lib/tiny/ebin/Elixir.Tiny.Values.beam": "6a2a3ce291ba8d32e755545acf23b29de9c01360e5a3e6cc46d1dde4c3700c9a"
+    }
+  },
+  "root_copy_removal_strict_library_clippy": true,
+  "case315_worker_instrumentation": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-12",
+    "report": "/private/tmp/rust-dialyzer-perf-12/elixir-315-trace/report.json",
+    "outputs_exact": true,
+    "scope": "Instrumentation only; no speedup claimed",
+    "measured_seconds": {
+      "helper_loading": 0.133768,
+      "prior_header": 0.081947,
+      "native_prior_load": 0.117056,
+      "repeated_layout_header": 0.072962,
+      "provenance_header": 0.065281,
+      "prior_export": 0.57267,
+      "rust_prior_import": 0.449571,
+      "inference_pipeline": 0.332172
+    }
+  },
+  "rejected_case315_prior_snapshot": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-13",
+    "source_export_exact": true,
+    "outputs_exact": true,
+    "control_report": "/private/tmp/rust-dialyzer-perf-13/elixir-315-untraced-control/report.json",
+    "rounds": 5,
+    "baseline_median_seconds": 3.077196165919304,
+    "candidate_median_seconds": 3.192437957972288,
+    "reason": "Full untraced latency regressed3.7%; lower decoder time in traced runs did not establish a full-command gain."
+  },
+  "accepted_owned_prior_value": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-14",
+    "status": "Accepted: owned Value transport; full goal and broad current-source acceptance remain open",
+    "timing_report": "/private/tmp/rust-dialyzer-perf-14/elixir-315-proof/report.json",
+    "rounds": 5,
+    "baseline_median_seconds": 3.1002564169466496,
+    "candidate_median_seconds": 3.01504854101222,
+    "outputs_exact": true,
+    "records_report": "/private/tmp/rust-dialyzer-perf-14/owned-prior-proof/report.json",
+    "native_tables_report": "/private/tmp/rust-dialyzer-perf-14/build-plt-proof/report.json",
+    "identity_report": "/private/tmp/rust-dialyzer-perf-14/identity-proof/report.json",
+    "library_tests_passed": 124,
+    "lifecycle_cases_passed_so_far": [
+      "update_plt",
+      "run_plt_check",
+      "remove_plt",
+      "run_succ_typings"
+    ],
+    "lifecycle_report": "/private/tmp/rust-dialyzer-perf-14/operational-proof/report.json",
+    "lifecycle_cases_passed": 5,
+    "all_target_compile": true,
+    "positive_bridge": true,
+    "lifecycle_provenance_note": "Original five-case run predates a probe-only compiler_bridge_probe field migration. The production CLI, operation binary, analysis/import sources and worker files are unchanged. Updated probe compiles and runs positively."
+  },
+  "accepted_shared_formatter": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-15",
+    "status": "Accepted shared formatter; integrated five unchanged-baseline files into Root; full goal remains open",
+    "large_input_report": "/private/tmp/rust-dialyzer-perf-15/erlang-build-proof-2/report.json",
+    "seconds": 38.578691208036616,
+    "large_input_tables_exact": true,
+    "body_call_cases_exact": 21750,
+    "native_error_outcomes_exact": 116,
+    "body_call_report": "/private/tmp/rust-dialyzer-perf-15/body-calls-proof/report.json",
+    "original_lifecycle_cases_exact": 5,
+    "lifecycle_report": "/private/tmp/rust-dialyzer-perf-15/operational-proof/report.json",
+    "library_tests_passed": 124,
+    "all_target_compile": true,
+    "small_fixture_report": "/private/tmp/rust-dialyzer-perf-15/elixir-316-proof/report.json",
+    "small_fixture_speed_claim": false,
+    "sample": "/private/tmp/rust-dialyzer-perf-14/merge-process-sample.txt",
+    "sample_scope": "3seconds live stack sampling;213/271 samples in repeated folded DataflowNodes::build",
+    "baseline_report": "/private/tmp/rust-dialyzer-perf-14/erlang-build-timed-baseline/report.json",
+    "candidate_repeat_report": "/private/tmp/rust-dialyzer-perf-15/erlang-build-repeat/report.json",
+    "baseline_seconds": 116.72809150000103,
+    "candidate_seconds": [
+      38.578691208036616,
+      26.641330000013113
+    ],
+    "speedup_range": [
+      3.0257141402372025,
+      4.3814663719845655
+    ],
+    "timing_limit": "One baseline and two candidate isolated full-build invocations, no warmup. Descriptive speedup range for this workload only; small case316 improvement not established.",
+    "root_library_tests_passed": 157,
+    "root_all_target_compile": true,
+    "root_strict_library_clippy": true
+  },
+  "native_large_plt_comparison": {
+    "native": {
+      "seconds": 0.5095479169394821,
+      "exit_status": 0,
+      "rounds": 1,
+      "warmup": false,
+      "inputs_unchanged": true,
+      "scope": "Complete Native CLI PLT build on the same target BEAMs with contracts and no_unknown; warnings collection disabled by default, matching the captured public_run request."
+    },
+    "rust_seconds": [
+      38.578691208036616,
+      26.641330000013113
+    ],
+    "table_comparison": {
+      "tables": [
+        {
+          "exact": true,
+          "native_rows": 353,
+          "rust_rows": 353
+        },
+        {
+          "exact": true,
+          "native_rows": 1,
+          "rust_rows": 1
+        },
+        {
+          "exact": false,
+          "native_rows": 252,
+          "rust_rows": 259
+        },
+        {
+          "exact": true,
+          "native_rows": 1,
+          "rust_rows": 1
+        },
+        {
+          "exact": true,
+          "native_rows": 62,
+          "rust_rows": 62
+        }
+      ],
+      "all_five_native_tables_exact": false
+    },
+    "contract_differences": {
+      "different_contracts": [
+        {
+          "native": true,
+          "mfa": "{:erlang, :binary_to_integer, 2}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :check_process_code, 3}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :decode_packet, 3}",
+          "rust": true
+        },
+        {
+          "native": false,
+          "mfa": "{:erlang, :error, 1}",
+          "rust": true
+        },
+        {
+          "native": false,
+          "mfa": "{:erlang, :error, 2}",
+          "rust": true
+        },
+        {
+          "native": false,
+          "mfa": "{:erlang, :error, 3}",
+          "rust": true
+        },
+        {
+          "native": false,
+          "mfa": "{:erlang, :exit, 1}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :hibernate, 3}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :list_to_integer, 2}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :load_module, 2}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :load_nif, 2}",
+          "rust": true
+        },
+        {
+          "native": false,
+          "mfa": "{:erlang, :nif_error, 1}",
+          "rust": true
+        },
+        {
+          "native": false,
+          "mfa": "{:erlang, :nif_error, 2}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :prepare_loading, 2}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :spawn_opt, 4}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :spawn_opt, 5}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :spawn_request, 4}",
+          "rust": true
+        },
+        {
+          "native": true,
+          "mfa": "{:erlang, :spawn_request, 5}",
+          "rust": true
+        },
+        {
+          "native": false,
+          "mfa": "{:erlang, :throw, 1}",
+          "rust": true
+        }
+      ]
+    },
+    "scope_note": "Formatter outputs equal prior Rust baseline, but actual Native contract table differs. No complete Native parity or equivalent-work speed ratio claimed; timing samples remain descriptive.",
+    "contract_difference_counts": {
+      "native_only": 0,
+      "rust_only": 7,
+      "shared_value_differences": 12
+    }
+  },
+  "case317_trace": {
+    "report": "/private/tmp/rust-dialyzer-perf-15/elixir-317-trace/report.json",
+    "outputs_exact": true,
+    "scope": "One balanced traced comparison only; timings fluctuate and do not establish a speedup. Prior preparation/export/import remain dominant."
+  },
+  "case317_import_breakdown": {
+    "instrumentation_root": "/private/tmp/rust-dialyzer-perf-16",
+    "report": "/private/tmp/rust-dialyzer-perf-16/elixir-317-trace/report.json",
+    "seconds": {
+      "decode": 0.1554,
+      "private_capture_copy": 0.109782,
+      "contract_conversion": 0.117163,
+      "total": 0.384886
+    },
+    "scope": "Instrumentation-only exact outputs; counters aggregated per import, not per-record stderr."
+  },
+  "accepted_typed_intern_keys": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-17",
+    "report": "/private/tmp/rust-dialyzer-perf-17/elixir-317-proof/report.json",
+    "rounds": 5,
+    "baseline_median_seconds": 3.0119087089551613,
+    "candidate_median_seconds": 2.950236832955852,
+    "speedup_percent": 2.047601104772634,
+    "timing_note": "Small noisy full-command gain. Two balanced traced rounds show contract capture0.306199s ->0.256431s and prior export0.576123s ->0.509661s. No broad speedup claim.",
+    "all_elixir_modules_arena_exact": 22,
+    "actual_header_and_five_tables_arena_exact": true,
+    "native_roundtrips_exact": true,
+    "root_exporter_integrated": true,
+    "root_proof": "/private/tmp/rust-dialyzer-perf-17/root-interning-proof.json",
+    "tiny_warning_signature_documentation_exact": true,
+    "native_plt_tables_exact": true,
+    "identity_mutation_rejected": true
+  },
+  "accepted_lazy_arena_decode": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-18",
+    "case": "elixir/12_no_warnings_on_with_when_else_has_a_no_return_type",
+    "initial_report": "/private/tmp/rust-dialyzer-perf-18/elixir-318-proof/report.json",
+    "final_report": "/private/tmp/rust-dialyzer-perf-18/elixir-318-final-proof/report.json",
+    "final_rounds": 3,
+    "baseline_median_seconds": 3.251025666948408,
+    "candidate_median_seconds": 3.006357999984175,
+    "speedup_percent": 7.525860821452435,
+    "timing_note": "Initial five measured pairs showed 5.00%; final cleanup recheck showed 7.53%, all three pairs faster. Modest noisy whole-command gain, not broad performance parity.",
+    "outputs_exact": true,
+    "decoder_proof": "/private/tmp/rust-dialyzer-perf-18/decode-final-proof/report.json",
+    "decoded_valid_arenas": 6,
+    "exact_malformed_errors": 34,
+    "native_plt_proof": "/private/tmp/rust-dialyzer-perf-18/build-plt-final-proof/report.json",
+    "all_five_native_tables_exact": true,
+    "root_library_tests": 157,
+    "root_all_targets_check": true,
+    "root_strict_library_clippy": true,
+    "source_replay_files_exact": 25,
+    "source_replay_proof": "/private/tmp/rust-dialyzer-perf-replay-18/source-replay-proof.json",
+    "scope": "Parser only; original full current-source and public incremental acceptance remain open."
+  },
+  "accepted_atom_map_accumulator": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-20",
+    "report": "/private/tmp/rust-dialyzer-perf-20/elixir-319-proof/report.json",
+    "rounds": 5,
+    "baseline_median_seconds": 3.246750707970932,
+    "candidate_median_seconds": 3.10035716695711,
+    "speedup_percent": 4.508924588956543,
+    "timing_note": "Only3/5 untraced full-command pairs faster; modest noisy median gain. Five alternating same-VM layout pairs are all faster. No equivalent-work native performance claim.",
+    "atom_layout_median_seconds": {
+      "baseline": 0.223401,
+      "candidate": 0.165901
+    },
+    "local_profile": "/private/tmp/rust-dialyzer-perf-20/atom-layout-local-profile.json",
+    "atom_layouts_exact": true,
+    "compiled_modules_exact": 22,
+    "native_plt_proof": "/private/tmp/rust-dialyzer-perf-20/build-plt-proof/report.json",
+    "all_five_native_tables_exact": true,
+    "outputs_exact": true,
+    "source_replay_files_exact": 25,
+    "source_replay_proof": "/private/tmp/rust-dialyzer-perf-replay-20/source-replay-proof.json",
+    "root_runtime_integrated": false,
+    "integration_note": "Root older exporter has no raw PLT atom collector. Keep modern CLI change in cumulative replay patch until CLI migration."
+  },
+  "case320_pipeline_breakdown": {
+    "instrumentation_root": "/private/tmp/rust-dialyzer-perf-21",
+    "report": "/private/tmp/rust-dialyzer-perf-21/elixir-320-trace/report.json",
+    "seconds": {
+      "pipeline.world_signatures": 0.039327,
+      "pipeline.world_contracts": 0.2665805,
+      "pipeline.setup": 0.3059445,
+      "pipeline.inference": 0.0037485,
+      "pipeline.diagnostics": 0.0007585000000000001
+    },
+    "outputs_exact": true,
+    "scope": "Instrumentation-only two measured rounds; construction scans every imported summary/contract. No speedup claim."
+  },
+  "unused_contract_behavior_gap": {
+    "report": "/private/tmp/rust-dialyzer-perf-21/unused-existing-contract-proof-3/report.json",
+    "native_ignores_unused_contract": true,
+    "rust20_rejects_during_phase_setup": true,
+    "scope": "Actual public unchecked analysis of fixture320; existing lists:merge3/3 contract has valid argument count and unsupported signature type. Earlier probes hit exporter/module and import arity failures, not phase setup."
+  },
+  "accepted_lazy_library_world": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-22",
+    "report": "/private/tmp/rust-dialyzer-perf-22/elixir-320-proof/report.json",
+    "rounds": 5,
+    "baseline_median_seconds": 2.902914125006646,
+    "candidate_median_seconds": 2.6638055000221357,
+    "speedup_percent": 8.236848032284206,
+    "all5_measured_pairs_faster": true,
+    "outputs_exact": true,
+    "trace_report": "/private/tmp/rust-dialyzer-perf-22/elixir-320-final-trace/report.json",
+    "pipeline_seconds": {
+      "baseline": 0.314097,
+      "candidate": 0.004846
+    },
+    "scope": "Borrow complete immutable library; normalize only reached facts; current-phase overrides take precedence. No static callgraph filtering.",
+    "library_world_proof": "/private/tmp/rust-dialyzer-perf-22/library-world-proof/report.json",
+    "imported_records_exact": 3314,
+    "imported_signatures_exact": 5407,
+    "original_body_calls_exact": 21750,
+    "original_function_warnings_exact": 12000,
+    "original_classic_lifecycle_cases": 5,
+    "target_mode_replay": "/private/tmp/rust-dialyzer-perf-22/target-mode-final-proof/report.json",
+    "target_mode_diagnostics_exact": 288,
+    "target_mode_boundary_status_matches": 20,
+    "target_mode_scc_exact": 27,
+    "exact_boundary_error_reasons_claimed": false,
+    "unused_malformed_contract_native_parity": true,
+    "unused_contract_proof": "/private/tmp/rust-dialyzer-perf-22/unused-contract-proof/report.json",
+    "native_tiny_plt_all5_tables_exact": true,
+    "native_tiny_and_all19_fixture_warnings_exact": true,
+    "suite_benchmark": "/private/tmp/rust-dialyzer-cli-benchmark-perf22-1/report.json",
+    "suite_timing_rounds": 1,
+    "large_baseline_report": "/private/tmp/rust-dialyzer-perf-20/erlang-lazy-baseline/report.json",
+    "large_candidate_report": "/private/tmp/rust-dialyzer-perf-22/erlang-lazy-proof/report.json",
+    "large_build_seconds": {
+      "baseline": 19.22859966591932,
+      "candidate": 18.880076125031337
+    },
+    "large_build_scope": "One isolated sample each; all5 tables exact against previous Rust reference, not Native analysis; pre-existing Native contract gap remains.",
+    "root_integration_proof": "/private/tmp/rust-dialyzer-perf-22/root-integration-proof.json",
+    "source_replay_files_exact": 31,
+    "source_replay_proof": "/private/tmp/rust-dialyzer-perf-replay-22/source-replay-proof.json",
+    "full_current_source_and_incremental_acceptance": false
+  },
+  "accepted_owned_arena_transfer": {
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-23",
+    "case": "elixir/15_no_warnings_on_try",
+    "full_command_report": "/private/tmp/rust-dialyzer-perf-23/elixir-321-proof/report.json",
+    "full_command_rounds": 5,
+    "full_command_median_seconds": {
+      "baseline": 2.5796774169430137,
+      "candidate": 2.561952374991961
+    },
+    "full_command_speedup_claimed": false,
+    "timing_note": "Only3/5 pairs faster;0.69% median difference is inconclusive. Retained for clear import-stage removal of recursive Value rebuilding, not a proven full-command improvement.",
+    "trace_report": "/private/tmp/rust-dialyzer-perf-23/elixir-321-trace/report.json",
+    "transport_median_seconds": {
+      "baseline": 0.037236,
+      "candidate": 4.3e-05
+    },
+    "prior_import_median_seconds": {
+      "baseline": 0.314632,
+      "candidate": 0.2791805
+    },
+    "owned_boundary_proof": "/private/tmp/rust-dialyzer-perf-23/owned-boundary-proof/report.json",
+    "owned_boundary_valid": 5,
+    "owned_boundary_exact_errors": 46,
+    "imported_records_exact": 3314,
+    "imported_signatures_exact": 5407,
+    "candidate_library_tests": 124,
+    "candidate_all_targets_check": true,
+    "native_tiny_plt_all5_tables_exact": true,
+    "unused_malformed_contract_still_matches_native": true,
+    "root_runtime_integrated": false,
+    "integration_note": "Root has only text parse, no owned-value entry. Text parse is unchanged; this optimization is in the reproducible modern CLI patch.",
+    "source_replay_files_exact": 31,
+    "source_replay_proof": "/private/tmp/rust-dialyzer-perf-replay-23/source-replay-proof.json",
+    "full_current_source_acceptance": false
+  },
+  "rejected_perf25": {
+    "case": "elixir/16_no_warning_on_is_struct_2",
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-25",
+    "report": "/private/tmp/rust-dialyzer-perf-25/elixir-322-proof/report.json",
+    "median_seconds": {
+      "baseline": 2.341360916965641,
+      "candidate": 2.457148917019367
+    },
+    "rounds": 7,
+    "slower_pairs": 6,
+    "exact_warnings_signatures_documentation": true,
+    "module_capture_proof": "/private/tmp/rust-dialyzer-perf-25/module-capture-proof/report.json",
+    "compiled_modules_exact": 27,
+    "local_warm_module_median_seconds": {
+      "checked": 0.002402,
+      "capture": 0.001248
+    },
+    "decision": "Reject: local export improvement does not justify slower whole-command timings; accepted23 unchanged."
+  },
+  "accepted_perf26": {
+    "case": "elixir/17_no_warning_on_exunit_assertions",
+    "candidate_root": "/private/tmp/rust-dialyzer-perf-26",
+    "median_seconds": {
+      "baseline": 2.522602958022617,
+      "candidate": 2.404819207964465
+    },
+    "improvement_percent": 4.669135492906838,
+    "faster_pairs": 6,
+    "rounds": 7,
+    "report": "/private/tmp/rust-dialyzer-perf-26/elixir-323-proof/report.json",
+    "trace_report": "/private/tmp/rust-dialyzer-perf-26/elixir-323-final-trace/report.json",
+    "exact_warnings_signatures_documentation": true,
+    "dependency_artifact_proof": "/private/tmp/rust-dialyzer-perf-26/header-snapshot-final-proof/report.json",
+    "native_tiny_plt_all5_tables_exact": true,
+    "original_classic_cases_passed": 5,
+    "source_replay_files_exact": 31,
+    "source_replay_proof": "/private/tmp/rust-dialyzer-perf-replay-26/source-replay-proof.json",
+    "root_runtime_integrated": false,
+    "integration_note": "Root has no compiled_bundle entry and an older exporter. Modern CLI implementation remains in reproducible cumulative patch.",
+    "full_current_source_acceptance": false
+  },
+  "case324_profile": {
+    "report": "/private/tmp/rust-dialyzer-perf-26/elixir-324-trace/report.json",
+    "candidate_stage_medians_seconds": {
+      "bridge.prepare": 1.8362500000000002,
+      "analysis.prior": 0.2705785,
+      "analysis.pipeline": 0.006366,
+      "export.atom_layout": 0.203283,
+      "export.prior.contract_capture": 0.27722800000000003,
+      "export.encode": 0.1623515,
+      "prior.contract_copy": 0.0727,
+      "prior.contract_conversion": 0.076253
+    },
+    "whole_command_speedup_claimed": false,
+    "exact_outputs": true,
+    "inputs_unchanged": true
+  },
+  "rejected_perf27": {
+    "report": "/private/tmp/rust-dialyzer-perf-27/term-cache-local-proof.json",
+    "local_median_seconds": {
+      "baseline": 0.719264,
+      "candidate": 0.721125
+    },
+    "actual_arenas_exact": 6,
+    "failure_table_cleanup_exact": true,
+    "decision": "No material local gain; do not build or accept full CLI candidate. Accepted26 remains unchanged."
+  }
+}

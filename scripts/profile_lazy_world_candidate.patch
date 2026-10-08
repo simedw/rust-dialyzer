@@ -1,0 +1,394 @@
+--- a/src/body_calls.rs
++++ b/src/body_calls.rs
+@@ -36,13 +36,14 @@
+ /// Phase-owned declared/library facts and raw current-phase signature lookup.
+ /// Candidates are already ordered by the source callgraph adapter.
+ #[derive(Default)]
+-pub struct CallWorld {
++pub struct CallWorld<'library> {
++    pub(crate) library: Option<&'library crate::dependencies::Store>,
+     pub named_signatures: BTreeMap<Mfa, Signature>,
+     pub anonymous_signatures: BTreeMap<CoreLabel, Signature>,
+     pub active_contracts: BTreeMap<Mfa, ActiveContract>,
+     pub call_sites: BTreeMap<NodeRef, Vec<ApplyTarget>>,
+ }
+-impl CallWorld {
++impl CallWorld<'_> {
+     /// dialyzer_dep finalizes call targets with ordsets:from_list: labels ascend,
+     /// then the atom external. Preserve missing sites for operator fallback.
+     pub fn add_closure_sites(
+@@ -138,7 +139,7 @@
+     pub producer: &'a GuardProducer<'a, 'c, 'c>,
+     pub functions: &'a mut FunctionState,
+     pub bifs: &'a Registry,
+-    pub world: &'a CallWorld,
++    pub world: &'a CallWorld<'a>,
+ }
+ impl BodyCalls<'_, '_, '_> {
+     fn format_args<W>(
+@@ -423,7 +424,7 @@
+             let (name, sig, local_return, local_key, escaping) = match candidate {
+                 Candidate::Remote(mfa) => (
+                     Some(mfa.clone()),
+-                    self.world.named_signatures.get(mfa).cloned(),
++                    self.world.named_signature(mfa)?,
+                     Type::any(),
+                     None,
+                     true,
+@@ -439,15 +440,18 @@
+                         function: n.name.clone(),
+                         arity: n.arity,
+                     });
+-                    let raw = def.raw_signature.clone().or_else(|| match &name {
+-                        Some(n) => self.world.named_signatures.get(n).cloned(),
+-                        None => match key {
+-                            FunctionKey::Label(l) => {
+-                                self.world.anonymous_signatures.get(l).cloned()
+-                            }
+-                            FunctionKey::Top => None,
++                    let raw = match &def.raw_signature {
++                        Some(signature) => Some(signature.clone()),
++                        None => match &name {
++                            Some(n) => self.world.named_signature(n)?,
++                            None => match key {
++                                FunctionKey::Label(l) => {
++                                    self.world.anonymous_signatures.get(l).cloned()
++                                }
++                                FunctionKey::Top => None,
++                            },
+                         },
+-                    });
++                    };
+                     let ret = self
+                         .functions
+                         .entries()
+@@ -462,8 +466,9 @@
+             };
+             let contract = name
+                 .as_ref()
+-                .and_then(|n| self.world.active_contracts.get(n))
+-                .cloned();
++                .map(|n| self.world.active_contract(n))
++                .transpose()?
++                .flatten();
+             let crange = |types: &[Type]| {
+                 contract
+                     .as_ref()
+--- a/src/analysis_inputs.rs
++++ b/src/analysis_inputs.rs
+@@ -11,44 +11,53 @@
+ };
+ use std::{collections::BTreeMap, sync::Arc};
+ 
+-impl CallWorld {
+-    pub fn from_library(library: &Store) -> Result<Self, String> {
+-        let mut world = Self::default();
+-        for name in library.summary_names() {
+-            let summary = library.summary(name)?.expect("listed library summary");
+-            world.named_signatures.insert(
+-                name.clone(),
+-                Signature {
++impl<'library> CallWorld<'library> {
++    pub fn from_library(library: &'library Store) -> Self {
++        Self {
++            library: Some(library),
++            ..Self::default()
++        }
++    }
++    pub fn named_signature(&self, name: &Mfa) -> Result<Option<Signature>, String> {
++        if let Some(signature) = self.named_signatures.get(name) {
++            return Ok(Some(signature.clone()));
++        }
++        self.library
++            .map(|library| library.summary(name))
++            .transpose()
++            .map(|summary| {
++                summary.flatten().map(|summary| Signature {
+                     arguments: summary.arguments,
+                     result: summary.result,
+-                },
+-            );
++                })
++            })
++    }
++    pub fn active_contract(&self, name: &Mfa) -> Result<Option<ActiveContract>, String> {
++        if let Some(contract) = self.active_contracts.get(name) {
++            return Ok(Some(contract.clone()));
+         }
+-        for (name, contract) in &library.contracts {
+-            world.active_contracts.insert(
+-                name.clone(),
+-                ActiveContract {
++        self.library
++            .and_then(|library| library.contracts.get(name))
++            .map(|contract| {
++                Ok(ActiveContract {
+                     summary: Arc::new(contract.summary()?.clone()),
+                     capture: contract.captured_record(),
+-                },
+-            );
+-        }
+-        Ok(world)
++                })
++            })
++            .transpose()
+     }
+ }
+-impl LibraryTypes for CallWorld {
++impl LibraryTypes for CallWorld<'_> {
+     fn signature(&self, name: &Mfa) -> Result<Option<generation::CallSignature>, String> {
+         Ok(self
+-            .named_signatures
+-            .get(name)
++            .named_signature(name)?
+             .map(|signature| generation::CallSignature {
+                 arguments: signature.arguments.clone(),
+                 returns: signature.result.clone(),
+             }))
+     }
+     fn active_contract(&self, name: &Mfa) -> Result<Option<generation::ActiveContract>, String> {
+-        self.active_contracts
+-            .get(name)
++        CallWorld::active_contract(self, name)?
+             .map(|contract| {
+                 generation::ActiveContract::new(
+                     contract.summary.clone(),
+--- a/src/core_phases.rs
++++ b/src/core_phases.rs
+@@ -83,14 +83,14 @@
+     pub folded: &'a FoldedCore,
+     pub bifs: &'a Registry,
+     pub solvers: SolverSelection,
+-    pub world: CallWorld,
++    pub world: CallWorld<'a>,
+     pub records: PreparedRecords,
+     letrec: BTreeMap<ModuleId, BTreeMap<CoreLabel, CoreLabel>>,
+ }
+ impl<'a> CorePhases<'a> {
+     pub fn new(
+         inputs: CorePhaseInputs<'a>,
+-        library: &Store,
++        library: &'a Store,
+         solvers: SolverSelection,
+     ) -> Result<Self, CorePhaseError> {
+         let records = PreparedRecords::for_modules(
+@@ -98,7 +98,7 @@
+             (0..inputs.nodes.core().modules.len()).map(ModuleId),
+         )
+         .map_err(CorePhaseError::Boundary)?;
+-        let world = CallWorld::from_library(library).map_err(CorePhaseError::Boundary)?;
++        let world = CallWorld::from_library(library);
+         let mut phases = Self {
+             nodes: inputs.nodes,
+             program: inputs.program,
+--- a/src/core_pipeline.rs
++++ b/src/core_pipeline.rs
+@@ -39,7 +39,7 @@
+ 
+ pub fn analyze<'a>(
+     inputs: CorePhaseInputs<'a>,
+-    library: &Store,
++    library: &'a Store,
+     callbacks: &TargetCallbackState<'a>,
+     layout: &NativeAtomLayout,
+     scope: String,
+@@ -91,7 +91,10 @@
+     let allocator = ScopedReferenceAllocator::new(scope)
+         .map_err(|error| PipelineError::Boundary(format!("{error:?}")))?;
+     let mut schedule = SourceSchedule::new(runtime, allocator).map_err(PipelineError::Schedule)?;
++    let setup_span = crate::perf_trace::Span::new("pipeline.setup");
+     let mut phases = CorePhases::new(inputs, library, solvers).map_err(PipelineError::Phase)?;
++    drop(setup_span);
++    let inference_span = crate::perf_trace::Span::new("pipeline.inference");
+     let state = analyzer
+         .run(
+             AnalysisState {
+@@ -102,6 +105,7 @@
+             &mut schedule,
+         )
+         .map_err(|error| PipelineError::Analysis(Box::new(error)))?;
++    drop(inference_span);
+     if mode == AnalysisMode::PltBuild {
+         return Ok(CollectedAnalysis {
+             state,
+@@ -109,6 +113,7 @@
+             raw_warnings: Vec::new(),
+         });
+     }
++    let _diagnostics_span = crate::perf_trace::Span::new("pipeline.diagnostics");
+     let diagnostics = DiagnosticInputs {
+         nodes: phases.nodes,
+         program: phases.program,
+--- a/src/body_flow.rs
++++ b/src/body_flow.rs
+@@ -244,7 +244,7 @@
+     pub bifs: &'a Registry,
+     pub calls: Option<(
+         &'a crate::guard_producer::GuardProducer<'a, 'c, 'c>,
+-        &'a crate::body_calls::CallWorld,
++        &'a crate::body_calls::CallWorld<'a>,
+     )>,
+     pub guards: Option<&'a crate::guard_control::GuardControl<'a, 'c, 'c>>,
+     pub letrec: &'a BTreeMap<CoreLabel, CoreLabel>,
+--- a/src/body_function_warnings.rs
++++ b/src/body_function_warnings.rs
+@@ -11,7 +11,7 @@
+     >(
+         &mut self,
+         graph: &SourceCallGraph,
+-        world: &CallWorld,
++        world: &CallWorld<'_>,
+         state: &BinderState<W>,
+     ) -> Result<BinderState<W>> {
+         let state_before_current = state.current_fun.clone();
+@@ -71,7 +71,10 @@
+             let needs_return = entry.called() && entry.signature().result.is_none();
+             let own_return = if needs_return {
+                 mfa.as_ref()
+-                    .and_then(|mfa| world.active_contracts.get(mfa))
++                    .map(|mfa| world.active_contract(mfa))
++                    .transpose()
++                    .map_err(BodyError::Boundary)?
++                    .flatten()
+                     .map(|contract| {
+                         contract
+                             .summary
+@@ -90,7 +93,10 @@
+             {
+                 parent
+                     .as_ref()
+-                    .and_then(|mfa| world.active_contracts.get(mfa))
++                    .map(|mfa| world.active_contract(mfa))
++                    .transpose()
++                    .map_err(BodyError::Boundary)?
++                    .flatten()
+                     .map(|contract| {
+                         contract
+                             .summary
+--- a/src/bin/library_signatures_probe.rs
++++ b/src/bin/library_signatures_probe.rs
+@@ -12,8 +12,11 @@
+     let core = CoreProgram::parse(&read(&args[0])?)?;
+     let library = PriorPlt::parse(&read(&args[1])?, &core, &ImportPlan::cold_targets(&core))?
+         .into_cold_store()?;
+-    let world = CallWorld::from_library(&library)?;
+-    for (name, signature) in world.named_signatures {
++    let world = CallWorld::from_library(&library);
++    for name in library.summary_names() {
++        let signature = world
++            .named_signature(name)?
++            .expect("listed library summary");
+         println!("{}", serde_json::json!({"mfa":name,"signature":signature}));
+     }
+     Ok(())
+--- a/src/bin/value_signatures_probe.rs
++++ b/src/bin/value_signatures_probe.rs
+@@ -10,10 +10,17 @@
+     }
+     let read = |path: &str| std::fs::read_to_string(path).map_err(|error| error.to_string());
+     let core = CoreProgram::parse(&read(&args[0])?)?;
+-    let library = PriorPlt::from_value(serde_json::from_str(&read(&args[1])?).map_err(|e| e.to_string())?, &core, &ImportPlan::cold_targets(&core))?
+-        .into_cold_store()?;
+-    let world = CallWorld::from_library(&library)?;
+-    for (name, signature) in world.named_signatures {
++    let library = PriorPlt::from_value(
++        serde_json::from_str(&read(&args[1])?).map_err(|e| e.to_string())?,
++        &core,
++        &ImportPlan::cold_targets(&core),
++    )?
++    .into_cold_store()?;
++    let world = CallWorld::from_library(&library);
++    for name in library.summary_names() {
++        let signature = world
++            .named_signature(name)?
++            .expect("listed library summary");
+         println!("{}", serde_json::json!({"mfa":name,"signature":signature}));
+     }
+     Ok(())
+--- a/src/bin/library_contracts_probe.rs
++++ b/src/bin/library_contracts_probe.rs
+@@ -29,10 +29,18 @@
+             serde_json::json!({"kind":"callback","mfa":row.callable(),"record":arena_to_value(&row.capture.arena().terms,row.capture.id())})
+         );
+     }
+-    let world = rust_dialyzer_poc::body_calls::CallWorld::from_library(&library)?;
++    let world = rust_dialyzer_poc::body_calls::CallWorld::from_library(&library);
++    let mut signatures = 0;
++    for name in library.summary_names() {
++        signatures += usize::from(world.named_signature(name)?.is_some());
++    }
++    let mut active_contracts = 0;
++    for name in library.contracts.keys() {
++        active_contracts += usize::from(world.active_contract(name)?.is_some());
++    }
+     eprintln!(
+         "{}",
+-        serde_json::json!({"signatures":world.named_signatures.len(),"active_contracts":world.active_contracts.len()})
++        serde_json::json!({"signatures":signatures,"active_contracts":active_contracts})
+     );
+     Ok(())
+ }
+--- a/src/bin/value_contracts_probe.rs
++++ b/src/bin/value_contracts_probe.rs
+@@ -6,7 +6,8 @@
+     }
+     let core = CoreProgram::parse(&std::fs::read_to_string(&args[0]).map_err(|e| e.to_string())?)?;
+     let library = rust_dialyzer_poc::dependencies::PriorPlt::from_value(
+-        serde_json::from_str(&std::fs::read_to_string(&args[1]).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?,
++        serde_json::from_str(&std::fs::read_to_string(&args[1]).map_err(|e| e.to_string())?)
++            .map_err(|e| e.to_string())?,
+         &core,
+         &rust_dialyzer_poc::dependencies::ImportPlan::cold_targets(&core),
+     )
+@@ -29,10 +30,18 @@
+             serde_json::json!({"kind":"callback","mfa":row.callable(),"record":arena_to_value(&row.capture.arena().terms,row.capture.id())})
+         );
+     }
+-    let world = rust_dialyzer_poc::body_calls::CallWorld::from_library(&library)?;
++    let world = rust_dialyzer_poc::body_calls::CallWorld::from_library(&library);
++    let mut signatures = 0;
++    for name in library.summary_names() {
++        signatures += usize::from(world.named_signature(name)?.is_some());
++    }
++    let mut active_contracts = 0;
++    for name in library.contracts.keys() {
++        active_contracts += usize::from(world.active_contract(name)?.is_some());
++    }
+     eprintln!(
+         "{}",
+-        serde_json::json!({"signatures":world.named_signatures.len(),"active_contracts":world.active_contracts.len()})
++        serde_json::json!({"signatures":signatures,"active_contracts":active_contracts})
+     );
+     Ok(())
+ }
+--- a/src/bin/target_mode_diagnostics_probe.rs
++++ b/src/bin/target_mode_diagnostics_probe.rs
+@@ -34,7 +34,6 @@
+     let mut schema_checked = false;
+     let mut preparations = BTreeMap::<String, Arc<PreparedDefinitions>>::new();
+     let mut libraries = BTreeMap::new();
+-    let mut worlds = BTreeMap::new();
+     for line in io::stdin().lock().lines() {
+         let row: Value = serde_json::from_str(&line.unwrap()).unwrap();
+         let core = CoreProgram::parse(&row["core"].to_string()).unwrap();
+@@ -216,16 +215,15 @@
+             assert_eq!(row["final_record_table_size"], json!(0));
+             assert_eq!(definitions.tables.len(), core.modules.len());
+         }
+-        let world = worlds.entry(library_key).or_insert_with(|| {
+-            rust_dialyzer_poc::body_calls::CallWorld::from_library(library).unwrap()
+-        });
++        let world = rust_dialyzer_poc::body_calls::CallWorld::from_library(library);
+         for imported in row["expected_imported"].as_array().unwrap() {
+             let name: Mfa = serde_json::from_value(imported["mfa"].clone()).unwrap();
++            let contract = world.active_contract(&name).unwrap();
+             if imported["capture"].is_null() {
+-                assert!(!world.active_contracts.contains_key(&name));
++                assert!(contract.is_none());
+             } else {
+                 let expected = ErlangTerms::parse(&imported["capture"]).unwrap();
+-                let actual = &world.active_contracts[&name].capture;
++                let actual = &contract.as_ref().unwrap().capture;
+                 assert!(
+                     compare_map_keys(actual.arena(), actual.id(), &expected, expected.root)
+                         .unwrap()

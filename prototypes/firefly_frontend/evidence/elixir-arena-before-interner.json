@@ -1,0 +1,20 @@
+[
+  {
+    "id": "tiny",
+    "core_json_bytes": 658102,
+    "terms": 16867,
+    "nodes": 1074
+  },
+  {
+    "id": "elixir/17_no_warning_on_exunit_assertions",
+    "core_json_bytes": 1083269,
+    "terms": 27022,
+    "nodes": 1270
+  },
+  {
+    "id": "dialyxir/examples",
+    "core_json_bytes": 1977457,
+    "terms": 49753,
+    "nodes": 3036
+  }
+]

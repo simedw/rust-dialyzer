@@ -1,0 +1,25 @@
+[package]
+name = "firefly_syntax_base"
+description = "Provides functionality shared across the various Firefly intermediate representations"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bitflags.workspace = true
+firefly_binary = { path = "../../library/binary", features = ["std"] }
+firefly_compiler_macros = { path = "../macros" }
+firefly_diagnostics = { path = "../diagnostics" }
+firefly_intern = { path = "../intern", features = ["std"] }
+firefly_number = { path = "../../library/number", features = ["std"] }
+lazy_static.workspace = true
+logos = "0.12"
+rpds = { workspace = true, features = ["std"] }
+thiserror.workspace = true

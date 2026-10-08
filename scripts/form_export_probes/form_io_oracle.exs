@@ -1,0 +1,12 @@
+Code.require_file("../core_export.exs",__DIR__)
+[cases,results]=System.argv()
+commands=Enum.to_list(File.stream!(cases));outputs=Enum.to_list(File.stream!(results))
+if length(commands)!=length(outputs),do: raise("input/output row count mismatch")
+rows=Enum.zip(commands,outputs)
+failed=Enum.with_index(rows)|>Enum.filter(fn {{c,r},_}->
+ c=:json.decode(c);r=:json.decode(r);v=CoreExport.rebuild_terms(c["arena"])
+ expected=if c["native_expected"],do: CoreExport.decode(c["native_expected"]),else: :io_lib.write(v,[{:encoding,String.to_atom(c["encoding"])}])
+ not is_nil(r["unsupported"]) or expected !==CoreExport.rebuild_terms(r["ok"])
+end)
+IO.inspect(%{cases: length(rows),failures: length(failed),first: Enum.take(failed,1)})
+File.write!(results<>".comparison.json",:json.encode(%{cases: length(rows),failures: length(failed),indexes: Enum.map(failed,fn {_,i}->i end)}));if failed != [], do: System.halt(1)

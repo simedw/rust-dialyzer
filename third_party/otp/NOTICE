@@ -1,0 +1,11 @@
+The type operations in src/lattice.rs adapt algorithms from Erlang/OTP
+lib/dialyzer/src/erl_types.erl, pinned to OTP-28.3, commit
+ab489c0b260c637a9487f8753909ea94dacbbec2. This Rust adaptation is modified
+from the original Erlang implementation.
+
+Original notices:
+Copyright 2004-2010 held by the authors. All Rights Reserved.
+Copyright Ericsson AB 2020-2025. All Rights Reserved.
+@copyright 2000-2003 Richard Carlsson, 2006-2009 Tobias Lindahl
+
+The original is licensed under Apache License 2.0, reproduced in LICENSE.txt.

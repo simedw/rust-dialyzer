@@ -1,0 +1,295 @@
+[fundamental]
+false = { id = 0 }
+true = { id = 1 }
+empty = { value = "" }
+
+[keywords]
+after = { }
+and = { }
+and_also = { value = "andalso" }
+band = { }
+bnot = { }
+bor = { }
+bxor = { }
+bsl = { }
+bsr = { }
+begin = { }
+case = { }
+catch = { }
+div = { }
+end = { }
+fun = { }
+if = { }
+of = { }
+or_else = { value = "orelse" }
+or = { }
+not = { }
+receive = { }
+rem = { }
+try = { }
+when = { }
+xor = { }
+
+[attributes]
+author = {}
+behaviour = {}
+callback = {}
+compile = {}
+deprecated = {}
+export = {}
+export_type = {}
+import = {}
+module = {}
+nifs = {}
+on_load = {}
+opaque = {}
+spec = {}
+type = {}
+vsn = {}
+
+[preprocessor]
+define = {}
+else = {}
+elif = {}
+endif = {}
+error = {}
+file = {}
+ifdef = {}
+ifndef = {}
+include = {}
+include_lib = {}
+line = {}
+undef = {}
+warning = {}
+
+[defines]
+VSN = {}
+COMPILER_VSN = {}
+
+[punctuation]
+underscore = { value = "_" }
+equal = { value = "==" }
+equal_strict = { value = "=:=" }
+not_equal = { value = "/=" }
+not_equal_strict = { value = "=/=" }
+lt = { value = "<" }
+lte = { value = "=<" }
+gt = { value = ">" }
+gte = { value = ">=" }
+plus_plus = { value = "++" }
+minus_minus = { value = "--" }
+plus = { value = "+" }
+minus = { value = "-" }
+slash = { value = "/" }
+star = { value = "*" }
+bang = { value = "!" }
+
+[errors]
+badarg = {}
+badrecord = {}
+badmap = {}
+badmatch = {}
+bad_filter = {}
+bad_generator = {}
+bad_value = {}
+bad_size = {}
+case_clause = {}
+function_clause = {}
+if_clause = {}
+nif_error = {}
+try_clause = {}
+
+[guards]
+is_atom = {}
+is_binary = {}
+is_bitstring = {}
+is_boolean = {}
+is_float = {}
+is_function = {}
+is_integer = {}
+is_list = {}
+is_map = {}
+is_number = {}
+is_pid = {}
+is_port = {}
+is_record = {}
+is_reference = {}
+is_tuple = {}
+
+[bifs]
+abs = {}
+apply = {}
+binary_part = {}
+bit_size = {}
+build_stacktrace = {}
+byte_size = {}
+ceil = {}
+date = {}
+element = {}
+float = {}
+floor = {}
+garbage_collect = {}
+get = {}
+get_cookie = {}
+get_keys = {}
+group_leader = {}
+halt = {}
+hd = {}
+is_alive = {}
+is_map_key = {}
+length = {}
+map_size = {}
+map_get = {}
+match_fail = {}
+make_fun = {}
+make_ref = {}
+max = {}
+min = {}
+node = {}
+nodes = {}
+ports = {}
+pre_loaded = {}
+processes = {}
+raise = {}
+raw_raise = {}
+recv_wait_timeout = {}
+recv_peek_message = {}
+registered = {}
+remove_message = {}
+round = {}
+SELF = { value = "self" }
+setelement = {}
+size = {}
+spawn = {}
+spawn_link = {}
+spawn_monitor = {}
+time = {}
+term_to_binary = {}
+throw = {}
+tl = {}
+trunc = {}
+tuple_size = {}
+unpack_env = {}
+yield = {}
+
+[annotations]
+compiler_generated = {}
+closure = {}
+id = {}
+raw_stack = {}
+
+[features]
+maybe_expr = {}
+
+[ast]
+ann_type = {}
+atom = {}
+attribute = {}
+behavior = {}
+bin = {}
+bin_element = {}
+binary = {}
+bc = {}
+bc_generate = {}
+block = {}
+bounded_fun = {}
+call = {}
+char = {}
+clause = {}
+cons = {}
+constraint = {}
+default = {}
+epp = {}
+eof = {}
+field_type = {}
+filter = {}
+generate = {}
+lc = {}
+match = {}
+map = {}
+map_field_assoc = {}
+map_field_exact = {}
+named_fun = {}
+nil = {}
+op = {}
+optional_callbacks = {}
+product = {}
+range = {}
+record = {}
+record_field = {}
+record_index = {}
+remote = {}
+remote_type = {}
+string = {}
+tuple = {}
+typed_record_field = {}
+union = {}
+user_type = {}
+var = {}
+
+[common]
+any = {}
+all = {}
+attributes = {}
+behaviour_info = {}
+bits = {}
+bitstring = {}
+bits_init_writable = {}
+bits_close_writable = {}
+bytes = {}
+erlang = {}
+eventually = {}
+exports = {}
+EXIT = {}
+exit = {}
+function = {}
+functions = {}
+infinity = {}
+inline = {}
+inlined = {}
+integer = {}
+letrec_goto = {}
+letrec_name = {}
+list_comprehension = {}
+md5 = {}
+MODULE = {}
+MODULE_STRING = {}
+module_info = {}
+native = {}
+new = {}
+next_version = {}
+next_major_release = {}
+nif = {}
+nif_start = {}
+no_inline = {}
+ok = {}
+other = {}
+receive_timeout = {}
+record_info = {}
+recv_start = {}
+recv_next = {}
+recv_peek = {}
+recv_pop = {}
+recv_wait = {}
+send = {}
+skip_clause = {}
+single_use = {}
+undefined = {}
+unused = {}
+used = {}
+utf8 = {}
+utf16 = {}
+utf32 = {}
+
+[nifs]
+nif_build_stacktrace = { value = "__firefly_build_stacktrace" }
+nif_bs_init = { value = "__firefly_bs_init" }
+nif_bs_finish = { value = "__firefly_bs_finish" }
+nif_make_tuple = { value = "__firefly_make_tuple" }
+nif_tuple_size = { value = "__firefly_tuple_size" }
+nif_map_empty = { value = "__firefly_map_empty" }
+nif_map_put = { value = "__firefly_map_put" }
+nif_map_put_mut = { value = "__firefly_map_put_mut" }
+nif_map_update = { value = "__firefly_map_update" }
+nif_map_update_mut = { value = "__firefly_map_update_mut" }
+nif_map_fetch = { value = "__firefly_map_fetch" }

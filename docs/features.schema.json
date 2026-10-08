@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "features.schema.json",
+  "title": "Compiler feature inventory",
+  "type": "object",
+  "required": [
+    "version",
+    "case_count",
+    "scanned_count",
+    "cases",
+    "groups",
+    "group_dependencies",
+    "group_overlap_counts",
+    "export_coverage",
+    "missing_ir_case_counts"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "case_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scanned_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    },
+    "groups": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/strings"
+      }
+    },
+    "group_dependencies": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/strings"
+      }
+    },
+    "group_overlap_counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "missing_ir_case_counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "export_coverage": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "strings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "case": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "program_file",
+        "coverage",
+        "missing_source_metadata",
+        "features",
+        "groups",
+        "missing_ir",
+        "counts"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "otp",
+            "elixir",
+            "dialyxir"
+          ]
+        },
+        "program_file": {
+          "type": "string"
+        },
+        "coverage": {
+          "enum": [
+            "missing_program",
+            "cached_runtime_forms_only",
+            "full_source_forms"
+          ]
+        },
+        "missing_source_metadata": {
+          "$ref": "#/$defs/strings"
+        },
+        "features": {
+          "$ref": "#/$defs/strings"
+        },
+        "groups": {
+          "$ref": "#/$defs/strings"
+        },
+        "compiler_groups": {
+          "$ref": "#/$defs/strings"
+        },
+        "lexical_only_groups": {
+          "$ref": "#/$defs/strings"
+        },
+        "missing_ir": {
+          "$ref": "#/$defs/strings"
+        },
+        "counts": {
+          "type": "object"
+        },
+        "lexical_evidence": {
+          "type": "array"
+        },
+        "missing_source_files": {
+          "$ref": "#/$defs/strings"
+        },
+        "external_calls": {
+          "$ref": "#/$defs/strings"
+        },
+        "recursive_functions": {
+          "$ref": "#/$defs/strings"
+        },
+        "dependencies": {
+          "$ref": "#/$defs/strings"
+        },
+        "source_metadata_complete": {
+          "type": "boolean"
+        },
+        "core_traversal_complete": {
+          "type": "boolean"
+        },
+        "core_node_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "core_node_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "core_map_arg_nodes_visited": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_version": {
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        },
+        "input_file": {
+          "type": "string"
+        },
+        "core_reachable_unique_nodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "core_unreachable_nodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_term_table_size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

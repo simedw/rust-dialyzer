@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-07T16:38:04.988746+00:00",
+  "release_records": 330,
+  "build_modes": [
+    "release"
+  ],
+  "all_phases_partition_totals": true,
+  "sources_sha256": {
+    "src/phase_timings.rs": "7b07bc4416618f3364b0bd209df2727c79f7f6bdbb3aac8d29e2fe4963e213a5",
+    "src/lib.rs": "339bf767f6ea40892b777503275bf2faafafdc18510a43821137e3980fd91174",
+    "src/bin/compiled_analysis_probe.rs": "25138cda8b91cdcf5e5fdf80a7f1cb43144f3c73e99936584207de0b31d1fcbb",
+    "src/compiled_analysis.rs": "318e24ac25576ac7f68866eaff571d439519b1f0aee63ac8c352acc21d319975",
+    "src/core_pipeline.rs": "59f6d70e466b031597d5ffb7aff1d2c8867844cdbdc80e786f892117f457e4a9",
+    "src/dependencies.rs": "56b33649e75f4e74ad442eabcdb4feee2061f9e653cc67c06ff25acf87e7f3a3",
+    "prototypes/firefly_frontend/input/main.rs": "9b970b965ad623605bcc4f031f05ed453f3bc2d0312d9cb205dc5cd61d658fd0",
+    "prototypes/firefly_frontend/adapter/driver.rs": "a3628321bedc3d81c0bc4db0b01942d8b6ac8e8cd6a342db3367e77f00c88ebd",
+    "prototypes/firefly_frontend/elixir_harness/benchmark.py": "e1deceac72c319f70c0a4f6d3cf1d9a7b3c40d70793aa492ee653d092e177253"
+  },
+  "executables_sha256": {
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/native-beam-seed": "4462e1f1d5dc1a3286b30aa68b6c1bf8341d456d6e53b2fea525c8c2715c2a3d",
+    "/private/tmp/dialyzer-firefly-prototype/adapter/target/release/adapt-beam": "861f729e817cc9a04735b3e53a61ae5edcc1fd4d1ad230091916f4569ad1a2b3",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/compiled_analysis_probe": "6e6e1bca8a3d5fc5df4f92538baf09e6237c5bf33de3984d429ef61c3ebe9555"
+  },
+  "full_gate": "elixir-instrumented-gate.json",
+  "measurement": "elixir-phase-timings.json"
+}

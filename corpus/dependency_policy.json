@@ -1,0 +1,777 @@
+{
+  "version": 1,
+  "otp_tag": "OTP-28.3",
+  "purity_default": false,
+  "literal_default": false,
+  "escape_default": true,
+  "pure": [
+    {
+      "module": "erlang",
+      "name": "*",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "+",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "+",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "++",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "-",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "-",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "--",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "/",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "/=",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "<",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "=/=",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "=:=",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "=<",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "==",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": ">",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": ">=",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "and",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "band",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "bnot",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "bor",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "bsl",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "bsr",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "bxor",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "div",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "not",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "or",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "rem",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "xor",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "abs",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "atom_to_binary",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "atom_to_binary",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "atom_to_list",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "binary_part",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "binary_part",
+      "arity": 3
+    },
+    {
+      "module": "erlang",
+      "name": "binary_to_atom",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "binary_to_atom",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "binary_to_float",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "binary_to_integer",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "binary_to_list",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "binary_to_list",
+      "arity": 3
+    },
+    {
+      "module": "erlang",
+      "name": "bit_size",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "byte_size",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "ceil",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "element",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "float",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "float_to_list",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "float_to_binary",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "floor",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "hd",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "integer_to_binary",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "integer_to_list",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_atom",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_boolean",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_binary",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_bitstring",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_float",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_function",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_function",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "is_integer",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_list",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_map",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_map_key",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "is_number",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_pid",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_port",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_record",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "is_record",
+      "arity": 3
+    },
+    {
+      "module": "erlang",
+      "name": "is_reference",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "is_tuple",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "length",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "list_to_atom",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "list_to_binary",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "list_to_float",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "list_to_integer",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "list_to_integer",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "list_to_pid",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "list_to_tuple",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "max",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "make_fun",
+      "arity": 3
+    },
+    {
+      "module": "erlang",
+      "name": "map_get",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "min",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "pid_to_list",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "round",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "setelement",
+      "arity": 3
+    },
+    {
+      "module": "erlang",
+      "name": "size",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "split_binary",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "tl",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "trunc",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "tuple_size",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "tuple_to_list",
+      "arity": 1
+    },
+    {
+      "module": "lists",
+      "name": "append",
+      "arity": 2
+    },
+    {
+      "module": "lists",
+      "name": "subtract",
+      "arity": 2
+    },
+    {
+      "module": "maps",
+      "name": "get",
+      "arity": 2
+    },
+    {
+      "module": "maps",
+      "name": "is_key",
+      "arity": 2
+    },
+    {
+      "module": "maps",
+      "name": "new",
+      "arity": 0
+    },
+    {
+      "module": "math",
+      "name": "acos",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "acosh",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "asin",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "asinh",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "atan",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "atan2",
+      "arity": 2
+    },
+    {
+      "module": "math",
+      "name": "atanh",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "ceil",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "cos",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "cosh",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "erf",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "erfc",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "exp",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "floor",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "fmod",
+      "arity": 2
+    },
+    {
+      "module": "math",
+      "name": "log",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "log2",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "log10",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "pow",
+      "arity": 2
+    },
+    {
+      "module": "math",
+      "name": "sin",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "sinh",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "sqrt",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "tan",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "tanh",
+      "arity": 1
+    },
+    {
+      "module": "math",
+      "name": "pi",
+      "arity": 0
+    }
+  ],
+  "literal_remote": [
+    {
+      "module": "recv_wait_timeout",
+      "name": "1) -> true;\nis_literal_op(match_fail",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "+",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "-",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "*",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "/",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "=:=",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "==",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "=/=",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "/=",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "<",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "=<",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": ">",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": ">=",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "and",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "or",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "not",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "length",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "size",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "fun_info",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "fun_info",
+      "arity": 2
+    },
+    {
+      "module": "erlang",
+      "name": "fun_to_list",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "throw",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "exit",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "error",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "error",
+      "arity": 2
+    }
+  ],
+  "literal_primitive": [
+    {
+      "name": "recv_wait_timeout",
+      "arity": 1
+    },
+    {
+      "name": "match_fail",
+      "arity": 1
+    }
+  ],
+  "noescape_remote": [
+    {
+      "module": "match_fail",
+      "name": "1) -> false;\nis_escape_op(recv_wait_timeout",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "error",
+      "arity": 1
+    },
+    {
+      "module": "erlang",
+      "name": "error",
+      "arity": 2
+    }
+  ],
+  "noescape_primitive": [
+    {
+      "name": "match_fail",
+      "arity": 1
+    },
+    {
+      "name": "recv_wait_timeout",
+      "arity": 1
+    }
+  ],
+  "source_hashes": {
+    "erl_bifs.erl": "64c579f969496a2a714c3a20682932bab4d5956327ac61da1e457beffd280f23",
+    "dialyzer_dep.erl": "db9610d764a62b21ef32bf47faa59c6a376bf9a340d6898a1e11a35a4cff7ca1"
+  }
+}

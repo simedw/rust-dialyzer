@@ -1,0 +1,41 @@
+{
+  "otp": {
+    "url": "https://github.com/erlang/otp.git",
+    "revision": "ab489c0b260c637a9487f8753909ea94dacbbec2",
+    "tag": "OTP-28.3",
+    "sparse": [
+      "lib/dialyzer/test",
+      "lib/dialyzer/src"
+    ]
+  },
+  "elixir": {
+    "url": "https://github.com/elixir-lang/elixir.git",
+    "revision": "794441a2554f100ef1e58b77b4429cd6390f4f31",
+    "tag": "v1.19.4",
+    "sparse": [
+      "lib/elixir/test",
+      "lib/elixir/lib",
+      "lib/ex_unit/lib"
+    ]
+  },
+  "dialyxir": {
+    "url": "https://github.com/jeremyjh/dialyxir.git",
+    "revision": "13bcb7da40d609f280840e311cdeadfdadc2ca39",
+    "tag": "1.4.8",
+    "sparse": [
+      "test",
+      "lib",
+      ".github"
+    ]
+  },
+  "proper": {
+    "url": "https://github.com/proper-testing/proper.git",
+    "revision": "5640d0715d4b346676267504d8e84398e2a29f75",
+    "tag": "v1.5.0",
+    "sparse": [
+      "src",
+      "include"
+    ],
+    "role": "upstream property generator dependency"
+  }
+}

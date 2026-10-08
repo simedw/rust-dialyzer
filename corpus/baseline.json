@@ -1,0 +1,2073 @@
+{
+  "by_source": {
+    "dialyxir": {
+      "unsupported": 1
+    },
+    "elixir": {
+      "parity": 2,
+      "unsupported": 17
+    },
+    "otp": {
+      "mismatch": 2,
+      "oracle_failure": 1,
+      "unsupported": 287,
+      "unsupported_options": 17
+    }
+  },
+  "cases": [
+    {
+      "id": "otp/behaviour/callbacks_and_specs",
+      "kind": "otp",
+      "reason": "unsupported type pid",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/custom_sup",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/gen_event_incorrect_return",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"gen_event\", \"start_link\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/gen_server_incorrect_args",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/gen_server_missing_callbacks",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"gen_server\", \"start_link\", 4)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/gen_server_not_exported",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"gen_server_not_exported\", \"is_binary\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/otp_6221",
+      "kind": "otp",
+      "reason": "unsupported type map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/sample_behaviour",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/sample_behaviour_old",
+      "kind": "otp",
+      "status": "mismatch"
+    },
+    {
+      "id": "otp/behaviour/supervisor_incorrect_return",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"supervisor\", \"start_link\", 3)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/behaviour/undefined_callbacks",
+      "kind": "otp",
+      "status": "mismatch"
+    },
+    {
+      "id": "otp/behaviour/vars_in_beh_spec",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/callgraph/test_missing_functions",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"t1\", \"t3\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/default_ignore_overlapping_contract/default_ignore_overlapping_contract",
+      "kind": "otp",
+      "reason": "overloaded specs unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/extra_return/extra_return",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent2/arr",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent2/iodata",
+      "kind": "otp",
+      "reason": "unsupported type iodata",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent2/remote",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/abs",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/app_call",
+      "kind": "otp",
+      "reason": "dynamic remote call unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/blame_contract_range",
+      "kind": "otp",
+      "reason": "no_unused, no_return, overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/indent/bs_fail_constr",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/callbacks_and_specs",
+      "kind": "otp",
+      "reason": "unsupported type pid",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/contract3",
+      "kind": "otp",
+      "reason": "overloaded specs unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/contracts_with_subtypes",
+      "kind": "otp",
+      "reason": "unsupported type product",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/dict_use",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/fun_app",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/fun_app_args",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/guard_update",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/guard_warnings",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erlang\", \"and\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/map_galore",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/order",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/queue_use",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/rec",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/record_construct",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/record_creation_diffs",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/record_match",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/record_pat",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/record_send_test",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/record_test",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/record_update",
+      "kind": "otp",
+      "reason": "unsupported type record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/sample_behaviour",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/simple",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/suppress_request",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/indent/trec",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/line/trec",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/bad_argument",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/bug",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/contract",
+      "kind": "otp",
+      "reason": "unsupported type map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/contract_violation",
+      "kind": "otp",
+      "reason": "unsupported type module",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/exact",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/guard_update",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/initial_dataflow",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/is_map_guard",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/loop",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/mand_remote_val",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/map_anon_fun",
+      "kind": "otp",
+      "reason": "unsupported expression named_fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/map_galore",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/map_in_guard",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/map_in_guard2",
+      "kind": "otp",
+      "reason": "unsupported expression catch",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/map_size",
+      "kind": "otp",
+      "reason": "unsupported type map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/maps_merge",
+      "kind": "otp",
+      "reason": "unsupported type map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/maps_remove",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"maps\", \"new\", 0)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/opaque_bif",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/opaque_key",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/order",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/subtract_value_flip",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/typeflow",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/typeflow2",
+      "kind": "otp",
+      "reason": "unsupported type map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/map/typesig",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/missing_return/missing_return",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/nowarn_function/nowarn_function",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/nowarn_function/warn_function",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/array",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/big_external_type",
+      "kind": "otp",
+      "reason": "unsupported type product",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/big_local_type",
+      "kind": "otp",
+      "reason": "unsupported type product",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/crash",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/cuter",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/dict",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/ets",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/ewgi",
+      "kind": "otp",
+      "reason": "upstream golden output differs",
+      "status": "oracle_failure"
+    },
+    {
+      "id": "otp/opaque/ewgi2",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/gb_sets",
+      "kind": "otp",
+      "reason": "unsupported type record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/hipe_vectors",
+      "kind": "otp",
+      "reason": "unsupported type record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/inf_loop1",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/inf_loop2",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/int",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/mixed_opaque",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/modules",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/multiple_wrong_opaques",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/my_digraph",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/my_queue",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/opaque",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/para",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/para_bug",
+      "kind": "otp",
+      "reason": "unsupported expression record_field",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/queue",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/rec",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/recrec",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/schuett_bug",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/simple",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/timer",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/unicode",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/union",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/weird",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/wings",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/zoltan_adt",
+      "kind": "otp",
+      "reason": "no runtime functions to analyze",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/zoltan_kis1",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/zoltan_kis2",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/zoltan_kis3",
+      "kind": "otp",
+      "reason": "unsupported type char",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/zoltan_kis4",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/zoltan_kis5",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/opaque/zoltan_kis6",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/options1/compiler",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/options1/remote",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/options2/indirect_unknown_types",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/options2/kernel",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/options2/unknown_function",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"unknown_function\", \"function\", 0)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/options2/unknown_type",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/options2/unused_unknown_type",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/options3/bad_specs",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"bad_specs\", \"is_float\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/overlapping_contract/overlapping_contract",
+      "kind": "otp",
+      "reason": "overloaded specs unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/overspecs/iodata",
+      "kind": "otp",
+      "reason": "unsupported type iodata",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/overspecs/iolist",
+      "kind": "otp",
+      "reason": "unsupported type iolist",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/overspecs/opaque",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/r9c/asn1",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/r9c/inets",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/r9c/mnesia",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/abs",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/anno",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"compile\", \"forms\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/app_call",
+      "kind": "otp",
+      "reason": "dynamic remote call unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/appmon_place",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/areq",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/atom_call",
+      "kind": "otp",
+      "reason": "dynamic call unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/atom_guard",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"atom_guard\", \"is_atom\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/atom_widen",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/behaviour_info",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/bif1",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/big_external_type",
+      "kind": "otp",
+      "reason": "unsupported type product",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/big_local_type",
+      "kind": "otp",
+      "reason": "unsupported type product",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/binary_lc_bug",
+      "kind": "otp",
+      "reason": "unsupported expression bc",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/binary_nonempty",
+      "kind": "otp",
+      "reason": "unsupported type nonempty_bitstring",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/binary_redef2",
+      "kind": "otp",
+      "reason": "unsupported type nonempty_bitstring",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/blame_contract_range",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/blame_contract_range_suppressed",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/bsL",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/bs_constraints",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/bs_fail_constr",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/bs_segments",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/bs_utf8",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/chars",
+      "kind": "otp",
+      "reason": "unsupported type range",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/codec_can",
+      "kind": "otp",
+      "reason": "unsupported type fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/collapse_lists",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/common_eunit",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/compare1",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/comparisons",
+      "kind": "otp",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/confusing_warning",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/contract2",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/contract3",
+      "kind": "otp",
+      "reason": "overloaded specs unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/contract5",
+      "kind": "otp",
+      "reason": "unsupported type record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/contract6",
+      "kind": "otp",
+      "reason": "unsupported type record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/contracts_with_subtypes",
+      "kind": "otp",
+      "reason": "unsupported type product",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/contracts_with_subtypes2",
+      "kind": "otp",
+      "reason": "unsupported type product",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/ddfs_master",
+      "kind": "otp",
+      "reason": "unsupported type pid",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/deep_lc",
+      "kind": "otp",
+      "reason": "unsupported expression lc",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/disj_norm_form",
+      "kind": "otp",
+      "reason": "unsupported expression if",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/ditrap",
+      "kind": "otp",
+      "reason": "no runtime functions to analyze",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/eep37",
+      "kind": "otp",
+      "reason": "unsupported type fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/empty_list_infimum",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/eqeq",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/erl_tar_table",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erl_tar\", \"table\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/ets_select",
+      "kind": "otp",
+      "reason": "unsupported expression lc",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/ets_update_counter",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"ets\", \"update_counter\", 3)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/exhaust_case",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/extra_range",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"extra_range\", \"is_integer\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/failing_funs",
+      "kind": "otp",
+      "reason": "unsupported type fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/failing_guard1",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"failing_guard1\", \"is_number\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/false_false",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/file_open_encoding",
+      "kind": "otp",
+      "reason": "unsupported type string",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/flatten",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/fun2ms",
+      "kind": "otp",
+      "reason": "unsupported expression record_index",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/fun_app",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/fun_app_args",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/fun_arity",
+      "kind": "otp",
+      "reason": "dynamic call unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/fun_named",
+      "kind": "otp",
+      "reason": "unsupported type fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/fun_ref_match",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/fun_ref_record",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/funs_from_outside",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/gencall",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"ets\", \"lookup\", 3)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/gh_6518",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/gh_7153",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/gs_make",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/guard_warnings",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erlang\", \"and\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/guards",
+      "kind": "otp",
+      "reason": "unsupported expression record_field",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/higher_order_discrepancy",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/higher_order_discrepancy_2",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/inf_loop2",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"lists\", \"reverse\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/inv_mult",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"inv_mult\", \"length\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/invalid_spec_2",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/invalid_specs",
+      "kind": "otp",
+      "reason": "unsupported type string",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/keydel",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/left_assoc",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/letrec1",
+      "kind": "otp",
+      "reason": "unsupported expression lc",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/limit",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/list_match",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"list_match\", \"is_integer\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/list_none",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/list_to_bitstring",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/lists_key_bug",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/literals",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/logical_processors",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erlang\", \"system_info\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/loopy",
+      "kind": "otp",
+      "reason": "unsupported type product",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/lzip",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"lists\", \"zip\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/make_tuple",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erlang\", \"make_tuple\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/maps1",
+      "kind": "otp",
+      "reason": "unsupported type fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/maps_difftype",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/maps_redef2",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/maps_sum",
+      "kind": "otp",
+      "reason": "unsupported type map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/maybe_improper",
+      "kind": "otp",
+      "reason": "unsupported type maybe_improper_list",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/maybe_servers",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/minus_minus",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erlang\", \"--\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/mod_info",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"mod_info\", \"module_info\", 0)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/ms",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erlang\", \"trace_pattern\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/my_filter",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/my_sofs",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/no_local_return",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"lists\", \"duplicate\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/no_match",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/no_return_bug",
+      "kind": "otp",
+      "reason": "unsupported type nonempty_string",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/no_unused_fun",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/no_unused_fun2",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/non_existing",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/none_scc_inf_loop",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"none_scc_inf_loop\", \"exit\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/not_bogus_warning",
+      "kind": "otp",
+      "reason": "unsupported expression lc",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/not_guard_crash",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/nowarnunused",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"nowarnunused\", \"throw\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/on_load",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/or_bug",
+      "kind": "otp",
+      "reason": "unsupported expression record_field",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/orelsebug",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"orelsebug\", \"is_list\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/orelsebug2",
+      "kind": "otp",
+      "reason": "unsupported expression lc",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/overloaded1",
+      "kind": "otp",
+      "reason": "overloaded specs unsupported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/param_types_crash",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/port_info_test",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erlang\", \"port_info\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/predef",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/pretty_bitstring",
+      "kind": "otp",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/process_info_test",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/rebar_no_return",
+      "kind": "otp",
+      "reason": "unsupported type string",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/receive1",
+      "kind": "otp",
+      "reason": "unsupported expression receive",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/record_construct",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/record_creation_diffs",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/record_match",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/record_pat",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/record_send_test",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/record_test",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/record_update",
+      "kind": "otp",
+      "reason": "unsupported type record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/recursive_types1",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/recursive_types2",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/recursive_types3",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/recursive_types4",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/recursive_types5",
+      "kind": "otp",
+      "reason": "unsupported type record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/recursive_types6",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/recursive_types7",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/redefine_builtin_type",
+      "kind": "otp",
+      "reason": "unsupported type map",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/redefine_builtins",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/refine_bug1",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"refine_bug1\", \"throw\", 1)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/refine_failing",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/relevant_record_warning",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/remote_field",
+      "kind": "otp",
+      "reason": "no runtime functions to analyze",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/remote_field2",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/remote_tuple_set",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/request1",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/stack",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/stacktrace",
+      "kind": "otp",
+      "reason": "unsupported expression try",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/suppress_request",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/suppression1",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/suppression2",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/suppression3",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/test_product_app",
+      "kind": "otp",
+      "reason": "unsupported type mfa",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/toth",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/trec",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/try1",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/try2",
+      "kind": "otp",
+      "reason": "unsupported expression try",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/tuple1",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/tuple_set_crash",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/types_arity",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/union_paren",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/unknown_arity_function_spec",
+      "kind": "otp",
+      "reason": "unsupported type fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/unsafe_beamcode_bug",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/small/unused_cases",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/unused_clauses",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"unused_clauses\", \"element\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/unused_funs",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/small/zero_tuple",
+      "kind": "otp",
+      "reason": "overlapping_contract",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/specdiffs/iodata",
+      "kind": "otp",
+      "reason": "unsupported type iodata",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/specdiffs/iolist",
+      "kind": "otp",
+      "reason": "unsupported type iolist",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/specdiffs/overloaded",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/underspecs/arr",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/underspecs/opaque",
+      "kind": "otp",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/underspecs/remote",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/unmatched_returns/lc_warnings",
+      "kind": "otp",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/unmatched_returns/send",
+      "kind": "otp",
+      "reason": "unsupported external call Key(\"erlang\", \"!\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/user/broken_dialyzer",
+      "kind": "otp",
+      "reason": "unsupported expression lc",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/user/gcpFlowControl",
+      "kind": "otp",
+      "reason": "unsupported expression record",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/user/gh6580",
+      "kind": "otp",
+      "reason": "unsupported expression bc",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/user/nowarn_unused_function_1",
+      "kind": "otp",
+      "reason": "opaque_union",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/user/nowarn_unused_function_2",
+      "kind": "otp",
+      "reason": "opaque_union",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/user/nowarn_unused_function_3",
+      "kind": "otp",
+      "reason": "opaque_union",
+      "status": "unsupported_options"
+    },
+    {
+      "id": "otp/user/qlc_error",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/user/spvcOrig",
+      "kind": "otp",
+      "reason": "unsupported expression record_field",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/user/wpc_hlines",
+      "kind": "otp",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "otp/user/wsp_pdu",
+      "kind": "otp",
+      "reason": "unsupported expression if",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/01_no_warnings_on_specdiffs",
+      "kind": "elixir",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/02_no_warnings_on_valid_remote_calls",
+      "kind": "elixir",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/03_no_warnings_on_rewrites",
+      "kind": "elixir",
+      "reason": "only literal binaries supported",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/04_no_warnings_on_raise",
+      "kind": "elixir",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/05_no_warnings_on_macrocallback",
+      "kind": "elixir",
+      "reason": "no runtime functions to analyze",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/06_no_warnings_on_callback",
+      "kind": "elixir",
+      "status": "parity"
+    },
+    {
+      "id": "elixir/07_no_warnings_on_and_2_and_or_2",
+      "kind": "elixir",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/08_no_warnings_on_cond",
+      "kind": "elixir",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/09_no_warnings_on_for_comprehensions_with_bitstrings",
+      "kind": "elixir",
+      "reason": "unsupported expression map",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/10_no_warnings_on_for_falsy_check_that_always_boolean",
+      "kind": "elixir",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/11_no_warnings_on_with_else",
+      "kind": "elixir",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/12_no_warnings_on_with_when_else_has_a_no_return_type",
+      "kind": "elixir",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/13_no_warnings_on_with_when_multiple_else_clauses_and_one_is_a_no_return",
+      "kind": "elixir",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/14_no_warnings_on_defmacrop",
+      "kind": "elixir",
+      "status": "parity"
+    },
+    {
+      "id": "elixir/15_no_warnings_on_try",
+      "kind": "elixir",
+      "reason": "unsupported expression try",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/16_no_warning_on_is_struct_2",
+      "kind": "elixir",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/17_no_warning_on_exunit_assertions",
+      "kind": "elixir",
+      "reason": "unsupported expression case",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/18_no_warning_due_to_opaqueness_edge_cases",
+      "kind": "elixir",
+      "reason": "unsupported type",
+      "status": "unsupported"
+    },
+    {
+      "id": "elixir/19_no_warning_in_various_non_regression_cases",
+      "kind": "elixir",
+      "reason": "unsupported external call Key(\"Elixir.Code\", \"format_string!\", 2)",
+      "status": "unsupported"
+    },
+    {
+      "id": "dialyxir/examples",
+      "kind": "dialyxir",
+      "reason": "unsupported expression fun",
+      "status": "unsupported"
+    }
+  ],
+  "consistency_checks_not_ported": 22,
+  "operational_ct_cases_not_ported": 128,
+  "registered_semantic_cases": 327,
+  "runtime": {
+    "dialyzer": "5.4",
+    "elixir": "1.19.4",
+    "erts": "16.2",
+    "otp": "28"
+  },
+  "sources": {
+    "dialyxir": {
+      "revision": "13bcb7da40d609f280840e311cdeadfdadc2ca39",
+      "sparse": [
+        "test",
+        "lib",
+        ".github"
+      ],
+      "tag": "1.4.8",
+      "url": "https://github.com/jeremyjh/dialyxir.git"
+    },
+    "elixir": {
+      "revision": "794441a2554f100ef1e58b77b4429cd6390f4f31",
+      "sparse": [
+        "lib/elixir/test",
+        "lib/elixir/lib",
+        "lib/ex_unit/lib"
+      ],
+      "tag": "v1.19.4",
+      "url": "https://github.com/elixir-lang/elixir.git"
+    },
+    "otp": {
+      "revision": "ab489c0b260c637a9487f8753909ea94dacbbec2",
+      "sparse": [
+        "lib/dialyzer/test",
+        "lib/dialyzer/src"
+      ],
+      "tag": "OTP-28.3",
+      "url": "https://github.com/erlang/otp.git"
+    }
+  },
+  "summary": {
+    "mismatch": 2,
+    "oracle_failure": 1,
+    "parity": 2,
+    "unsupported": 305,
+    "unsupported_options": 17
+  },
+  "version": 1,
+  "warning_categories_observed": {
+    "app_call": 12,
+    "apply": 4,
+    "bin_construction": 10,
+    "call": 184,
+    "call_to_missing": 17,
+    "call_with_opaque": 8,
+    "call_without_opaque": 33,
+    "callback_arg_type_mismatch": 8,
+    "callback_info_missing": 5,
+    "callback_missing": 9,
+    "callback_not_exported": 2,
+    "callback_spec_arg_type_mismatch": 3,
+    "callback_spec_type_mismatch": 3,
+    "callback_type_mismatch": 18,
+    "contract_diff": 1,
+    "contract_range": 2,
+    "contract_subtype": 4,
+    "contract_supertype": 24,
+    "contract_with_opaque": 9,
+    "exact_compare": 58,
+    "extra_range": 13,
+    "fun_app_args": 3,
+    "fun_app_no_fun": 24,
+    "guard_fail": 228,
+    "guard_fail_pat": 5,
+    "improper_list_constr": 13,
+    "invalid_contract": 64,
+    "map_update": 11,
+    "missing_range": 8,
+    "neg_guard_fail": 32,
+    "no_return": 247,
+    "opaque_compare": 13,
+    "opaque_guard": 21,
+    "opaque_match": 26,
+    "opaque_size": 2,
+    "opaque_union": 52,
+    "overlapping_contract": 5,
+    "pattern_match": 568,
+    "pattern_match_cov": 93,
+    "record_constr": 31,
+    "record_match": 25,
+    "record_matching": 2,
+    "unknown_function": 2,
+    "unknown_type": 15,
+    "unmatched_return": 8,
+    "unused_fun": 24
+  }
+}

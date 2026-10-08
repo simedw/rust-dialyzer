@@ -1,0 +1,250 @@
+{
+  "version": 1,
+  "otp_sha": "ab489c0b260c637a9487f8753909ea94dacbbec2",
+  "source_sha256": {
+    "dialyzer_options.erl": "8ce1a5ce6ce933b1323a6706b621e8a128ba215bdd42789dadc30ca2edd770e4",
+    "dialyzer.hrl": "6026ea121bcf9bb93d0ef888fd29eda1d6454d82ee8c4a3ad5b36f6cb6a5769f"
+  },
+  "tags": [
+    "warn_behaviour",
+    "warn_bin_construction",
+    "warn_callgraph",
+    "warn_contract_extra_return",
+    "warn_contract_missing_return",
+    "warn_contract_not_equal",
+    "warn_contract_opaque",
+    "warn_contract_range",
+    "warn_contract_subtype",
+    "warn_contract_supertype",
+    "warn_contract_syntax",
+    "warn_contract_types",
+    "warn_failing_call",
+    "warn_fun_app",
+    "warn_map_construction",
+    "warn_matching",
+    "warn_non_proper_list",
+    "warn_not_called",
+    "warn_opaque",
+    "warn_opaque_union",
+    "warn_overlapping_contract",
+    "warn_return_no_exit",
+    "warn_return_only_exit",
+    "warn_umatched_return",
+    "warn_undefined_callbacks",
+    "warn_unknown"
+  ],
+  "default": [
+    "warn_behaviour",
+    "warn_bin_construction",
+    "warn_callgraph",
+    "warn_contract_opaque",
+    "warn_contract_range",
+    "warn_contract_syntax",
+    "warn_contract_types",
+    "warn_failing_call",
+    "warn_fun_app",
+    "warn_map_construction",
+    "warn_matching",
+    "warn_non_proper_list",
+    "warn_not_called",
+    "warn_opaque",
+    "warn_return_no_exit",
+    "warn_undefined_callbacks",
+    "warn_unknown"
+  ],
+  "options": [
+    {
+      "name": "no_return",
+      "action": "disable",
+      "tags": [
+        "warn_return_no_exit"
+      ]
+    },
+    {
+      "name": "no_unused",
+      "action": "disable",
+      "tags": [
+        "warn_not_called"
+      ]
+    },
+    {
+      "name": "no_unknown",
+      "action": "disable",
+      "tags": [
+        "warn_unknown"
+      ]
+    },
+    {
+      "name": "no_improper_lists",
+      "action": "disable",
+      "tags": [
+        "warn_non_proper_list"
+      ]
+    },
+    {
+      "name": "no_fun_app",
+      "action": "disable",
+      "tags": [
+        "warn_fun_app"
+      ]
+    },
+    {
+      "name": "no_match",
+      "action": "disable",
+      "tags": [
+        "warn_matching"
+      ]
+    },
+    {
+      "name": "no_opaque",
+      "action": "disable",
+      "tags": [
+        "warn_contract_opaque",
+        "warn_opaque",
+        "warn_opaque_union"
+      ]
+    },
+    {
+      "name": "no_fail_call",
+      "action": "disable",
+      "tags": [
+        "warn_failing_call"
+      ]
+    },
+    {
+      "name": "no_contracts",
+      "action": "disable",
+      "tags": [
+        "warn_contract_opaque",
+        "warn_contract_syntax",
+        "warn_contract_types",
+        "warn_overlapping_contract"
+      ]
+    },
+    {
+      "name": "no_behaviours",
+      "action": "disable",
+      "tags": [
+        "warn_behaviour"
+      ]
+    },
+    {
+      "name": "no_undefined_callbacks",
+      "action": "disable",
+      "tags": [
+        "warn_undefined_callbacks"
+      ]
+    },
+    {
+      "name": "unmatched_returns",
+      "action": "enable",
+      "tags": [
+        "warn_umatched_return"
+      ]
+    },
+    {
+      "name": "error_handling",
+      "action": "enable",
+      "tags": [
+        "warn_return_only_exit"
+      ]
+    },
+    {
+      "name": "no_missing_calls",
+      "action": "disable",
+      "tags": [
+        "warn_callgraph"
+      ]
+    },
+    {
+      "name": "specdiffs",
+      "action": "enable",
+      "tags": [
+        "warn_contract_subtype",
+        "warn_contract_supertype",
+        "warn_contract_not_equal",
+        "warn_contract_missing_return",
+        "warn_contract_extra_return"
+      ]
+    },
+    {
+      "name": "overspecs",
+      "action": "enable",
+      "tags": [
+        "warn_contract_subtype",
+        "warn_contract_missing_return"
+      ]
+    },
+    {
+      "name": "underspecs",
+      "action": "enable",
+      "tags": [
+        "warn_contract_supertype",
+        "warn_contract_extra_return"
+      ]
+    },
+    {
+      "name": "no_underspecs",
+      "action": "disable",
+      "tags": [
+        "warn_contract_supertype"
+      ]
+    },
+    {
+      "name": "extra_return",
+      "action": "enable",
+      "tags": [
+        "warn_contract_extra_return"
+      ]
+    },
+    {
+      "name": "no_extra_return",
+      "action": "disable",
+      "tags": [
+        "warn_contract_extra_return"
+      ]
+    },
+    {
+      "name": "missing_return",
+      "action": "enable",
+      "tags": [
+        "warn_contract_missing_return"
+      ]
+    },
+    {
+      "name": "no_missing_return",
+      "action": "disable",
+      "tags": [
+        "warn_contract_missing_return"
+      ]
+    },
+    {
+      "name": "opaque_union",
+      "action": "enable",
+      "tags": [
+        "warn_opaque_union"
+      ]
+    },
+    {
+      "name": "no_opaque_union",
+      "action": "disable",
+      "tags": [
+        "warn_opaque_union"
+      ]
+    },
+    {
+      "name": "unknown",
+      "action": "enable",
+      "tags": [
+        "warn_unknown"
+      ]
+    },
+    {
+      "name": "overlapping_contract",
+      "action": "enable",
+      "tags": [
+        "warn_overlapping_contract"
+      ]
+    }
+  ]
+}

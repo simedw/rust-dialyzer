@@ -1,0 +1,18 @@
+--- a/scripts/core_export.exs
++++ b/scripts/core_export.exs
+@@ -239,8 +239,14 @@
+   def atom_layout(modules, raw_terms \\ []) do
+     atoms = for module <- modules, %{kind: "atom", value: name} <- module.terms,
+                 do: String.to_existing_atom(name)
+-    CompilerAtomPrimitives.export(atoms ++ raw_atoms(raw_terms) ++ [:top, :external, :in, :out, :"$e", :"$v"],
++    started = System.monotonic_time(:microsecond)
++    raw = raw_atoms(raw_terms)
++    if System.get_env("RUST_DIALYZER_TRACE"), do: IO.puts(:stderr, "PERF export.atom_collect #{(System.monotonic_time(:microsecond) - started) / 1_000_000}")
++    started = System.monotonic_time(:microsecond)
++    layout = CompilerAtomPrimitives.export(atoms ++ raw ++ [:top, :external, :in, :out, :"$e", :"$v"],
+                                   Base.encode16(:crypto.strong_rand_bytes(16)))
++    if System.get_env("RUST_DIALYZER_TRACE"), do: IO.puts(:stderr, "PERF export.atom_hashes #{(System.monotonic_time(:microsecond) - started) / 1_000_000}")
++    layout
+   end
+ 
+   defp raw_atoms(value), do: value |> collect_atoms(MapSet.new()) |> MapSet.to_list()

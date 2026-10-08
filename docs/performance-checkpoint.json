@@ -1,0 +1,35 @@
+{
+  "candidate_root": "/private/tmp/rust-dialyzer-perf-26",
+  "completed_cases": [
+    "tiny",
+    "elixir/01_no_warnings_on_specdiffs",
+    "elixir/02_no_warnings_on_valid_remote_calls",
+    "elixir/03_no_warnings_on_rewrites",
+    "elixir/04_no_warnings_on_raise",
+    "elixir/05_no_warnings_on_macrocallback",
+    "elixir/06_no_warnings_on_callback",
+    "elixir/07_no_warnings_on_and_2_and_or_2",
+    "elixir/08_no_warnings_on_cond",
+    "elixir/09_no_warnings_on_for_comprehensions_with_bitstrings",
+    "elixir/10_no_warnings_on_for_falsy_check_that_always_boolean",
+    "elixir/11_no_warnings_on_with_else",
+    "elixir/12_no_warnings_on_with_when_else_has_a_no_return_type",
+    "elixir/13_no_warnings_on_with_when_multiple_else_clauses_and_one_is_a_no_return",
+    "elixir/14_no_warnings_on_defmacrop",
+    "elixir/15_no_warnings_on_try",
+    "elixir/16_no_warning_on_is_struct_2",
+    "elixir/17_no_warning_on_exunit_assertions"
+  ],
+  "running_case": "elixir/18_no_warning_due_to_opaqueness_edge_cases",
+  "session_id": null,
+  "running_report": "/private/tmp/rust-dialyzer-perf-26/elixir-324-trace/report.json",
+  "next_work": [
+    "Case324 balanced trace terminal with exact outputs/provenance. Compiler preparation and dependency import remain dominant; target inference only milliseconds. Examine native dependency arena capture/contract representation and bridge transport before further local helper changes. Traced whole-command26 vs23 is inconclusive on324; no gain claim.",
+    "Keep perf-7 immutable. Complete current-source broad semantic and operational acceptance before migrating the main repository CLI.",
+    "Continue per-case profiling and investigate the repeated library export/import cost.",
+    "Complete the public incremental workflow; component proofs do not establish workflow parity."
+  ],
+  "full_goal_complete": false,
+  "last_completed_report": "/private/tmp/rust-dialyzer-perf-26/elixir-323-proof/report.json",
+  "running_checks": []
+}

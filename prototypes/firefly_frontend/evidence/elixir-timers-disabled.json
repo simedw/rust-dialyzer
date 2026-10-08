@@ -1,0 +1,276 @@
+{
+  "rounds": 5,
+  "warmups": 1,
+  "summary": [
+    {
+      "id": "tiny",
+      "modules": 4,
+      "warnings": 6,
+      "otp": {
+        "wall_ms": 651.527667,
+        "analysis_ms": 96.037
+      },
+      "native": {
+        "wall_ms": 227.341,
+        "translation_ms": 18.243041,
+        "adapter_ms": 22.305459,
+        "context_and_analysis_ms": 177.980792
+      },
+      "native_speedup": 2.8658608302066058
+    },
+    {
+      "id": "dialyxir/examples",
+      "modules": 23,
+      "warnings": 27,
+      "otp": {
+        "wall_ms": 837.048583,
+        "analysis_ms": 156.226083
+      },
+      "native": {
+        "wall_ms": 621.932625,
+        "translation_ms": 104.639163,
+        "adapter_ms": 126.22320999999997,
+        "context_and_analysis_ms": 319.490417
+      },
+      "native_speedup": 1.3458830576704348
+    }
+  ],
+  "samples": [
+    {
+      "id": "tiny",
+      "implementation": "otp",
+      "round": 0,
+      "wall_ms": 700.6115,
+      "analysis_ms": 89.624875,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "tiny",
+      "implementation": "native",
+      "round": 0,
+      "wall_ms": 276.469875,
+      "translation_ms": 18.457459,
+      "adapter_ms": 22.305459,
+      "context_and_analysis_ms": 174.44975
+    },
+    {
+      "id": "tiny",
+      "implementation": "native",
+      "round": 1,
+      "wall_ms": 277.756917,
+      "translation_ms": 18.766209,
+      "adapter_ms": 23.709375,
+      "context_and_analysis_ms": 230.155542
+    },
+    {
+      "id": "tiny",
+      "implementation": "otp",
+      "round": 1,
+      "wall_ms": 645.530166,
+      "analysis_ms": 96.859,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "tiny",
+      "implementation": "otp",
+      "round": 2,
+      "wall_ms": 651.527667,
+      "analysis_ms": 116.429291,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "tiny",
+      "implementation": "native",
+      "round": 2,
+      "wall_ms": 224.194334,
+      "translation_ms": 18.243041,
+      "adapter_ms": 22.660917,
+      "context_and_analysis_ms": 177.980792
+    },
+    {
+      "id": "tiny",
+      "implementation": "native",
+      "round": 3,
+      "wall_ms": 216.0615,
+      "translation_ms": 16.961332,
+      "adapter_ms": 20.679167,
+      "context_and_analysis_ms": 172.995583
+    },
+    {
+      "id": "tiny",
+      "implementation": "otp",
+      "round": 3,
+      "wall_ms": 644.386458,
+      "analysis_ms": 91.302,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "tiny",
+      "implementation": "otp",
+      "round": 4,
+      "wall_ms": 688.808958,
+      "analysis_ms": 96.037,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "tiny",
+      "implementation": "native",
+      "round": 4,
+      "wall_ms": 227.341,
+      "translation_ms": 17.629875,
+      "adapter_ms": 21.639583000000002,
+      "context_and_analysis_ms": 182.972292
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "otp",
+      "round": 0,
+      "wall_ms": 755.525584,
+      "analysis_ms": 146.758209,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "native",
+      "round": 0,
+      "wall_ms": 573.227417,
+      "translation_ms": 104.639163,
+      "adapter_ms": 126.36933600000002,
+      "context_and_analysis_ms": 319.490417
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "native",
+      "round": 1,
+      "wall_ms": 621.932625,
+      "translation_ms": 109.19446200000002,
+      "adapter_ms": 125.26453700000002,
+      "context_and_analysis_ms": 300.043833
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "otp",
+      "round": 1,
+      "wall_ms": 1068.059667,
+      "analysis_ms": 164.379208,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "otp",
+      "round": 2,
+      "wall_ms": 853.682167,
+      "analysis_ms": 156.226083,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "native",
+      "round": 2,
+      "wall_ms": 660.193459,
+      "translation_ms": 107.413833,
+      "adapter_ms": 129.038834,
+      "context_and_analysis_ms": 399.81625
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "native",
+      "round": 3,
+      "wall_ms": 655.926875,
+      "translation_ms": 104.297208,
+      "adapter_ms": 126.22320999999997,
+      "context_and_analysis_ms": 402.110083
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "otp",
+      "round": 3,
+      "wall_ms": 723.832292,
+      "analysis_ms": 144.747292,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "otp",
+      "round": 4,
+      "wall_ms": 837.048583,
+      "analysis_ms": 164.428209,
+      "profile": {
+        "otp": "28",
+        "elixir": "1.19.4",
+        "erts": "16.2"
+      }
+    },
+    {
+      "id": "dialyxir/examples",
+      "implementation": "native",
+      "round": 4,
+      "wall_ms": 549.351542,
+      "translation_ms": 95.39512700000002,
+      "adapter_ms": 114.730748,
+      "context_and_analysis_ms": 317.951833
+    }
+  ],
+  "rust_phase_timings_enabled": false,
+  "rust_build_modes_verified": [],
+  "warnings_verified_every_timed_run": true,
+  "application_incremental_cache": false,
+  "warm_filesystem": true,
+  "startup_included": true,
+  "captured_runtime_profiles": true,
+  "optimized_binaries_expected": true,
+  "dependency_plt": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/_elixir/base-9e334de4afc507604b0d9eb72ce3aace64ca833c47b254bc0bca41d3259a0a08.plt",
+  "dependency_plt_sha256": "c9b99425c3f729353809da1ea140c97b411dbf2b1fca3da3c2bb077f48e914b0",
+  "limits": [
+    "Prototype native pipeline uses separate helper and adapter processes per module and flat JSON transport.",
+    "Native context-and-analysis includes loading captured JSON dependency facts; OTP loads its existing binary PLT.",
+    "No application rebuild or incremental application cache is timed.",
+    "OTP subprocess wall includes the Elixir script runner, runtime startup, and warning serialization after its internal analysis timer.",
+    "Native analyzer subprocess includes correctness comparison against expected warnings."
+  ],
+  "binary_sha256": {
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/native-beam-seed": "4462e1f1d5dc1a3286b30aa68b6c1bf8341d456d6e53b2fea525c8c2715c2a3d",
+    "/private/tmp/dialyzer-firefly-prototype/adapter/target/release/adapt-beam": "861f729e817cc9a04735b3e53a61ae5edcc1fd4d1ad230091916f4569ad1a2b3",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/compiled_analysis_probe": "6e6e1bca8a3d5fc5df4f92538baf09e6237c5bf33de3984d429ef61c3ebe9555"
+  },
+  "script_sha256": {
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/benchmark.py": "e1deceac72c319f70c0a4f6d3cf1d9a7b3c40d70793aa492ee653d092e177253",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/benchmark.exs": "7031bed265bb5975b9b2ac49647aa42590295e21f83a67774f108131a128c6f7"
+  }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "firefly-audit-probe"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+firefly_beam = { path = "../library/beam", features = ["std"] }
+firefly_syntax_erl = { path = "../compiler/syntax_erl" }
+firefly_syntax_pp = { path = "../compiler/syntax_pp" }
+firefly_syntax_core = { path = "../compiler/syntax_core" }
+firefly_pass = { path = "../compiler/pass" }
+firefly_syntax_base = { path = "../compiler/syntax_base" }
+firefly_diagnostics = { path = "../compiler/diagnostics" }
+firefly_util = { path = "../compiler/util" }
+firefly_intern = { path = "../compiler/intern", features = ["std"] }
+anyhow = { workspace = true, features = ["std"] }

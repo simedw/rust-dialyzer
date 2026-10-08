@@ -1,0 +1,14 @@
+OTP 27
+GENERATED_RETHROW [{c_var,[],2},{c_var,[],3}]
+TRY_EVARS [{c_var,[],4},{c_var,[],3},{c_var,[],2}]
+GENERATED_RETHROW [{c_var,[],3},{c_var,[],4}]
+TRY_EVARS [{c_var,[],5},{c_var,[],4},{c_var,[],3}]
+EXPLICIT_RAISE [{c_literal,[{5,34},
+                            {file,"fixtures/rethrow/firefly_rethrow_identity.erl"}],
+                           error},
+                {c_literal,[{5,41},
+                            {file,"fixtures/rethrow/firefly_rethrow_identity.erl"}],
+                           reason},
+                {c_literal,[{5,49},
+                            {file,"fixtures/rethrow/firefly_rethrow_identity.erl"}],
+                           []}]

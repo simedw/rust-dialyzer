@@ -1,0 +1,37 @@
+--- a/src/dependencies.rs
++++ b/src/dependencies.rs
+@@ -38,7 +38,9 @@
+ }
+ impl Artifact {
+     fn parse(raw: &str) -> Result<Self, String> {
++        let transport_span = crate::perf_trace::Span::new("prior.transport_json");
+         let transport: Transport = serde_json::from_str(raw).map_err(|e| e.to_string())?;
++        drop(transport_span);
+         let mut artifact = transport.artifact;
+         if artifact.version != 5 {
+             return Ok(artifact);
+@@ -89,6 +91,7 @@
+                 _ => Err("prior MFA shape differs".into()),
+             }
+         }
++        let summaries_span = crate::perf_trace::Span::new("prior.raw_summaries");
+         let summaries = arena(transport.raw_summaries)?;
+         for id in list(&summaries, summaries.root)? {
+             let fields = tuple(&summaries, id, 3)?;
+@@ -101,6 +104,8 @@
+                     .collect::<Result<_, _>>()?,
+             });
+         }
++        drop(summaries_span);
++        let contracts_span = crate::perf_trace::Span::new("prior.raw_contracts");
+         let contracts = arena(transport.raw_contracts)?;
+         for id in list(&contracts, contracts.root)? {
+             let fields = tuple(&contracts, id, 2)?;
+@@ -131,6 +136,7 @@
+                 contract,
+             });
+         }
++        drop(contracts_span);
+         Ok(artifact)
+     }
+ }

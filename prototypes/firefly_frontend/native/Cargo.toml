@@ -1,0 +1,16 @@
+[package]
+name = "native-elixir-dialyzer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rust-dialyzer-poc = { path = "../../.." }
+elixir-frontend = { path = "../elixir" }
+native-beam-seed = { path = "../input" }
+firefly-core-adapter = { path = "../adapter" }
+firefly_beam = { path = "../compiler/library/beam", features = ["std"] }
+serde_json = "1"
+
+[[bin]]
+name = "native-elixir-dialyzer"
+path = "main.rs"

@@ -1,0 +1,374 @@
+{
+  "cases": 21,
+  "native_frontend_passed": 6,
+  "exact_warning_matches": 4,
+  "inferred_type_matches": 5,
+  "checks": [
+    {
+      "id": "tiny",
+      "warnings_match": true,
+      "inferred_types_match": true,
+      "expected_warnings": 6
+    },
+    {
+      "id": "elixir/06_no_warnings_on_callback",
+      "warnings_match": true,
+      "inferred_types_match": true,
+      "expected_warnings": 0
+    },
+    {
+      "id": "elixir/07_no_warnings_on_and_2_and_or_2",
+      "warnings_match": false,
+      "inferred_types_match": true,
+      "expected_warnings": 0
+    },
+    {
+      "id": "elixir/14_no_warnings_on_defmacrop",
+      "warnings_match": false,
+      "inferred_types_match": false,
+      "expected_warnings": 0
+    },
+    {
+      "id": "elixir/17_no_warning_on_exunit_assertions",
+      "warnings_match": true,
+      "inferred_types_match": true,
+      "expected_warnings": 0
+    },
+    {
+      "id": "elixir/19_no_warning_in_various_non_regression_cases",
+      "warnings_match": true,
+      "inferred_types_match": true,
+      "expected_warnings": 0
+    }
+  ],
+  "module_metadata": {
+    "Elixir.Tiny.Issues": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Tiny.Macros": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Tiny.Math": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Tiny.Values": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyzer.Callback.ImplAtom": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyzer.Callback.ImplList": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyzer.Callback": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyzer.BooleanCheck": {
+      "raw_source_forms_structurally_equal": false,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyzer.Defmacrop": {
+      "raw_source_forms_structurally_equal": false,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyzer.Assertions": {
+      "raw_source_forms_structurally_equal": false,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyzer.Regressions": {
+      "raw_source_forms_structurally_equal": false,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.Apply": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.Call": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.CallbackArgument.Behaviour": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.CallbackArgument": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.CallbackSpecArgument.Behaviour": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.CallbackSpecArgument": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.ContractSuperType": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.ContractWithOpaque.Types": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.ContractWithOpaque": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.ExactEquality": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.ExtraRange": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.FunctionApplicationArgs": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.FunctionApplicationNoFun": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.GuardFail": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.GuardFailPattern": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.OpaqueEquality.Types": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    },
+    "Elixir.Dialyxir.Examples.OpaqueEquality": {
+      "raw_source_forms_structurally_equal": true,
+      "source_attributes_and_locations_equal": true,
+      "note": "Structural differences are reported separately; warnings and inferred types decide semantic gate."
+    }
+  },
+  "failures": [
+    {
+      "id": "elixir/01_no_warnings_on_specdiffs",
+      "module": "Elixir.Dialyzer.RemoteCall",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__01_no_warnings_on_specdiffs/beams/Elixir.Dialyzer.RemoteCall.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.RemoteCall/seed.json"
+      ],
+      "error": "unsupported dynamic zero-arity remote/map access\n"
+    },
+    {
+      "id": "elixir/02_no_warnings_on_valid_remote_calls",
+      "module": "Elixir.Dialyzer.RemoteCall",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__02_no_warnings_on_valid_remote_calls/beams/Elixir.Dialyzer.RemoteCall.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.RemoteCall/seed.json"
+      ],
+      "error": "unsupported dynamic zero-arity remote/map access\n"
+    },
+    {
+      "id": "elixir/03_no_warnings_on_rewrites",
+      "module": "Elixir.Dialyzer.Rewrite",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__03_no_warnings_on_rewrites/beams/Elixir.Dialyzer.Rewrite.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.Rewrite/seed.json"
+      ],
+      "error": "unsupported Elixir construct %\n"
+    },
+    {
+      "id": "elixir/04_no_warnings_on_raise",
+      "module": "Elixir.Dialyzer.Raise",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__04_no_warnings_on_raise/beams/Elixir.Dialyzer.Raise.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.Raise/seed.json"
+      ],
+      "error": "unsupported dynamic zero-arity remote/map access\n"
+    },
+    {
+      "id": "elixir/05_no_warnings_on_macrocallback",
+      "module": "Elixir.Dialyzer.Macrocallback.Impl",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__05_no_warnings_on_macrocallback/beams/Elixir.Dialyzer.Macrocallback.Impl.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.Macrocallback.Impl/seed.json"
+      ],
+      "error": "variable has no version\n"
+    },
+    {
+      "id": "elixir/08_no_warnings_on_cond",
+      "module": "Elixir.Dialyzer.Cond",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__08_no_warnings_on_cond/beams/Elixir.Dialyzer.Cond.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.Cond/seed.json"
+      ],
+      "error": "unsupported Elixir construct cond\n"
+    },
+    {
+      "id": "elixir/09_no_warnings_on_for_comprehensions_with_bitstrings",
+      "module": "Elixir.Dialyzer.ForBitstring",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__09_no_warnings_on_for_comprehensions_with_bitstrings/beams/Elixir.Dialyzer.ForBitstring.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.ForBitstring/seed.json"
+      ],
+      "error": "unsupported Elixir construct for\n"
+    },
+    {
+      "id": "elixir/10_no_warnings_on_for_falsy_check_that_always_boolean",
+      "module": "Elixir.Dialyzer.ForBooleanCheck",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__10_no_warnings_on_for_falsy_check_that_always_boolean/beams/Elixir.Dialyzer.ForBooleanCheck.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.ForBooleanCheck/seed.json"
+      ],
+      "error": "unsupported Elixir construct for\n"
+    },
+    {
+      "id": "elixir/11_no_warnings_on_with_else",
+      "module": "Elixir.Dialyzer.With",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__11_no_warnings_on_with_else/beams/Elixir.Dialyzer.With.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.With/seed.json"
+      ],
+      "error": "unsupported Elixir construct with\n"
+    },
+    {
+      "id": "elixir/12_no_warnings_on_with_when_else_has_a_no_return_type",
+      "module": "Elixir.Dialyzer.WithNoReturn",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__12_no_warnings_on_with_when_else_has_a_no_return_type/beams/Elixir.Dialyzer.WithNoReturn.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.WithNoReturn/seed.json"
+      ],
+      "error": "unsupported Elixir construct with\n"
+    },
+    {
+      "id": "elixir/13_no_warnings_on_with_when_multiple_else_clauses_and_one_is_a_no_return",
+      "module": "Elixir.Dialyzer.WithThrowingElse",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__13_no_warnings_on_with_when_multiple_else_clauses_and_one_is_a_no_return/beams/Elixir.Dialyzer.WithThrowingElse.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.WithThrowingElse/seed.json"
+      ],
+      "error": "unsupported Elixir construct with\n"
+    },
+    {
+      "id": "elixir/15_no_warnings_on_try",
+      "module": "Elixir.Dialyzer.Try",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__15_no_warnings_on_try/beams/Elixir.Dialyzer.Try.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.Try/seed.json"
+      ],
+      "error": "unsupported Elixir construct try\n"
+    },
+    {
+      "id": "elixir/16_no_warning_on_is_struct_2",
+      "module": "Elixir.Dialyzer.IsStruct",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__16_no_warning_on_is_struct_2/beams/Elixir.Dialyzer.IsStruct.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.IsStruct/seed.json"
+      ],
+      "error": "unsupported Elixir construct %\n"
+    },
+    {
+      "id": "elixir/18_no_warning_due_to_opaqueness_edge_cases",
+      "module": "Elixir.Dialyzer.Opaqueness",
+      "phase": "frontend",
+      "command": [
+        "/private/tmp/dialyzer-firefly-prototype/adapter/target/debug/adapt-beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/elixir__18_no_warning_due_to_opaqueness_edge_cases/beams/Elixir.Dialyzer.Opaqueness.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.Opaqueness/seed.json",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyzer.Opaqueness/module.json"
+      ],
+      "error": "Error: ambiguous map field source origin .cache/upstream/elixir/lib/elixir/test/elixir/fixtures/dialyzer/opaqueness.ex\n"
+    },
+    {
+      "id": "dialyxir/examples",
+      "module": "Elixir.Dialyxir.Examples.OpaqueMatch.Struct",
+      "phase": "frontend",
+      "command": [
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/corpus/elixir/dialyxir__examples/beams/Elixir.Dialyxir.Examples.OpaqueMatch.Struct.beam",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/elixir_harness/generated/native/Elixir.Dialyxir.Examples.OpaqueMatch.Struct/seed.json"
+      ],
+      "error": "unsupported Elixir construct %\n"
+    },
+    {
+      "id": "elixir/07_no_warnings_on_and_2_and_or_2",
+      "phase": "analysis",
+      "warnings_match": false,
+      "inferred_types_match": true
+    },
+    {
+      "id": "elixir/14_no_warnings_on_defmacrop",
+      "phase": "analysis",
+      "warnings_match": false,
+      "inferred_types_match": false
+    }
+  ],
+  "native_path_launched_vm": false,
+  "captured_runtime_profiles": true,
+  "oracle_core_bodies_used_as_frontend_input": false,
+  "sha256": {
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/prototypes/firefly_frontend/input/target/debug/native-beam-seed": "7800c0a0d900fd665a97c12f06e2df44f93f1294084fb72c72a125ee0e24ec40",
+    "/private/tmp/dialyzer-firefly-prototype/adapter/target/debug/adapt-beam": "07960beb58fcdd6acbec25c8668ee578f69f3caa9e428473efa44d639cac3c3b",
+    "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/debug/compiled_analysis_probe": "732626aa3f251d619ed739d580808c86e267b8463ea0563935d630f32f6149c0"
+  }
+}

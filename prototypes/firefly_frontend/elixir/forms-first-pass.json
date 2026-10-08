@@ -1,0 +1,126 @@
+{
+  "equal": [
+    "Elixir.Dialyxir.Examples.Apply",
+    "Elixir.Dialyxir.Examples.Call",
+    "Elixir.Dialyxir.Examples.CallbackArgument",
+    "Elixir.Dialyxir.Examples.CallbackArgument.Behaviour",
+    "Elixir.Dialyxir.Examples.CallbackSpecArgument",
+    "Elixir.Dialyxir.Examples.CallbackSpecArgument.Behaviour",
+    "Elixir.Dialyxir.Examples.ContractSuperType",
+    "Elixir.Dialyxir.Examples.ContractWithOpaque",
+    "Elixir.Dialyxir.Examples.ContractWithOpaque.Types",
+    "Elixir.Dialyxir.Examples.ExactEquality",
+    "Elixir.Dialyxir.Examples.ExtraRange",
+    "Elixir.Dialyxir.Examples.FunctionApplicationArgs",
+    "Elixir.Dialyxir.Examples.FunctionApplicationNoFun",
+    "Elixir.Dialyxir.Examples.GuardFail",
+    "Elixir.Dialyxir.Examples.GuardFailPattern",
+    "Elixir.Dialyxir.Examples.OpaqueEquality",
+    "Elixir.Dialyxir.Examples.OpaqueEquality.Types",
+    "Elixir.Dialyxir.Examples.OpaqueMatch",
+    "Elixir.Dialyxir.Examples.PatternMatch",
+    "Elixir.Dialyxir.Examples.PatternMuchCovered",
+    "Elixir.Dialyxir.Examples.UnknownType",
+    "Elixir.Dialyxir.Examples.UnknownType.Missing",
+    "Elixir.Dialyzer.Callback",
+    "Elixir.Dialyzer.Callback.ImplAtom",
+    "Elixir.Dialyzer.Callback.ImplList",
+    "Elixir.Dialyzer.Macrocallback",
+    "Elixir.Tiny.Issues",
+    "Elixir.Tiny.Macros",
+    "Elixir.Tiny.Math",
+    "Elixir.Tiny.Values"
+  ],
+  "failed": [
+    [
+      "Elixir.Dialyxir.Examples.OpaqueMatch.Struct",
+      "translate",
+      "unsupported Elixir construct %"
+    ],
+    [
+      "Elixir.Dialyzer.Assertions",
+      "compare",
+      "forms.list[8].tuple[4].list[0].tuple[4].list[2].tuple[3].tuple[3].list[0].tuple[4].list[0].tuple[3].list[0].tuple[4].list[0].tuple[3].list[0].tuple[3].list[0].tuple[3].tuple[2].tuple[2].list[1].tuple[2].list[0].tuple[2].tuple[0]: native Atom(\"bin\"); oracle Atom(\"string\")"
+    ],
+    [
+      "Elixir.Dialyzer.BooleanCheck",
+      "compare",
+      "forms.list[6].tuple[4].list[0].tuple[4].list[0].tuple[3].list[0].tuple[1]: native Integer(\"3\"); oracle List { items: [TermId(535), TermId(538)], tail: TermId(539) }"
+    ],
+    [
+      "Elixir.Dialyzer.Cond",
+      "translate",
+      "unsupported Elixir construct cond"
+    ],
+    [
+      "Elixir.Dialyzer.Defmacrop",
+      "compare",
+      "forms: native List { items: [TermId(83), TermId(88), TermId(95), TermId(107), TermId(176), TermId(448), TermId(535), TermId(610)], tail: TermId(611) }; oracle List { items: [TermId(83), TermId(88), TermId(95), TermId(107), TermId(176), TermId(448), TermId(523)], tail: TermId(524) }"
+    ],
+    [
+      "Elixir.Dialyzer.ForBitstring",
+      "translate",
+      "unsupported Elixir construct for"
+    ],
+    [
+      "Elixir.Dialyzer.ForBooleanCheck",
+      "translate",
+      "unsupported Elixir construct for"
+    ],
+    [
+      "Elixir.Dialyzer.IsStruct",
+      "translate",
+      "unsupported Elixir construct %"
+    ],
+    [
+      "Elixir.Dialyzer.Macrocallback.Impl",
+      "translate",
+      "variable has no version"
+    ],
+    [
+      "Elixir.Dialyzer.Opaqueness",
+      "compare",
+      "forms.list[9].tuple[4].list[0].tuple[4].list[0].tuple[3].list[0]: native Tuple([TermId(650), TermId(653), TermId(670), TermId(710)]); oracle Tuple([TermId(650), TermId(660), TermId(850)])"
+    ],
+    [
+      "Elixir.Dialyzer.Raise",
+      "translate",
+      "unsupported dynamic zero-arity remote/map access"
+    ],
+    [
+      "Elixir.Dialyzer.Regressions",
+      "compare",
+      "forms.list[6].tuple[4].list[0].tuple[4].list[0].tuple[3].list[0].tuple[2]: native List { items: [TermId(519)], tail: TermId(520) }; oracle Nil"
+    ],
+    [
+      "Elixir.Dialyzer.RemoteCall",
+      "translate",
+      "unsupported dynamic zero-arity remote/map access"
+    ],
+    [
+      "Elixir.Dialyzer.Rewrite",
+      "translate",
+      "unsupported Elixir construct %"
+    ],
+    [
+      "Elixir.Dialyzer.Try",
+      "translate",
+      "unsupported Elixir construct try"
+    ],
+    [
+      "Elixir.Dialyzer.With",
+      "translate",
+      "unsupported Elixir construct with"
+    ],
+    [
+      "Elixir.Dialyzer.WithNoReturn",
+      "translate",
+      "unsupported Elixir construct with"
+    ],
+    [
+      "Elixir.Dialyzer.WithThrowingElse",
+      "translate",
+      "unsupported Elixir construct with"
+    ]
+  ]
+}
