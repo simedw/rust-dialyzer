@@ -168,7 +168,7 @@ impl Type {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Atoms {
     All,
-    Set(BTreeSet<String>),
+    Set(BTreeSet<crate::atom::Atom>),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Numeric {
@@ -1154,9 +1154,9 @@ impl Tuples {
             .map(|tag| {
                 let mut elements = elements.clone();
                 if split && let Some(t) = &tag {
-                    elements[0] = Type::atom(t.clone())
+                    elements[0] = Type::atom(t)
                 }
-                TupleVariant { elements, tag }
+                TupleVariant { elements, tag: tag.map(String::from) }
             })
             .collect();
         Ok(Some(Self::Set(BTreeMap::from([(
@@ -2070,7 +2070,7 @@ impl MapKey {
             TypeView::Families(_) if t == &Type::nil() => Ok(Self::Nil),
             TypeView::Families(s) if s.atoms.is_some() => match s.atoms {
                 Some(AtomsView::Set(a)) if a.len() == 1 && t == &Type::atoms(a.iter().cloned()) => {
-                    Ok(Self::Atom(a.first().unwrap().clone()))
+                    Ok(Self::Atom(a.first().unwrap().to_string()))
                 }
                 _ => Err(
                     "OTP badarg: map exact key must be native singleton atom, integer, or nil"
@@ -2409,7 +2409,7 @@ impl Maps {
             return Ok(match (e.presence, e.value.is_none()) {
                 (Presence::Mandatory, _) => Type::atom("true"),
                 (Presence::Optional, true) => Type::atom("false"),
-                _ => Type::atoms(["false".into(), "true".into()]),
+                _ => Type::atoms(["false", "true"]),
             });
         }
         let mut overlap = !self.default_key.meet(key)?.is_impossible();
@@ -2419,7 +2419,7 @@ impl Maps {
             }
         }
         Ok(if overlap {
-            Type::atoms(["false".into(), "true".into()])
+            Type::atoms(["false", "true"])
         } else {
             Type::atom("false")
         })
@@ -2607,9 +2607,9 @@ impl Type {
     pub fn number() -> Self {
         Self::canonical(CanonicalType::Number)
     }
-    pub fn atoms(values: impl IntoIterator<Item = String>) -> Self {
+    pub fn atoms<A: Into<crate::atom::Atom>>(values: impl IntoIterator<Item = A>) -> Self {
         Self::scalar(
-            match values.into_iter().collect::<BTreeSet<_>>() {
+            match values.into_iter().map(Into::into).collect::<BTreeSet<_>>() {
                 v if v.is_empty() => None,
                 v if v.len() > 13 => Some(Atoms::All),
                 v => Some(Atoms::Set(v)),
@@ -2636,8 +2636,8 @@ impl Type {
                 .map(Numeric::Integer),
         ))
     }
-    pub fn atom(name: impl Into<String>) -> Self {
-        let name = name.into();
+    pub fn atom(name: impl Into<crate::atom::Atom>) -> Self {
+        let name: crate::atom::Atom = name.into();
         match name.as_str() {
             "true" => return Self::canonical(CanonicalType::True),
             "false" => return Self::canonical(CanonicalType::False),
@@ -3059,7 +3059,7 @@ impl Type {
                     .iter()
                     .map(|v| {
                         v.as_str()
-                            .map(str::to_owned)
+                            .map(crate::atom::Atom::new)
                             .ok_or("atom must be string".to_owned())
                     })
                     .collect::<Result<BTreeSet<_>, _>>()?;
@@ -3267,7 +3267,7 @@ pub struct MapView<'a> {
 #[derive(Clone, Copy, Debug)]
 pub enum AtomsView<'a> {
     All,
-    Set(&'a BTreeSet<String>),
+    Set(&'a BTreeSet<crate::atom::Atom>),
 }
 #[derive(Clone, Copy, Debug)]
 pub enum IntegerView<'a> {
@@ -4881,7 +4881,7 @@ mod tests {
         );
         assert_eq!(*slots.functions.unwrap().range, Type::atom("a"));
         let tuples = Type::tuple(vec![
-            Type::atoms(["a".into(), "b".into()]),
+            Type::atoms(["a", "b"]),
             Type::all_integers(),
         ])
         .unwrap();
@@ -4913,7 +4913,7 @@ mod tests {
                 for value in [
                     Type::any(),
                     Type::integer(1.into()),
-                    Type::atoms(["a".into(), "b".into()]),
+                    Type::atoms(["a", "b"]),
                 ] {
                     maps.push(
                         Type::map(
@@ -5577,7 +5577,7 @@ mod singleton_key_tests {
             mixed,
             range,
             Type::all_atoms(),
-            Type::atoms(["a".into(), "b".into()]),
+            Type::atoms(["a", "b"]),
             Type::nominal(NominalName::Symbol("wrapper".into()), atom.clone()),
             Type::variable_integer((-7).into()),
             Type::product(vec![atom.clone(), Type::nil()]),
@@ -5705,7 +5705,7 @@ mod immutable_nominal_payload_tests {
         };
         assert_eq!(
             *result.nominals[0].inner,
-            Type::atoms(["a".into(), "b".into()])
+            Type::atoms(["a", "b"])
         );
         assert_eq!(*original.inner, Type::atom("a"));
         assert_eq!(source, alias);
@@ -5850,7 +5850,7 @@ mod family_store_roundtrip_tests {
     #[test]
     fn raw_family_flags_roundtrip_and_debug_and_equality_remain_transparent() {
         let fixtures = [
-            Type::atoms(["a".into(), "b".into()]),
+            Type::atoms(["a", "b"]),
             Type::binary(),
             Type::function(
                 Some(vec![Type::variable_integer(42.into())]),
@@ -5967,8 +5967,8 @@ mod canonical_constructor_tests {
     #[test]
     fn atom_conversion_effect_occurs_once_on_every_cached_call() {
         struct Input<'a>(&'a std::cell::Cell<usize>);
-        impl From<Input<'_>> for String {
-            fn from(input:Input<'_>)->Self {input.0.set(input.0.get()+1);"true".into()}
+        impl From<Input<'_>> for crate::atom::Atom {
+            fn from(input:Input<'_>)->Self {input.0.set(input.0.get()+1);crate::atom::Atom::new("true")}
         }
         let count=std::cell::Cell::new(0);
         for expected in 1..=4 {assert_eq!(Type::atom(Input(&count)),Type::atom("true"));assert_eq!(count.get(),expected);}

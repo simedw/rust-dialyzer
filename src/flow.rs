@@ -1297,7 +1297,7 @@ impl<B: BifProvider, C: ConstraintProvider> Context<'_, B, C> {
                                 "build_stacktrace" | "dialyzer_unknown" | "remove_message"
                                 | "nif_start" | "debug_line" | "executable_line" => Type::any(),
                                 "recv_peek_message" => Type::product(vec![
-                                    Type::atoms(["true".into(), "false".into()]),
+                                    Type::atoms(["true", "false"]),
                                     Type::any(),
                                 ]),
                                 "recv_wait_timeout" => {
@@ -1504,7 +1504,7 @@ impl<B: BifProvider, C: ConstraintProvider> Context<'_, B, C> {
                                     }
                                 }
                             }
-                            Finish::PrimopBoolean => Type::atoms(["true".into(), "false".into()]),
+                            Finish::PrimopBoolean => Type::atoms(["true", "false"]),
                             Finish::Map { base, operations } => {
                                 let mut map = results[0].meet(&Type::map_any())?;
                                 self.refine(module, base, &map, &mut env)?;
@@ -1582,7 +1582,7 @@ impl<B: BifProvider, C: ConstraintProvider> Context<'_, B, C> {
                                         match t.view() {
                                             TypeView::Families(slots) => match slots.atoms {
                                                 Some(AtomsView::Set(xs)) if xs.len() == 1 => {
-                                                    Some(xs.first().unwrap().clone())
+                                                    Some(xs.first().unwrap().to_string())
                                                 }
                                                 _ => None,
                                             },

@@ -161,7 +161,7 @@ impl Type {
                         "atom",
                         match a {
                             Atoms::All => N::atom("any"),
-                            Atoms::Set(v) => N::list(v.iter().cloned().map(N::Atom).collect()),
+                            Atoms::Set(v) => N::list(v.iter().map(|a| N::Atom(a.to_string())).collect()),
                         },
                     );
                 }

@@ -323,7 +323,7 @@ fn exact_equality_success_constraint_retains_boolean_for_same_singleton() {
         right: Type::atom("same"),
     };
     let ty = op.evaluate(&BindingMap::new(), &NoBifProvider).unwrap();
-    assert_eq!(ty, Type::atoms(vec!["true".into(), "false".into()]));
+    assert_eq!(ty, Type::atoms(vec!["true", "false"]));
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn clause_residual_preserves_native_occurrence_dependencies() {
         &std::collections::BTreeSet::from([VariableId::Integer(1.into())])
     );
     let residual = DerivedOp::ClauseResidual {
-        argument: Type::atoms(["a".into(), "b".into()]),
+        argument: Type::atoms(["a", "b"]),
         subtract: vec![Type::atom("a")],
     };
     assert_eq!(

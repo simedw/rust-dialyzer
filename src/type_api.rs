@@ -254,7 +254,7 @@ impl Type {
     pub fn is_atom_literal(&self, name: &str) -> Result<bool, LatticeError> {
         let t = self.shallow_structural()?;
         Ok(
-            matches!(t.direct_slots().and_then(|s|s.atoms()),Some(Atoms::Set(v))if v.len()==1&&v.contains(name)),
+            matches!(t.direct_slots().and_then(|s|s.atoms()),Some(Atoms::Set(v))if v.len()==1&&v.iter().any(|a|*a==name)),
         )
     }
     pub fn same_opaque(&self, rhs: &Self) -> Result<bool, LatticeError> {
@@ -397,7 +397,7 @@ impl Type {
                 };
                 TypeValue::Atoms(match a {
                     Atoms::All => Known::Unknown,
-                    Atoms::Set(v) => Known::Known(v.iter().cloned().collect()),
+                    Atoms::Set(v) => Known::Known(v.iter().map(|a| a.to_string()).collect()),
                 })
             }
             NumberValues => {
@@ -788,7 +788,7 @@ mod api_tests {
     }
     #[test]
     fn optional_non_singleton_keys_can_normalize_away_before_native_validation() {
-        let key = Type::atoms(["a".into(), "b".into()]);
+        let key = Type::atoms(["a", "b"]);
         let map = Type::map_types(
             vec![MapTypeEntry {
                 key,
@@ -812,7 +812,7 @@ mod api_tests {
         let map = Type::from_runtime_term(&term).unwrap();
         assert_eq!(
             map.get(TypeGetter::MapDefaultValue).unwrap().to_value(),
-            TypeValue::Type(Type::atoms(["a".into(), "b".into()])).to_value()
+            TypeValue::Type(Type::atoms(["a", "b"])).to_value()
         );
     }
 }

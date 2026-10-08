@@ -789,7 +789,7 @@ impl DerivedOp {
                 } else if argument.is_subtype(test)? {
                     Type::atom("true")
                 } else {
-                    Type::atoms(["false".into(), "true".into()])
+                    Type::atoms(["false", "true"])
                 }
             }
         })
@@ -815,7 +815,7 @@ fn decrement(v: Endpoint) -> Endpoint {
 }
 
 fn boolean() -> Type {
-    Type::atoms(["false".into(), "true".into()])
+    Type::atoms(["false", "true"])
 }
 fn solver_singleton(ty: &Type) -> Result<bool, LatticeError> {
     if ty.predicate(TypePredicate::Atom)? {

@@ -1247,7 +1247,7 @@ impl<'a> Resolver<'a> {
             Atom | Module | Node => Type::all_atoms(),
             Binary => Type::binary(),
             Bitstring => Type::bitstring(1.into(), 0.into())?,
-            Bool | Boolean => Type::atoms(["false".into(), "true".into()]),
+            Bool | Boolean => Type::atoms(["false", "true"]),
             Byte => range("0", "255")?,
             Char => range("0", "1114111")?,
             Float => Type::float(),

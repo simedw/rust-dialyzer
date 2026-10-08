@@ -207,11 +207,11 @@ fn clauses_preserve_parameter_provenance_and_residuals() {
     let out = infer(&c.finish());
     assert_eq!(
         out.signatures[0].arguments[0],
-        Type::atoms(["a".into(), "b".into()])
+        Type::atoms(["a", "b"])
     );
     assert_eq!(
         out.signatures[0].result,
-        Type::atoms(["one".into(), "two".into()])
+        Type::atoms(["one", "two"])
     );
 }
 #[test]
@@ -306,7 +306,7 @@ fn try_handler_is_unconditionally_joined_with_fresh_exception_variables() {
     let out = infer(&c.finish());
     assert_eq!(
         out.signatures[0].result,
-        Type::atoms(["ok".into(), "caught".into()])
+        Type::atoms(["ok", "caught"])
     );
 }
 #[test]
@@ -922,7 +922,7 @@ impl BifProvider for TupleGuard {
     ) -> std::result::Result<Option<Transfer>, String> {
         Ok(Some(Transfer {
             accepted: vec![Type::any()],
-            result: Type::atoms(["true".into(), "false".into()]),
+            result: Type::atoms(["true", "false"]),
             can_raise: false,
         }))
     }

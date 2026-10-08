@@ -4,7 +4,7 @@ use crate::native_error::NativeTransferError;
 use num_traits::ToPrimitive;
 
 pub fn boolean() -> Type {
-    Type::atoms(["false".into(), "true".into()])
+    Type::atoms(["false", "true"])
 }
 fn truth(value: bool) -> Type {
     Type::atom(if value { "true" } else { "false" })
@@ -22,7 +22,7 @@ pub fn atom_values(value: &Type) -> Result<Option<Vec<String>>, NativeTransferEr
                     && s.functions.is_none()
                     && s.maps.is_none() =>
             {
-                Some(x.iter().cloned().collect())
+                Some(x.iter().map(|a| a.to_string()).collect())
             }
             _ => None,
         },

@@ -65,6 +65,7 @@ pub mod erlang_syntax;
 
 pub mod external_term;
 
+pub mod atom;
 pub mod fast_hash;
 pub mod teardown;
 

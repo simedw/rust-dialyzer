@@ -224,8 +224,8 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                     Atoms::All => "atom()".into(),
                     Atoms::Set(values)
                         if values.len() == 2
-                            && values.contains("true")
-                            && values.contains("false") =>
+                            && values.iter().any(|a| *a == "true")
+                            && values.iter().any(|a| *a == "false") =>
                     {
                         "boolean()".into()
                     }
