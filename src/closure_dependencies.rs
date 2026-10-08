@@ -30,6 +30,11 @@ impl TargetSet {
             external: self.external || other.external,
         }
     }
+    /// In-place union; accumulating with `union` rebuilt the whole set per call.
+    fn extend_from(&mut self, other: &Self) {
+        self.local.extend(other.local.iter().copied());
+        self.external |= other.external;
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct TargetValueId(pub usize);
@@ -67,7 +72,7 @@ impl TargetValues {
         let mut out = TargetSet::default();
         while let Some(id) = tasks.pop() {
             match &self.values[id.0] {
-                TargetValue::Single(s) => out = out.union(s),
+                TargetValue::Single(s) => out.extend_from(s),
                 TargetValue::Values(xs) => tasks.extend(xs),
             }
         }
@@ -343,6 +348,7 @@ struct Analysis<'a> {
     policy: &'a DependencyPolicy,
     result: ClosureDependencies,
     active_module: ModuleId,
+    caller_seen: Vec<BTreeSet<Option<FunctionId>>>,
 }
 impl ClosureDependencies {
     pub fn analyze(
@@ -355,6 +361,7 @@ impl ClosureDependencies {
             program,
             policy,
             active_module: ModuleId(0),
+            caller_seen: vec![BTreeSet::new(); core.modules.len()],
             result: Self {
                 call_targets: BTreeMap::new(),
                 escaping: TargetSet::default(),
@@ -419,17 +426,18 @@ impl Analysis<'_> {
         if targets.is_empty() {
             return;
         }
-        if !self.result.module_callers[module.0].contains(&current) {
+        // `module_callers` keeps first-seen order; the set answers membership.
+        if self.caller_seen[module.0].insert(current) {
             self.result.module_callers[module.0].push(current);
         }
         if current.is_none() {
-            self.result.module_roots[module.0] = self.result.module_roots[module.0].union(&targets);
+            self.result.module_roots[module.0].extend_from(&targets);
         }
         let output = match current {
             Some(id) => &mut self.result.dependencies[id.0],
             None => &mut self.result.root_dependencies,
         };
-        *output = output.union(&targets);
+        output.extend_from(&targets);
     }
     fn escape(&mut self, value: TargetValueId) {
         let targets = self.result.outputs.flatten(value);

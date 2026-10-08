@@ -193,6 +193,53 @@ impl CoreAnalyzer<'_> {
             })
             .collect()
     }
+    /// Graph vertex of each function label (the first named vertex, else the label).
+    fn label_vertices(&self) -> std::collections::HashMap<CoreLabel, GraphVertex> {
+        let mut index = std::collections::HashMap::new();
+        for (vertex, label) in &self.graph.named_labels {
+            index.entry(*label).or_insert_with(|| vertex.clone());
+        }
+        index
+    }
+    /// Every vertex that calls a changed function, directly or transitively,
+    /// including the changed functions. If one member of an SCC is reached,
+    /// all are, so filtering the full SCC list keeps whole SCCs in a valid
+    /// callees-first order.
+    fn reaching_callers(
+        &self,
+        label_vertices: &std::collections::HashMap<CoreLabel, GraphVertex>,
+        changed: &[CoreLabel],
+    ) -> std::collections::BTreeSet<GraphVertex> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut pending: Vec<GraphVertex> = changed
+            .iter()
+            .map(|label| label_vertices.get(label).cloned().unwrap_or(GraphVertex::Label(*label)))
+            .collect();
+        while let Some(vertex) = pending.pop() {
+            if let Some(callers) = self.graph.in_neighbours(&vertex) {
+                pending.extend(callers.iter().filter(|c| !seen.contains(*c)).cloned());
+            }
+            seen.insert(vertex);
+        }
+        seen
+    }
+    /// Modules owning the reached named functions, in module order.
+    fn modules_of(&self, reached: &std::collections::BTreeSet<GraphVertex>) -> Vec<ModuleId> {
+        let names: std::collections::BTreeSet<&String> = reached
+            .iter()
+            .filter_map(|v| match v {
+                GraphVertex::Named { module, .. } => Some(module),
+                _ => None,
+            })
+            .collect();
+        self.graph
+            .module_names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| names.contains(name))
+            .map(|(i, _)| ModuleId(i))
+            .collect()
+    }
     /// Groups SCCs (callees first) into waves: no SCC calls another SCC in
     /// the same wave, so a wave can be analyzed in parallel against the state
     /// left by earlier waves. Falls back to one SCC per wave if the order is
@@ -232,9 +279,16 @@ impl CoreAnalyzer<'_> {
         phases: &mut P,
         schedule: &mut S,
     ) -> Result<AnalysisState, AnalysisError<P::Error, S::Error>> {
+        let mut schedule_timings = crate::phase_timings::PhaseTimings::new("schedule");
+        schedule_timings.label(|| "finalize".into());
         let mut sccs = schedule
             .finalize(self.graph)
             .map_err(AnalysisError::Schedule)?;
+        drop(schedule_timings);
+        // Parallel mode schedules from the full SCC list instead of rebuilding
+        // OTP's runtime-ordered digraphs each iteration (see `reaching_callers`).
+        let all_sccs = sccs.clone();
+        let label_vertices = self.label_vertices();
         phases.publish(
             state.signatures.iter().map(|(label, signature)| (*label, signature)),
             state.contracts.active_names(),
@@ -318,9 +372,16 @@ impl CoreAnalyzer<'_> {
             if scc_changed.is_empty() {
                 return Ok(state);
             }
-            let modules = schedule
-                .modules_from_functions(self.graph, &scc_changed)
-                .map_err(AnalysisError::Schedule)?;
+            let mut schedule_timings = crate::phase_timings::PhaseTimings::new("schedule");
+            schedule_timings.label(|| format!("iter{iteration} modules_from_functions"));
+            let modules = if phases.parallel() {
+                self.modules_of(&self.reaching_callers(&label_vertices, &scc_changed))
+            } else {
+                schedule
+                    .modules_from_functions(self.graph, &scc_changed)
+                    .map_err(AnalysisError::Schedule)?
+            };
+            drop(schedule_timings);
             // In parallel mode all modules are refined against the state at the
             // start of the pass (OTP's coordinator also refines concurrently);
             // the enclosing fixpoint loop absorbs the difference.
@@ -374,9 +435,21 @@ impl CoreAnalyzer<'_> {
             if module_changed.is_empty() {
                 return Ok(state);
             }
-            sccs = schedule
-                .reset_from_functions(self.graph, &module_changed)
-                .map_err(AnalysisError::Schedule)?;
+            let mut schedule_timings = crate::phase_timings::PhaseTimings::new("schedule");
+            schedule_timings.label(|| format!("iter{iteration} reset_from_functions"));
+            sccs = if phases.parallel() {
+                let reached = self.reaching_callers(&label_vertices, &module_changed);
+                all_sccs
+                    .iter()
+                    .filter(|scc| scc.members.iter().any(|m| reached.contains(m)))
+                    .cloned()
+                    .collect()
+            } else {
+                schedule
+                    .reset_from_functions(self.graph, &module_changed)
+                    .map_err(AnalysisError::Schedule)?
+            };
+            drop(schedule_timings);
         }
     }
 }
