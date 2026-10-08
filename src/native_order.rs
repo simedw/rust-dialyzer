@@ -145,7 +145,7 @@ impl Type {
                 ]),
             ),
             Repr::Families(s) => {
-                if s.union_record {
+                if s.union_record() {
                     return N::unknown(
                         "union",
                         N::list(
@@ -156,7 +156,7 @@ impl Type {
                         ),
                     );
                 }
-                if let Some(a) = &s.atoms {
+                if let Some(a) = s.atoms() {
                     return N::unknown(
                         "atom",
                         match a {
@@ -165,19 +165,19 @@ impl Type {
                         },
                     );
                 }
-                if let Some(b) = &s.bitstrings {
+                if let Some(b) = s.bitstrings() {
                     return N::unknown(
                         "binary",
                         N::tuple(vec![N::Integer(b.unit.clone()), N::Integer(b.base.clone())]),
                     );
                 }
-                if let Some(f) = &s.functions {
+                if let Some(f) = s.functions() {
                     return N::unknown(
                         "function",
                         N::tuple(vec![f.domain.native_value(), f.range.native_value()]),
                     );
                 }
-                if let Some(i) = &s.identifiers {
+                if let Some(i) = s.identifiers() {
                     return N::unknown(
                         "identifier",
                         match i {
@@ -188,7 +188,7 @@ impl Type {
                         },
                     );
                 }
-                if let Some(l) = &s.list {
+                if let Some(l) = s.list() {
                     return match l {
                         Lists::Nil => N::unknown("nil", N::Nil),
                         Lists::List {
@@ -202,7 +202,7 @@ impl Type {
                         ),
                     };
                 }
-                if let Some(n) = &s.number {
+                if let Some(n) = s.number() {
                     let (e, q) = match n {
                         Numeric::Float => (N::atom("any"), "float"),
                         Numeric::Number => (N::atom("any"), "unknown"),
@@ -224,7 +224,7 @@ impl Type {
                     };
                     return N::c("number", e, N::atom(q));
                 }
-                if let Some(t) = &s.tuple {
+                if let Some(t) = s.tuple() {
                     return match t {
                         Tuples::Any => N::c(
                             "tuple",
@@ -269,7 +269,7 @@ impl Type {
                         }
                     };
                 }
-                if let Some(m) = &s.maps {
+                if let Some(m) = s.maps() {
                     return N::unknown(
                         "map",
                         N::tuple(vec![
@@ -298,39 +298,39 @@ impl Type {
         }
     }
 }
-impl Slots {
+impl FamilyStore {
     pub(super) fn components_with_none(&self) -> Vec<Type> {
         vec![
             Type::families(Slots {
-                atoms: self.atoms.clone(),
+                atoms: self.atoms_owner().cloned(),
                 ..Slots::default()
             }),
             Type::families(Slots {
-                bitstrings: self.bitstrings.clone(),
+                bitstrings: self.bitstrings_owner().cloned(),
                 ..Slots::default()
             }),
             Type::families(Slots {
-                functions: self.functions.clone(),
+                functions: self.functions_owner().cloned(),
                 ..Slots::default()
             }),
             Type::families(Slots {
-                identifiers: self.identifiers.clone(),
+                identifiers: self.identifiers_owner().cloned(),
                 ..Slots::default()
             }),
             Type::families(Slots {
-                list: self.list.clone(),
+                list: self.list_owner().cloned(),
                 ..Slots::default()
             }),
             Type::families(Slots {
-                number: self.number.clone(),
+                number: self.number_owner().cloned(),
                 ..Slots::default()
             }),
             Type::families(Slots {
-                tuple: self.tuple.clone(),
+                tuple: self.tuple_owner().cloned(),
                 ..Slots::default()
             }),
             Type::families(Slots {
-                maps: self.maps.clone(),
+                maps: self.maps_owner().cloned(),
                 ..Slots::default()
             }),
         ]

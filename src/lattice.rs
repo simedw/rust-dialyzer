@@ -84,13 +84,87 @@ enum Repr {
     Any,
     None,
     Unit,
-    Families(Arc<Slots>),
+    Families(FamilyStore),
     Product(Arc<Vec<Type>>),
     Var(VariableId),
     Opaque,
     Nominal(Arc<Nominal>),
     NominalSet(Arc<NominalSet>),
 }
+#[derive(Clone, Copy)]
+enum CanonicalType {
+    Atoms, Integers, Float, Number, Nil, Tuple, Map, Boolean,
+    True, False, Infinity, Zero, One, MinusOne,
+    Identifier, Pid, Port, Reference,
+    Bitstring, Binary, NonemptyBitstring, NonemptyBinary,
+    List, NonemptyList, MaybeImproperList, Cons, Function,
+    Byte, Char, PositiveInteger, NonNegativeInteger, NegativeInteger,
+}
+const CANONICAL_TYPE_COUNT: usize = CanonicalType::NegativeInteger as usize + 1;
+thread_local! {
+    static CANONICAL_TYPES: [std::cell::OnceCell<Type>; CANONICAL_TYPE_COUNT] =
+        const { [const { std::cell::OnceCell::new() }; CANONICAL_TYPE_COUNT] };
+}
+impl Type {
+    fn integer_interval(from: Bound, to: Bound) -> Self {
+        Self::scalar(None, Some(Numeric::Integer(Integers::Range(from, to))))
+    }
+    fn canonical(kind: CanonicalType) -> Self {
+        CANONICAL_TYPES.with(|types| {
+            types[kind as usize].get_or_init(|| Self::make_canonical(kind)).clone()
+        })
+    }
+    fn make_canonical(kind: CanonicalType) -> Self {
+        use CanonicalType::*;
+        match kind {
+            Atoms => Self::scalar(Some(self::Atoms::All), None),
+            Integers => Self::scalar(None, Some(Numeric::Integer(self::Integers::All))),
+            Float => Self::scalar(None, Some(Numeric::Float)),
+            Number => Self::scalar(None, Some(Numeric::Number)),
+            True | False | Infinity => Self::scalar(Some(self::Atoms::Set(BTreeSet::from([
+                match kind { True => "true", False => "false", _ => "infinity" }.into(),
+            ]))), None),
+            Boolean => Self::scalar(Some(self::Atoms::Set(BTreeSet::from([
+                "false".into(), "true".into(),
+            ]))), None),
+            Zero | One | MinusOne => Self::scalar(None, Some(Numeric::Integer(
+                self::Integers::Set(BTreeSet::from([match kind { Zero => 0, One => 1, _ => -1 }.into()])),
+            ))),
+            Nil => Self::families(Slots { list: Some(Arc::new(Lists::Nil)), ..Slots::default() }),
+            Tuple => Self::families(Slots { tuple: Some(Arc::new(Tuples::Any)), ..Slots::default() }),
+            Map => Self::families(Slots { maps: Some(Arc::new(Maps {
+                entries: Vec::new(), default_key: Box::new(Self::any()), default_value: Box::new(Self::any()),
+            })), ..Slots::default() }),
+            Identifier | Pid | Port | Reference => Self::families(Slots {
+                identifiers: Some(Arc::new(if matches!(kind, Identifier) { Identifiers::All } else {
+                    Identifiers::Set(BTreeSet::from([match kind { Pid => "pid", Port => "port", _ => "reference" }.into()]))
+                })), ..Slots::default()
+            }),
+            Bitstring | Binary | NonemptyBitstring | NonemptyBinary => Self::families(Slots {
+                bitstrings: Some(Arc::new(Bitstrings {
+                    unit: if matches!(kind, Binary | NonemptyBinary) { 8.into() } else { 1.into() },
+                    base: match kind { NonemptyBitstring => 1.into(), NonemptyBinary => 8.into(), _ => 0.into() },
+                })), ..Slots::default()
+            }),
+            List | NonemptyList | MaybeImproperList | Cons => Self::families(Slots {
+                list: Some(Arc::new(Lists::List {
+                    elements: Box::new(Self::any()),
+                    tail: Box::new(if matches!(kind, List | NonemptyList) { Self::nil() } else { Self::any() }),
+                    nonempty: matches!(kind, NonemptyList | Cons),
+                })), ..Slots::default()
+            }),
+            Function => Self::families(Slots { functions: Some(Arc::new(Functions {
+                domain: Box::new(Self::any()), range: Box::new(Self::any()),
+            })), ..Slots::default() }),
+            Byte => Self::integer_interval(Bound::Finite(0.into()), Bound::Finite(255.into())),
+            Char => Self::integer_interval(Bound::Finite(0.into()), Bound::Finite(0x10ffff.into())),
+            PositiveInteger => Self::integer_interval(Bound::Finite(1.into()), Bound::PositiveInfinity),
+            NonNegativeInteger => Self::integer_interval(Bound::Finite(0.into()), Bound::PositiveInfinity),
+            NegativeInteger => Self::integer_interval(Bound::NegativeInfinity, Bound::Finite((-1).into())),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Atoms {
     All,
@@ -406,56 +480,64 @@ impl Numeric {
         }
     }
 }
-fn join_slot<T: Clone>(a: &Option<T>, b: &Option<T>, op: impl Fn(&T, &T) -> T) -> Option<T> {
+fn join_slot<T: Clone>(
+    a: &Option<Arc<T>>,
+    b: &Option<Arc<T>>,
+    op: impl Fn(&T, &T) -> T,
+) -> Option<Arc<T>> {
     match (a, b) {
-        (Some(x), Some(y)) => Some(op(x, y)),
+        (Some(x), Some(y)) => Some(Arc::new(op(x, y))),
         (x, None) | (None, x) => x.clone(),
     }
 }
-fn meet_slot<T>(a: &Option<T>, b: &Option<T>, op: impl Fn(&T, &T) -> Option<T>) -> Option<T> {
+fn meet_slot<T>(
+    a: &Option<Arc<T>>,
+    b: &Option<Arc<T>>,
+    op: impl Fn(&T, &T) -> Option<T>,
+) -> Option<Arc<T>> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y),
+        (Some(x), Some(y)) => op(x, y).map(Arc::new),
         _ => None,
     }
 }
 fn subtract_slot<T: Clone>(
-    a: &Option<T>,
-    b: &Option<T>,
+    a: &Option<Arc<T>>,
+    b: &Option<Arc<T>>,
     op: impl Fn(&T, &T) -> Option<T>,
-) -> Option<T> {
+) -> Option<Arc<T>> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y),
+        (Some(x), Some(y)) => op(x, y).map(Arc::new),
         (x, None) => x.clone(),
         _ => None,
     }
 }
 fn checked_join_slot<T: Clone>(
-    a: &Option<T>,
-    b: &Option<T>,
+    a: &Option<Arc<T>>,
+    b: &Option<Arc<T>>,
     op: impl Fn(&T, &T) -> Result<Option<T>, LatticeError>,
-) -> Result<Option<T>, LatticeError> {
+) -> Result<Option<Arc<T>>, LatticeError> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y),
+        (Some(x), Some(y)) => op(x, y).map(|value| value.map(Arc::new)),
         (x, None) | (None, x) => Ok(x.clone()),
     }
 }
 fn checked_meet_slot<T>(
-    a: &Option<T>,
-    b: &Option<T>,
+    a: &Option<Arc<T>>,
+    b: &Option<Arc<T>>,
     op: impl Fn(&T, &T) -> Result<Option<T>, LatticeError>,
-) -> Result<Option<T>, LatticeError> {
+) -> Result<Option<Arc<T>>, LatticeError> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y),
+        (Some(x), Some(y)) => op(x, y).map(|value| value.map(Arc::new)),
         _ => Ok(None),
     }
 }
 fn checked_subtract_slot<T: Clone>(
-    a: &Option<T>,
-    b: &Option<T>,
+    a: &Option<Arc<T>>,
+    b: &Option<Arc<T>>,
     op: impl Fn(&T, &T) -> Result<Option<T>, LatticeError>,
-) -> Result<Option<T>, LatticeError> {
+) -> Result<Option<Arc<T>>, LatticeError> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y),
+        (Some(x), Some(y)) => op(x, y).map(|value| value.map(Arc::new)),
         (x, None) => Ok(x.clone()),
         _ => Ok(None),
     }
@@ -463,14 +545,240 @@ fn checked_subtract_slot<T: Clone>(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Slots {
     union_record: bool,
-    atoms: Option<Atoms>,
-    bitstrings: Option<Bitstrings>,
-    functions: Option<Functions>,
-    identifiers: Option<Identifiers>,
-    list: Option<Lists>,
-    number: Option<Numeric>,
-    tuple: Option<Tuples>,
-    maps: Option<Maps>,
+    atoms: Option<Arc<Atoms>>,
+    bitstrings: Option<Arc<Bitstrings>>,
+    functions: Option<Arc<Functions>>,
+    identifiers: Option<Arc<Identifiers>>,
+    list: Option<Arc<Lists>>,
+    number: Option<Arc<Numeric>>,
+    tuple: Option<Arc<Tuples>>,
+    maps: Option<Arc<Maps>>,
+}
+#[derive(Clone, PartialEq, Eq)]
+enum FamilyStore {
+    Atoms(Arc<Atoms>),
+    Bitstrings(Arc<Bitstrings>),
+    Functions(Arc<Functions>),
+    Identifiers(Arc<Identifiers>),
+    Lists(Arc<Lists>),
+    Numeric(Arc<Numeric>),
+    Tuples(Arc<Tuples>),
+    Maps(Arc<Maps>),
+    Union(Arc<Slots>),
+}
+impl FamilyStore {
+    fn raw(mut slots: Slots) -> Self {
+        if !slots.union_record && slots.count() == 1 {
+            if let Some(value) = slots.atoms.take() {
+                return Self::Atoms(value);
+            }
+            if let Some(value) = slots.bitstrings.take() {
+                return Self::Bitstrings(value);
+            }
+            if let Some(value) = slots.functions.take() {
+                return Self::Functions(value);
+            }
+            if let Some(value) = slots.identifiers.take() {
+                return Self::Identifiers(value);
+            }
+            if let Some(value) = slots.list.take() {
+                return Self::Lists(value);
+            }
+            if let Some(value) = slots.number.take() {
+                return Self::Numeric(value);
+            }
+            if let Some(value) = slots.tuple.take() {
+                return Self::Tuples(value);
+            }
+            if let Some(value) = slots.maps.take() {
+                return Self::Maps(value);
+            }
+        }
+        Self::Union(Arc::new(slots))
+    }
+    fn atoms_owner(&self) -> Option<&Arc<Atoms>> {
+        match self {
+            Self::Atoms(value) => Some(value),
+            Self::Union(slots) => slots.atoms.as_ref(),
+            _ => None,
+        }
+    }
+    fn atoms(&self) -> Option<&Atoms> {
+        self.atoms_owner().map(Arc::as_ref)
+    }
+    fn bitstrings_owner(&self) -> Option<&Arc<Bitstrings>> {
+        match self {
+            Self::Bitstrings(value) => Some(value),
+            Self::Union(slots) => slots.bitstrings.as_ref(),
+            _ => None,
+        }
+    }
+    fn bitstrings(&self) -> Option<&Bitstrings> {
+        self.bitstrings_owner().map(Arc::as_ref)
+    }
+    fn functions_owner(&self) -> Option<&Arc<Functions>> {
+        match self {
+            Self::Functions(value) => Some(value),
+            Self::Union(slots) => slots.functions.as_ref(),
+            _ => None,
+        }
+    }
+    fn functions(&self) -> Option<&Functions> {
+        self.functions_owner().map(Arc::as_ref)
+    }
+    fn identifiers_owner(&self) -> Option<&Arc<Identifiers>> {
+        match self {
+            Self::Identifiers(value) => Some(value),
+            Self::Union(slots) => slots.identifiers.as_ref(),
+            _ => None,
+        }
+    }
+    fn identifiers(&self) -> Option<&Identifiers> {
+        self.identifiers_owner().map(Arc::as_ref)
+    }
+    fn list_owner(&self) -> Option<&Arc<Lists>> {
+        match self {
+            Self::Lists(value) => Some(value),
+            Self::Union(slots) => slots.list.as_ref(),
+            _ => None,
+        }
+    }
+    fn list(&self) -> Option<&Lists> {
+        self.list_owner().map(Arc::as_ref)
+    }
+    fn number_owner(&self) -> Option<&Arc<Numeric>> {
+        match self {
+            Self::Numeric(value) => Some(value),
+            Self::Union(slots) => slots.number.as_ref(),
+            _ => None,
+        }
+    }
+    fn number(&self) -> Option<&Numeric> {
+        self.number_owner().map(Arc::as_ref)
+    }
+    fn tuple_owner(&self) -> Option<&Arc<Tuples>> {
+        match self {
+            Self::Tuples(value) => Some(value),
+            Self::Union(slots) => slots.tuple.as_ref(),
+            _ => None,
+        }
+    }
+    fn tuple(&self) -> Option<&Tuples> {
+        self.tuple_owner().map(Arc::as_ref)
+    }
+    fn maps_owner(&self) -> Option<&Arc<Maps>> {
+        match self {
+            Self::Maps(value) => Some(value),
+            Self::Union(slots) => slots.maps.as_ref(),
+            _ => None,
+        }
+    }
+    fn maps(&self) -> Option<&Maps> {
+        self.maps_owner().map(Arc::as_ref)
+    }
+    fn union_record(&self) -> bool {
+        matches!(self, Self::Union(slots) if slots.union_record)
+    }
+    fn count(&self) -> usize {
+        match self {
+            Self::Union(slots) => slots.count(),
+            _ => 1,
+        }
+    }
+    fn empty(&self) -> bool {
+        self.count() == 0
+    }
+    fn into_slots(self) -> Slots {
+        match self {
+            Self::Atoms(value) => Slots {
+                atoms: Some(value),
+                ..Slots::default()
+            },
+            Self::Bitstrings(value) => Slots {
+                bitstrings: Some(value),
+                ..Slots::default()
+            },
+            Self::Functions(value) => Slots {
+                functions: Some(value),
+                ..Slots::default()
+            },
+            Self::Identifiers(value) => Slots {
+                identifiers: Some(value),
+                ..Slots::default()
+            },
+            Self::Lists(value) => Slots {
+                list: Some(value),
+                ..Slots::default()
+            },
+            Self::Numeric(value) => Slots {
+                number: Some(value),
+                ..Slots::default()
+            },
+            Self::Tuples(value) => Slots {
+                tuple: Some(value),
+                ..Slots::default()
+            },
+            Self::Maps(value) => Slots {
+                maps: Some(value),
+                ..Slots::default()
+            },
+            Self::Union(slots) => Arc::unwrap_or_clone(slots),
+        }
+    }
+    fn to_slots(&self) -> Slots {
+        self.clone().into_slots()
+    }
+    fn join(&self, rhs: &Self) -> Result<Slots, LatticeError> {
+        self.to_slots().join(&rhs.to_slots())
+    }
+    fn meet(&self, rhs: &Self) -> Result<Slots, LatticeError> {
+        self.to_slots().meet(&rhs.to_slots())
+    }
+    fn subtract(&self, rhs: &Self) -> Result<Slots, LatticeError> {
+        self.to_slots().subtract(&rhs.to_slots())
+    }
+    fn limit_aux(&self, depth: i64) -> Result<Slots, LatticeError> {
+        self.to_slots().limit_aux(depth)
+    }
+    fn rebuild_base(&self) -> Slots {
+        self.to_slots().rebuild_base()
+    }
+    fn slot_values(&self) -> Vec<serde_json::Value> {
+        self.to_slots().slot_values()
+    }
+}
+impl std::fmt::Debug for FamilyStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Slots")
+            .field("union_record", &self.union_record())
+            .field("atoms", &self.atoms())
+            .field("bitstrings", &self.bitstrings())
+            .field("functions", &self.functions())
+            .field("identifiers", &self.identifiers())
+            .field("list", &self.list())
+            .field("number", &self.number())
+            .field("tuple", &self.tuple())
+            .field("maps", &self.maps())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+impl FamilyStore {
+    fn shares_storage(&self, rhs: &Self) -> bool {
+        match (self, rhs) {
+            (Self::Atoms(a), Self::Atoms(b)) => Arc::ptr_eq(a, b),
+            (Self::Bitstrings(a), Self::Bitstrings(b)) => Arc::ptr_eq(a, b),
+            (Self::Functions(a), Self::Functions(b)) => Arc::ptr_eq(a, b),
+            (Self::Identifiers(a), Self::Identifiers(b)) => Arc::ptr_eq(a, b),
+            (Self::Lists(a), Self::Lists(b)) => Arc::ptr_eq(a, b),
+            (Self::Numeric(a), Self::Numeric(b)) => Arc::ptr_eq(a, b),
+            (Self::Tuples(a), Self::Tuples(b)) => Arc::ptr_eq(a, b),
+            (Self::Maps(a), Self::Maps(b)) => Arc::ptr_eq(a, b),
+            (Self::Union(a), Self::Union(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 impl Slots {
     fn rebuild_base(&self) -> Self {
@@ -480,13 +788,13 @@ impl Slots {
             bitstrings: self.bitstrings.clone(),
             functions: None,
             identifiers: self.identifiers.clone(),
-            list: match &self.list {
-                Some(Lists::Nil) => Some(Lists::Nil),
+            list: match self.list.as_deref() {
+                Some(Lists::Nil) => self.list.clone(),
                 _ => None,
             },
             number: self.number.clone(),
-            tuple: match &self.tuple {
-                Some(Tuples::Any) => Some(Tuples::Any),
+            tuple: match self.tuple.as_deref() {
+                Some(Tuples::Any) => self.tuple.clone(),
                 _ => None,
             },
             maps: None,
@@ -568,12 +876,12 @@ impl Slots {
                 list: checked_subtract_slot(&self.list, &b.list, Lists::subtract)?,
                 number: subtract_slot(&self.number, &b.number, Numeric::subtract),
                 maps: match (&self.maps, &b.maps) {
-                    (Some(a), Some(b)) => a.subtract(b)?,
+                    (Some(a), Some(b)) => a.subtract(b)?.map(Arc::new),
                     (a, None) => a.clone(),
                     _ => None,
                 },
                 tuple: match (&self.tuple, &b.tuple) {
-                    (Some(a), Some(b)) => a.subtract(b)?,
+                    (Some(a), Some(b)) => a.subtract(b)?.map(Arc::new),
                     (a, None) => a.clone(),
                     _ => None,
                 },
@@ -583,22 +891,26 @@ impl Slots {
     fn limit_aux(&self, k: i64) -> Result<Self, LatticeError> {
         Ok({
             Self {
-                list: self.list.as_ref().map(|l| l.limit_aux(k)).transpose()?,
+                list: self
+                    .list
+                    .as_deref()
+                    .map(|l| l.limit_aux(k).map(Arc::new))
+                    .transpose()?,
                 functions: self
                     .functions
-                    .as_ref()
-                    .map(|f| f.limit_aux(k))
+                    .as_deref()
+                    .map(|f| f.limit_aux(k).map(Arc::new))
                     .transpose()?,
                 tuple: self
                     .tuple
-                    .as_ref()
-                    .map(|t| t.limit_aux(k))
+                    .as_deref()
+                    .map(|t| t.limit_aux(k).map(|value| value.map(Arc::new)))
                     .transpose()?
                     .flatten(),
                 maps: self
                     .maps
-                    .as_ref()
-                    .map(|m| m.limit_aux(k))
+                    .as_deref()
+                    .map(|m| m.limit_aux(k).map(|value| value.map(Arc::new)))
                     .transpose()?
                     .flatten(),
                 ..self.rebuild_base()
@@ -823,9 +1135,9 @@ impl Tuples {
             .as_ref()
             .and_then(|first| match &first.0 {
                 Repr::Families(slots) => {
-                    if !slots.union_record
-                        && slots.count() == usize::from(slots.atoms.is_some())
-                        && let Some(Atoms::Set(atoms)) = &slots.atoms
+                    if !slots.union_record()
+                        && slots.count() == usize::from(slots.atoms().is_some())
+                        && let Some(Atoms::Set(atoms)) = slots.atoms()
                         && atoms.len() <= 5
                     {
                         Some(atoms.iter().cloned().map(Some).collect::<Vec<_>>())
@@ -1715,15 +2027,15 @@ impl Type {
         if s.count() != 1 {
             return None;
         }
-        if let Some(Atoms::Set(xs)) = &s.atoms {
+        if let Some(Atoms::Set(xs)) = s.atoms() {
             if xs.len() == 1 {
                 return Some(SingletonKey::Atom(xs.first().unwrap()));
             }
         }
-        if matches!(s.list, Some(Lists::Nil)) {
+        if matches!(s.list(), Some(Lists::Nil)) {
             return Some(SingletonKey::Nil);
         }
-        if let Some(Numeric::Integer(Integers::Set(xs))) = &s.number {
+        if let Some(Numeric::Integer(Integers::Set(xs))) = s.number() {
             if xs.len() == 1 {
                 return Some(SingletonKey::Integer(xs.first().unwrap()));
             }
@@ -1835,7 +2147,7 @@ impl Maps {
     }
     fn needs_merge_type(k: &Type, dk: &Type) -> Result<bool, LatticeError> {
         let s = k.direct_slots();
-        if let Some(Numeric::Integer(Integers::Set(v))) = s.and_then(|s| s.number.as_ref()) {
+        if let Some(Numeric::Integer(Integers::Set(v))) = s.and_then(|s| s.number()) {
             if v.len() != 1 {
                 return Err(LatticeError::BadMatchNative(Box::new(NativeValue::List(
                     v.iter().cloned().map(NativeValue::Integer).collect(),
@@ -1845,7 +2157,7 @@ impl Maps {
             return Ok(!Type::integer(n + 1).meet(dk)?.is_none()
                 || !Type::integer(n - 1).meet(dk)?.is_none());
         }
-        if s.is_some_and(|s| s.atoms.is_some()) {
+        if s.is_some_and(|s| s.atoms().is_some()) {
             return Ok(!Type::all_atoms().meet(dk)?.is_none());
         }
         if k == &Type::nil() {
@@ -2156,15 +2468,15 @@ impl Type {
             return Ok(None);
         }
         if let Repr::Families(s) = &self.0 {
-            if !s.union_record && s.count() == usize::from(s.maps.is_some()) {
-                return Ok(s.maps.as_ref());
+            if !s.union_record() && s.count() == usize::from(s.maps().is_some()) {
+                return Ok(s.maps());
             }
         }
         Err(LatticeError::FunctionClause)
     }
     fn from_map(maps: Option<Maps>) -> Self {
         Self::families(Slots {
-            maps,
+            maps: maps.map(Arc::new),
             ..Slots::default()
         })
     }
@@ -2241,7 +2553,7 @@ impl Type {
         default_value: Self,
     ) -> Result<Self, LatticeError> {
         Ok(Self::families(Slots {
-            maps: Maps::canonical_types(entries, default_key, default_value)?,
+            maps: Maps::canonical_types(entries, default_key, default_value)?.map(Arc::new),
             ..Slots::default()
         }))
     }
@@ -2252,19 +2564,12 @@ impl Type {
     ) -> Result<Self, LatticeError> {
         let maps = Maps::canonical(entries, default_key, default_value)?;
         Ok(Self::families(Slots {
-            maps,
+            maps: maps.map(Arc::new),
             ..Slots::default()
         }))
     }
     pub fn map_any() -> Self {
-        Self::families(Slots {
-            maps: Some(Maps {
-                entries: Vec::new(),
-                default_key: Box::new(Self::any()),
-                default_value: Box::new(Self::any()),
-            }),
-            ..Slots::default()
-        })
+        Self::canonical(CanonicalType::Map)
     }
     pub fn any() -> Self {
         Self(Repr::Any)
@@ -2280,27 +2585,27 @@ impl Type {
         if slots.empty() {
             Self::none()
         } else {
-            Self(Repr::Families(Arc::new(slots)))
+            Self(Repr::Families(FamilyStore::raw(slots)))
         }
     }
     fn scalar(atoms: Option<Atoms>, number: Option<Numeric>) -> Self {
         Self::families(Slots {
-            atoms,
-            number,
+            atoms: atoms.map(Arc::new),
+            number: number.map(Arc::new),
             ..Slots::default()
         })
     }
     pub fn all_atoms() -> Self {
-        Self::scalar(Some(Atoms::All), None)
+        Self::canonical(CanonicalType::Atoms)
     }
     pub fn all_integers() -> Self {
-        Self::scalar(None, Some(Numeric::Integer(Integers::All)))
+        Self::canonical(CanonicalType::Integers)
     }
     pub fn float() -> Self {
-        Self::scalar(None, Some(Numeric::Float))
+        Self::canonical(CanonicalType::Float)
     }
     pub fn number() -> Self {
-        Self::scalar(None, Some(Numeric::Number))
+        Self::canonical(CanonicalType::Number)
     }
     pub fn atoms(values: impl IntoIterator<Item = String>) -> Self {
         Self::scalar(
@@ -2332,9 +2637,22 @@ impl Type {
         ))
     }
     pub fn atom(name: impl Into<String>) -> Self {
-        Self::scalar(Some(Atoms::Set(BTreeSet::from([name.into()]))), None)
+        let name = name.into();
+        match name.as_str() {
+            "true" => return Self::canonical(CanonicalType::True),
+            "false" => return Self::canonical(CanonicalType::False),
+            "infinity" => return Self::canonical(CanonicalType::Infinity),
+            _ => {}
+        }
+        Self::scalar(Some(Atoms::Set(BTreeSet::from([name]))), None)
     }
     pub fn integer(value: BigInt) -> Self {
+        match num_traits::ToPrimitive::to_i64(&value) {
+            Some(0) => return Self::canonical(CanonicalType::Zero),
+            Some(1) => return Self::canonical(CanonicalType::One),
+            Some(-1) => return Self::canonical(CanonicalType::MinusOne),
+            _ => {}
+        }
         Self::scalar(
             None,
             Some(Numeric::Integer(Integers::Set(BTreeSet::from([value])))),
@@ -2342,21 +2660,24 @@ impl Type {
     }
 
     pub fn nil() -> Self {
-        Self::families(Slots {
-            list: Some(Lists::Nil),
-            ..Slots::default()
-        })
+        Self::canonical(CanonicalType::Nil)
     }
     pub fn list(elements: Self, tail: Self, nonempty: bool) -> Self {
+        if elements.is_any() {
+            if tail.is_any() { return Self::canonical(if nonempty { CanonicalType::Cons } else { CanonicalType::MaybeImproperList }); }
+            if matches!(&tail.0, Repr::Families(s) if !s.union_record() && s.count() == 1 && matches!(s.list(), Some(Lists::Nil))) {
+                return Self::canonical(if nonempty { CanonicalType::NonemptyList } else { CanonicalType::List });
+            }
+        }
         if elements.impossible() || tail.impossible() {
             Self::none()
         } else {
             Self::families(Slots {
-                list: Some(Lists::List {
+                list: Some(Arc::new(Lists::List {
                     elements: Box::new(elements),
                     tail: Box::new(tail),
                     nonempty,
-                }),
+                })),
                 ..Slots::default()
             })
         }
@@ -2374,13 +2695,13 @@ impl Type {
                 return Ok(Self::none());
             }
             if let Repr::Families(slots) = &tail.0 {
-                if !slots.union_record
-                    && slots.count() == usize::from(slots.list.is_some())
+                if !slots.union_record()
+                    && slots.count() == usize::from(slots.list().is_some())
                     && let Some(Lists::List {
                         elements,
                         tail: termination,
                         ..
-                    }) = &slots.list
+                    }) = slots.list()
                 {
                     return Ok(Self::list(head.join(elements)?, *termination.clone(), true));
                 }
@@ -2405,13 +2726,13 @@ impl Type {
     }
     fn list_domain(&self) -> Option<&Lists> {
         match &self.0 {
-            Repr::Families(s) => s.list.as_ref(),
+            Repr::Families(s) => s.list(),
             _ => None,
         }
     }
     fn tuple_domain(&self) -> Option<&Tuples> {
         match &self.0 {
-            Repr::Families(s) => s.tuple.as_ref(),
+            Repr::Families(s) => s.tuple(),
             _ => None,
         }
     }
@@ -2419,10 +2740,7 @@ impl Type {
         matches!(self.0, Repr::None | Repr::Unit)
     }
     pub fn tuple_any() -> Self {
-        Self::families(Slots {
-            tuple: Some(Tuples::Any),
-            ..Slots::default()
-        })
+        Self::canonical(CanonicalType::Tuple)
     }
     pub fn tuple_arity(arity: usize) -> Self {
         if arity > 1024 {
@@ -2442,11 +2760,19 @@ impl Type {
     }
     fn from_tuples(tuple: Option<Tuples>) -> Self {
         Self::families(Slots {
-            tuple,
+            tuple: tuple.map(Arc::new),
             ..Slots::default()
         })
     }
     pub fn identifier(kinds: Option<Vec<String>>) -> Result<Self, String> {
+        let canonical = match &kinds {
+            None => Some(CanonicalType::Identifier),
+            Some(xs) if xs.len() == 1 => match xs[0].as_str() {
+                "pid" => Some(CanonicalType::Pid), "port" => Some(CanonicalType::Port), "reference" => Some(CanonicalType::Reference), _ => None,
+            },
+            _ => None,
+        };
+        if let Some(kind) = canonical { return Ok(Self::canonical(kind)); }
         let identifiers = match kinds {
             None => Some(Identifiers::All),
             Some(values) => {
@@ -2465,18 +2791,26 @@ impl Type {
             }
         };
         Ok(Self::families(Slots {
-            identifiers,
+            identifiers: identifiers.map(Arc::new),
             ..Slots::default()
         }))
     }
     pub fn bitstring(unit: BigInt, base: BigInt) -> Result<Self, BitstringDomainError> {
+        let canonical = match (num_traits::ToPrimitive::to_u64(&unit), num_traits::ToPrimitive::to_u64(&base)) {
+            (Some(1), Some(0)) => Some(CanonicalType::Bitstring),
+            (Some(8), Some(0)) => Some(CanonicalType::Binary),
+            (Some(1), Some(1)) => Some(CanonicalType::NonemptyBitstring),
+            (Some(8), Some(8)) => Some(CanonicalType::NonemptyBinary),
+            _ => None,
+        };
+        if let Some(kind) = canonical { return Ok(Self::canonical(kind)); }
         if unit < BigInt::zero() || base < BigInt::zero() {
             return Err(BitstringDomainError { unit, base });
         }
         Ok(Self::families(Slots {
-            bitstrings: Some(
+            bitstrings: Some(Arc::new(
                 Bitstrings::construct(unit, base).expect("validated nonnegative parameters"),
-            ),
+            )),
             ..Slots::default()
         }))
     }
@@ -2503,14 +2837,15 @@ impl Type {
         Self::bitstring(8.into(), 0.into()).unwrap()
     }
     pub fn function(domain: Option<Vec<Self>>, range: Self) -> Self {
+        if domain.is_none() && range.is_any() { return Self::canonical(CanonicalType::Function); }
         let domain = domain
             .map(|es| Self::raw_product(es))
             .unwrap_or_else(Self::any);
         Self::families(Slots {
-            functions: Some(Functions {
+            functions: Some(Arc::new(Functions {
                 domain: Box::new(domain),
                 range: Box::new(range),
-            }),
+            })),
             ..Slots::default()
         })
     }
@@ -2645,8 +2980,8 @@ impl Type {
                 )?,
                 Repr::Families(s) => {
                     let limited = s.limit_aux(depth)?;
-                    if s.union_record {
-                        Self(Repr::Families(Arc::new(limited)))
+                    if s.union_record() {
+                        Self(Repr::Families(FamilyStore::raw(limited)))
                     } else {
                         Self::families(limited)
                     }
@@ -2843,32 +3178,32 @@ impl Type {
                 json!({"kind":if es.len()==1 {"product_raw"}else{"product"},"values":es.iter().map(Type::to_value).collect::<Vec<_>>()})
             }
             Repr::Families(s) => {
-                if s.union_record && s.count() < 2 {
+                if s.union_record() && s.count() < 2 {
                     return json!({"kind":"union_raw","values":s.slot_values()});
                 }
                 let mut values = Vec::new();
-                if let Some(a) = &s.atoms {
+                if let Some(a) = s.atoms() {
                     values.push(a.value())
                 }
-                if let Some(b) = &s.bitstrings {
+                if let Some(b) = s.bitstrings() {
                     values.push(b.value())
                 }
-                if let Some(f) = &s.functions {
+                if let Some(f) = s.functions() {
                     values.push(f.value())
                 }
-                if let Some(i) = &s.identifiers {
+                if let Some(i) = s.identifiers() {
                     values.push(i.value())
                 }
-                if let Some(l) = &s.list {
+                if let Some(l) = s.list() {
                     values.push(l.value())
                 }
-                if let Some(n) = &s.number {
+                if let Some(n) = s.number() {
                     values.push(n.value())
                 }
-                if let Some(t) = &s.tuple {
+                if let Some(t) = s.tuple() {
                     values.push(t.value())
                 }
-                if let Some(m) = &s.maps {
+                if let Some(m) = s.maps() {
                     values.push(m.value());
                 }
                 if values.len() == 1 {
@@ -3099,25 +3434,25 @@ impl<'de> serde::Deserialize<'de> for Type {
     }
 }
 
-impl Slots {
+impl FamilyStore {
     fn view(&self) -> SlotsView<'_> {
         let s = self;
         SlotsView {
-            is_union_record: s.union_record,
-            maps: s.maps.as_ref().map(|m| MapView {
+            is_union_record: s.union_record(),
+            maps: s.maps().map(|m| MapView {
                 entries: &m.entries,
                 default_key: &m.default_key,
                 default_value: &m.default_value,
             }),
-            atoms: s.atoms.as_ref().map(|a| match a {
+            atoms: s.atoms().map(|a| match a {
                 Atoms::All => AtomsView::All,
                 Atoms::Set(xs) => AtomsView::Set(xs),
             }),
-            bitstrings: s.bitstrings.as_ref().map(|b| BitstringView {
+            bitstrings: s.bitstrings().map(|b| BitstringView {
                 unit: &b.unit,
                 base: &b.base,
             }),
-            functions: s.functions.as_ref().map(|f| FunctionView {
+            functions: s.functions().map(|f| FunctionView {
                 domain: match &f.domain.0 {
                     Repr::Any => None,
                     Repr::Product(es) => Some(es),
@@ -3125,11 +3460,11 @@ impl Slots {
                 },
                 range: &f.range,
             }),
-            identifiers: s.identifiers.as_ref().map(|i| match i {
+            identifiers: s.identifiers().map(|i| match i {
                 Identifiers::All => IdentifiersView::All,
                 Identifiers::Set(xs) => IdentifiersView::Set(xs),
             }),
-            list: s.list.as_ref().map(|l| match l {
+            list: s.list().map(|l| match l {
                 Lists::Nil => ListView::Nil,
                 Lists::List {
                     elements,
@@ -3141,7 +3476,7 @@ impl Slots {
                     nonempty: *nonempty,
                 },
             }),
-            number: s.number.as_ref().map(|n| match n {
+            number: s.number().map(|n| match n {
                 Numeric::Float => NumberView::Float,
                 Numeric::Number => NumberView::Number,
                 Numeric::Integer(i) => NumberView::Integer(match i {
@@ -3153,7 +3488,7 @@ impl Slots {
                     },
                 }),
             }),
-            tuples: s.tuple.as_ref().map(|t| match t {
+            tuples: s.tuple().map(|t| match t {
                 Tuples::Any => TuplesView::Any,
                 Tuples::Set(xs) => TuplesView::Alternatives(TupleAlternativesView(xs)),
             }),
@@ -3207,35 +3542,35 @@ impl Type {
         Ok(match &self.0 {
             Repr::Product(p) => Self::raw_product(p.iter().map(f).collect::<Result<Vec<_>, _>>()?),
             Repr::Families(slots) => {
-                if slots.functions.is_none()
-                    && !matches!(slots.list, Some(Lists::List { .. }))
-                    && !matches!(slots.tuple, Some(Tuples::Set(_)))
-                    && slots.maps.is_none()
+                if slots.functions().is_none()
+                    && !matches!(slots.list(), Some(Lists::List { .. }))
+                    && !matches!(slots.tuple(), Some(Tuples::Set(_)))
+                    && slots.maps().is_none()
                     && !slots.empty()
-                    && slots.union_record == (slots.count() > 1)
+                    && slots.union_record() == (slots.count() > 1)
                 {
                     return Ok(self.clone());
                 }
                 let mut s = slots.rebuild_base();
-                if let Some(Functions { domain, range }) = &slots.functions {
-                    s.functions = Some(Functions {
+                if let Some(Functions { domain, range }) = slots.functions() {
+                    s.functions = Some(Arc::new(Functions {
                         domain: Box::new(f(domain)?),
                         range: Box::new(f(range)?),
-                    });
+                    }));
                 }
                 if let Some(Lists::List {
                     elements,
                     tail,
                     nonempty,
-                }) = &slots.list
+                }) = slots.list()
                 {
-                    s.list = Some(Lists::List {
+                    s.list = Some(Arc::new(Lists::List {
                         elements: Box::new(f(elements)?),
                         tail: Box::new(f(tail)?),
                         nonempty: *nonempty,
-                    });
+                    }));
                 }
-                if let Some(Tuples::Set(groups)) = &slots.tuple {
+                if let Some(Tuples::Set(groups)) = slots.tuple() {
                     let mut out = BTreeMap::new();
                     for (arity, variants) in groups {
                         let mut vs = Vec::new();
@@ -3251,9 +3586,9 @@ impl Type {
                         }
                         out.insert(*arity, vs);
                     }
-                    s.tuple = Some(Tuples::Set(out));
+                    s.tuple = Some(Arc::new(Tuples::Set(out)));
                 }
-                if let Some(m) = &slots.maps {
+                if let Some(m) = slots.maps() {
                     let entries = m
                         .entries
                         .iter()
@@ -3265,7 +3600,8 @@ impl Type {
                             })
                         })
                         .collect::<Result<Vec<_>, LatticeError>>()?;
-                    s.maps = Maps::canonical(entries, f(&m.default_key)?, f(&m.default_value)?)?;
+                    s.maps = Maps::canonical(entries, f(&m.default_key)?, f(&m.default_value)?)?
+                        .map(Arc::new);
                 }
                 Self::families(s)
             }
@@ -3319,25 +3655,25 @@ impl Type {
             }
             Families(s) => {
                 let mut out = Vec::new();
-                if let Some(a) = &s.atoms {
+                if let Some(a) = s.atoms() {
                     match a {
                         Atoms::All => out.push(Self::all_atoms()),
                         Atoms::Set(xs) => out.extend(xs.iter().map(Self::atom)),
                     }
                 }
-                if let Some(b) = &s.bitstrings {
+                if let Some(b) = s.bitstrings() {
                     out.push(Self::families(Slots {
-                        bitstrings: Some(b.clone()),
+                        bitstrings: Some(Arc::new(b.clone())),
                         ..Slots::default()
                     }))
                 }
-                if let Some(f) = &s.functions {
+                if let Some(f) = s.functions() {
                     out.push(Self::families(Slots {
-                        functions: Some(f.clone()),
+                        functions: Some(Arc::new(f.clone())),
                         ..Slots::default()
                     }))
                 }
-                if let Some(i) = &s.identifiers {
+                if let Some(i) = s.identifiers() {
                     match i {
                         Identifiers::All => out.push(
                             Self::identifier(Option::None).map_err(|_| LatticeError::BadArg)?,
@@ -3352,13 +3688,13 @@ impl Type {
                         }
                     }
                 }
-                if let Some(l) = &s.list {
+                if let Some(l) = s.list() {
                     out.push(Self::families(Slots {
-                        list: Some(l.clone()),
+                        list: Some(Arc::new(l.clone())),
                         ..Slots::default()
                     }))
                 }
-                if let Some(n) = &s.number {
+                if let Some(n) = s.number() {
                     match n {
                         Numeric::Number => {
                             out.push(Self::float());
@@ -3370,7 +3706,7 @@ impl Type {
                         _ => out.push(Self::scalar(Option::None, Some(n.clone()))),
                     }
                 }
-                if let Some(t) = &s.tuple {
+                if let Some(t) = s.tuple() {
                     match t {
                         Tuples::Any => out.push(Self::tuple_any()),
                         Tuples::Set(groups) => {
@@ -3384,7 +3720,7 @@ impl Type {
                         }
                     }
                 }
-                if let Some(m) = &s.maps {
+                if let Some(m) = s.maps() {
                     out.push(Self::from_map(Some(m.clone())))
                 }
                 out
@@ -3396,14 +3732,14 @@ impl Type {
 impl Slots {
     fn slot_values(&self) -> Vec<Value> {
         vec![
-            self.atoms.as_ref().map(Atoms::value),
-            self.bitstrings.as_ref().map(Bitstrings::value),
-            self.functions.as_ref().map(Functions::value),
-            self.identifiers.as_ref().map(Identifiers::value),
-            self.list.as_ref().map(Lists::value),
-            self.number.as_ref().map(Numeric::value),
-            self.tuple.as_ref().map(Tuples::value),
-            self.maps.as_ref().map(Maps::value),
+            self.atoms.as_deref().map(Atoms::value),
+            self.bitstrings.as_deref().map(Bitstrings::value),
+            self.functions.as_deref().map(Functions::value),
+            self.identifiers.as_deref().map(Identifiers::value),
+            self.list.as_deref().map(Lists::value),
+            self.number.as_deref().map(Numeric::value),
+            self.tuple.as_deref().map(Tuples::value),
+            self.maps.as_deref().map(Maps::value),
         ]
         .into_iter()
         .map(|v| v.unwrap_or_else(|| Type::none().to_value()))
@@ -3424,10 +3760,10 @@ impl Type {
             let Repr::Families(s) = t.0 else {
                 return Err("native union slot must be a family or none".into());
             };
-            if s.union_record || s.count() != 1 {
+            if s.union_record() || s.count() != 1 {
                 return Err("native union slot must contain exactly one direct family".into());
             }
-            let mut expected = s.as_ref().clone();
+            let mut expected = s.to_slots();
             match index {
                 0 => slots.atoms = expected.atoms.take(),
                 1 => slots.bitstrings = expected.bitstrings.take(),
@@ -3444,7 +3780,7 @@ impl Type {
             }
         }
         slots.union_record = true;
-        Ok(Self(Repr::Families(Arc::new(slots))))
+        Ok(Self(Repr::Families(FamilyStore::raw(slots))))
     }
 }
 
@@ -3458,18 +3794,18 @@ impl Type {
             }
             Repr::Product(p) => pending.extend(p.iter()),
             Repr::Families(s) => {
-                if let Some(f) = &s.functions {
+                if let Some(f) = s.functions() {
                     pending.extend([f.domain.as_ref(), f.range.as_ref()]);
                 }
-                if let Some(Lists::List { elements, tail, .. }) = &s.list {
+                if let Some(Lists::List { elements, tail, .. }) = s.list() {
                     pending.extend([elements.as_ref(), tail.as_ref()]);
                 }
-                if let Some(Tuples::Set(groups)) = &s.tuple {
+                if let Some(Tuples::Set(groups)) = s.tuple() {
                     for variant in groups.values().flatten() {
                         pending.extend(&variant.elements);
                     }
                 }
-                if let Some(map) = &s.maps {
+                if let Some(map) = s.maps() {
                     pending.extend([map.default_key.as_ref(), map.default_value.as_ref()]);
                 }
             }
@@ -3492,10 +3828,10 @@ impl Type {
             Repr::Product(p) => p.iter().all(|t| t.is_limited(depth - 1)),
             Repr::Families(s) => {
                 let functions = s
-                    .functions
-                    .as_ref()
+                    .functions()
+                    .as_deref()
                     .is_none_or(|f| f.domain.is_limited(depth) && f.range.is_limited(depth - 1));
-                let list = s.list.as_ref().is_none_or(|l| match l {
+                let list = s.list().is_none_or(|l| match l {
                     Lists::Nil => true,
                     Lists::List { elements, tail, .. } => {
                         elements.is_limited(depth - 1)
@@ -3503,14 +3839,14 @@ impl Type {
                                 || tail.is_limited((depth - 1).max(1)))
                     }
                 });
-                let tuple = s.tuple.as_ref().is_none_or(|t| match t {
+                let tuple = s.tuple().is_none_or(|t| match t {
                     Tuples::Any => true,
                     Tuples::Set(g) => g.values().flatten().all(|v| {
                         (depth != 1 || v.tag.is_none())
                             && v.elements.iter().all(|t| t.is_limited(depth - 1))
                     }),
                 });
-                let map = s.maps.as_ref().is_none_or(|m| {
+                let map = s.maps().is_none_or(|m| {
                     m.entries
                         .iter()
                         .all(|e| depth > 1 && e.value.is_limited(depth - 1))
@@ -3556,17 +3892,17 @@ impl Type {
             ),
             Repr::Families(slots) => {
                 let mut s = slots.rebuild_base();
-                if let Some(f) = &slots.functions {
-                    s.functions = Some(Functions {
+                if let Some(f) = slots.functions() {
+                    s.functions = Some(Arc::new(Functions {
                         domain: Box::new(f.domain.substitute_aux(lookup)?),
                         range: Box::new(f.range.substitute_aux(lookup)?),
-                    });
+                    }));
                 }
                 if let Some(Lists::List {
                     elements,
                     tail,
                     nonempty,
-                }) = &slots.list
+                }) = slots.list()
                 {
                     let head = elements.substitute_aux(lookup)?;
                     if head.is_impossible() {
@@ -3574,28 +3910,28 @@ impl Type {
                     } else {
                         let end = tail.substitute_aux(lookup)?;
                         if end == Self::nil() || end.is_any() {
-                            s.list = Some(Lists::List {
+                            s.list = Some(Arc::new(Lists::List {
                                 elements: Box::new(head),
                                 tail: Box::new(end),
                                 nonempty: *nonempty,
-                            });
+                            }));
                         } else {
                             let cons = Self::cons(head, end)?;
                             let Repr::Families(c) = &cons.0 else {
                                 return Err(LatticeError::BadMatch(Box::new(cons)));
                             };
-                            let Some(Lists::List { elements, tail, .. }) = &c.list else {
+                            let Some(Lists::List { elements, tail, .. }) = c.list() else {
                                 return Err(LatticeError::BadMatch(Box::new(cons)));
                             };
-                            s.list = Some(Lists::List {
+                            s.list = Some(Arc::new(Lists::List {
                                 elements: elements.clone(),
                                 tail: tail.clone(),
                                 nonempty: *nonempty,
-                            });
+                            }));
                         }
                     }
                 }
-                if let Some(Tuples::Set(groups)) = &slots.tuple {
+                if let Some(Tuples::Set(groups)) = slots.tuple() {
                     let mut combined = Self::none();
                     for variant in groups.values().flatten() {
                         let t = Self::tuple(
@@ -3608,11 +3944,11 @@ impl Type {
                         combined = combined.join(&t)?;
                     }
                     s.tuple = match combined.0 {
-                        Repr::Families(t) => Arc::unwrap_or_clone(t).tuple,
+                        Repr::Families(t) => t.into_slots().tuple,
                         _ => None,
                     };
                 }
-                if let Some(m) = &slots.maps {
+                if let Some(m) = slots.maps() {
                     s.maps = Maps::canonical(
                         m.entries
                             .iter()
@@ -3626,10 +3962,11 @@ impl Type {
                             .collect::<Result<Vec<_>, LatticeError>>()?,
                         m.default_key.substitute_aux(lookup)?,
                         m.default_value.substitute_aux(lookup)?,
-                    )?;
+                    )?
+                    .map(Arc::new);
                 }
-                if slots.union_record {
-                    Self(Repr::Families(Arc::new(s)))
+                if slots.union_record() {
+                    Self(Repr::Families(FamilyStore::raw(s)))
                 } else {
                     Self::families(s)
                 }
@@ -3646,22 +3983,22 @@ impl Type {
             }
             Repr::Product(p) => p.iter().any(Type::has_var),
             Repr::Families(s) => {
-                s.functions
-                    .as_ref()
+                s.functions()
+                    .as_deref()
                     .is_some_and(|f| f.domain.has_var() || f.range.has_var())
-                    || s.list.as_ref().is_some_and(|list| match list {
+                    || s.list().is_some_and(|list| match list {
                         Lists::Nil => false,
                         Lists::List { elements, tail, .. } => elements.has_var() || tail.has_var(),
                     })
-                    || s.tuple.as_ref().is_some_and(|tuple| match tuple {
+                    || s.tuple().is_some_and(|tuple| match tuple {
                         Tuples::Any => false,
                         Tuples::Set(groups) => groups
                             .values()
                             .flatten()
                             .any(|variant| variant.elements.iter().any(Type::has_var)),
                     })
-                    || s.maps
-                        .as_ref()
+                    || s.maps()
+                        .as_deref()
                         .is_some_and(|map| map.default_key.has_var() || map.default_value.has_var())
             }
             _ => false,
@@ -3683,9 +4020,9 @@ impl Type {
 impl Type {
     fn bitstring_ref(&self) -> Result<&Bitstrings, LatticeError> {
         if let Repr::Families(s) = &self.0 {
-            if !s.union_record
-                && s.count() == usize::from(s.bitstrings.is_some())
-                && let Some(b) = &s.bitstrings
+            if !s.union_record()
+                && s.count() == usize::from(s.bitstrings().is_some())
+                && let Some(b) = s.bitstrings()
             {
                 return Ok(b);
             }
@@ -3842,9 +4179,9 @@ impl Type {
         u.pair(&self.clone().into(), &rhs.clone().into())?;
         Ok(u.bindings)
     }
-    fn direct_slots(&self) -> Option<&Slots> {
+    fn direct_slots(&self) -> Option<&FamilyStore> {
         match &self.0 {
-            Repr::Families(s) if !s.union_record => Some(s),
+            Repr::Families(s) if !s.union_record() => Some(s),
             _ => None,
         }
     }
@@ -3938,8 +4275,8 @@ impl Unifier {
             let sa = ta.direct_slots();
             let sb = tb.direct_slots();
             if let (Some(fa), Some(fb)) = (
-                sa.and_then(|s| s.functions.as_ref()),
-                sb.and_then(|s| s.functions.as_ref()),
+                sa.and_then(|s| s.functions()),
+                sb.and_then(|s| s.functions()),
             ) {
                 self.types(&fa.domain, &fb.domain)?;
                 return self.types(&fa.range, &fb.range);
@@ -4013,10 +4350,8 @@ impl Unifier {
                     tail: xb,
                     nonempty: nb,
                 }),
-            ) = (
-                sa.and_then(|s| s.list.as_ref()),
-                sb.and_then(|s| s.list.as_ref()),
-            ) && na == nb
+            ) = (sa.and_then(|s| s.list()), sb.and_then(|s| s.list()))
+                && na == nb
             {
                 self.types(ea, eb)?;
                 return self.types(xa, xb);
@@ -4024,10 +4359,9 @@ impl Unifier {
             if let (Repr::Product(pa), Repr::Product(pb)) = (&ta.0, &tb.0) {
                 return self.lists(pa, pb);
             }
-            if let (Some(Tuples::Set(ga)), Some(Tuples::Set(gb))) = (
-                sa.and_then(|s| s.tuple.as_ref()),
-                sb.and_then(|s| s.tuple.as_ref()),
-            ) {
+            if let (Some(Tuples::Set(ga)), Some(Tuples::Set(gb))) =
+                (sa.and_then(|s| s.tuple()), sb.and_then(|s| s.tuple()))
+            {
                 let direct_a = ga.len() == 1 && ga.values().next().unwrap().len() == 1;
                 let direct_b = gb.len() == 1 && gb.values().next().unwrap().len() == 1;
                 if direct_a && direct_b && ga.keys().next() == gb.keys().next() {
@@ -4073,10 +4407,7 @@ impl Unifier {
                     );
                 }
             }
-            if let (Some(ma), Some(mb)) = (
-                sa.and_then(|s| s.maps.as_ref()),
-                sb.and_then(|s| s.maps.as_ref()),
-            ) {
+            if let (Some(ma), Some(mb)) = (sa.and_then(|s| s.maps()), sb.and_then(|s| s.maps())) {
                 self.types(&ma.default_key, &mb.default_key)?;
                 self.types(&ma.default_value, &mb.default_value)?;
                 for (_, _, x, _, y) in ma.aligned(mb)?.into_iter().rev() {
@@ -4822,7 +5153,7 @@ mod tuple_opacity_tests {
 mod family_sharing_tests {
     use super::*;
 
-    fn slots(value: &Type) -> &Arc<Slots> {
+    fn slots(value: &Type) -> &FamilyStore {
         let Repr::Families(slots) = &value.0 else {
             panic!("expected family")
         };
@@ -4847,11 +5178,11 @@ mod family_sharing_tests {
         .unwrap();
         let before = original.to_value();
         let copy = original.clone();
-        assert!(Arc::ptr_eq(slots(&original), slots(&copy)));
+        assert!(slots(&original).shares_storage(slots(&copy)));
         let edited = copy
             .map_update(Type::atom("entry"), Type::atom("changed"))
             .unwrap();
-        assert!(!Arc::ptr_eq(slots(&original), slots(&edited)));
+        assert!(!slots(&original).shares_storage(slots(&edited)));
         assert_eq!(
             edited.map_get(&Type::atom("entry")).unwrap(),
             Type::atom("changed")
@@ -4896,8 +5227,8 @@ mod family_sharing_tests {
         let wire = json!({"kind":"union_raw", "values": values});
         let original = Type::from_value(&wire).unwrap();
         let copy = original.clone();
-        assert!(Arc::ptr_eq(slots(&original), slots(&copy)));
-        assert!(slots(&original).union_record);
+        assert!(slots(&original).shares_storage(slots(&copy)));
+        assert!(slots(&original).union_record());
         assert_eq!(original.to_value(), wire);
         assert_eq!(
             serde_json::from_str::<Type>(&serde_json::to_string(&original).unwrap()).unwrap(),
@@ -4909,7 +5240,7 @@ mod family_sharing_tests {
                 Type::atom("bound"),
             )]))
             .unwrap();
-        assert!(slots(&replaced).union_record);
+        assert!(slots(&replaced).union_record());
         let mut expected = vec![Type::none().to_value(); 8];
         expected[6] = Type::tuple(vec![Type::atom("bound")]).unwrap().to_value();
         assert_eq!(
@@ -4950,7 +5281,7 @@ mod borrowed_presence_proof_tests {
         };
         for mask in 0..256 {
             for union_record in [false, true] {
-                let mut s = prototype.as_ref().clone();
+                let mut s = prototype.to_slots();
                 if mask & 1 == 0 {
                     s.atoms = None;
                 }
@@ -5003,11 +5334,11 @@ mod borrowed_presence_proof_tests {
                         "mask={mask} union={union_record} domain={domain}"
                     );
                 }
-                let t = Type(Repr::Families(Arc::new(s.clone())));
+                let t = Type(Repr::Families(FamilyStore::raw(s.clone())));
                 let mut rest = s.clone();
                 rest.maps = None;
                 let expected = if !union_record && rest.empty() {
-                    Ok(s.maps.as_ref())
+                    Ok(s.maps.as_deref())
                 } else {
                     Err(LatticeError::FunctionClause)
                 };
@@ -5047,17 +5378,17 @@ mod immutable_transform_tests {
             let Repr::Families(shared) = &transformed.0 else {
                 panic!()
             };
-            assert!(Arc::ptr_eq(s, shared));
-            let mut raw = s.as_ref().clone();
+            assert!(s.shares_storage(shared));
+            let mut raw = s.to_slots();
             raw.union_record = !raw.union_record;
-            let raw = Type(Repr::Families(Arc::new(raw)));
+            let raw = Type(Repr::Families(FamilyStore::raw(raw)));
             assert_eq!(
                 raw.transform_children(&|_| panic!("raw leaf called callback"))
                     .unwrap(),
                 t
             );
         }
-        let empty = Type(Repr::Families(Arc::new(Slots::default())));
+        let empty = Type(Repr::Families(FamilyStore::raw(Slots::default())));
         assert_eq!(empty.structural().unwrap(), Type::none());
     }
     #[test]
@@ -5078,8 +5409,8 @@ mod immutable_transform_tests {
             LatticeError::BadArg
         );
         assert_eq!(count.get(), 2);
-        let malformed = Type(Repr::Families(Arc::new(Slots {
-            maps: Some(Maps {
+        let malformed = Type(Repr::Families(FamilyStore::raw(Slots {
+            maps: Some(Arc::new(Maps {
                 entries: vec![
                     MapEntry {
                         key: MapKey::Atom("z".into()),
@@ -5094,7 +5425,7 @@ mod immutable_transform_tests {
                 ],
                 default_key: Box::new(Type::none()),
                 default_value: Box::new(Type::none()),
-            }),
+            })),
             ..Slots::default()
         })));
         let log = std::cell::RefCell::new(Vec::new());
@@ -5175,17 +5506,17 @@ mod singleton_key_tests {
     fn raw_union_mixed_and_non_singleton_shapes_keep_original_fallback() {
         let atom = Type::atom("a");
         let Repr::Families(s) = &atom.0 else { panic!() };
-        let mut union = s.as_ref().clone();
+        let mut union = s.to_slots();
         union.union_record = true;
-        let union = Type(Repr::Families(Arc::new(union)));
-        let mut mixed = s.as_ref().clone();
-        mixed.number = Some(Numeric::Integer(Integers::Set([1.into()].into())));
-        let mixed = Type(Repr::Families(Arc::new(mixed)));
-        let range = Type(Repr::Families(Arc::new(Slots {
-            number: Some(Numeric::Integer(Integers::Range(
+        let union = Type(Repr::Families(FamilyStore::raw(union)));
+        let mut mixed = s.to_slots();
+        mixed.number = Some(Arc::new(Numeric::Integer(Integers::Set([1.into()].into()))));
+        let mixed = Type(Repr::Families(FamilyStore::raw(mixed)));
+        let range = Type(Repr::Families(FamilyStore::raw(Slots {
+            number: Some(Arc::new(Numeric::Integer(Integers::Range(
                 Bound::Finite(1.into()),
                 Bound::Finite(1.into()),
-            ))),
+            )))),
             ..Slots::default()
         })));
         let candidates = [
@@ -5230,16 +5561,16 @@ mod depth_query_tests {
         let Repr::Families(original) = &nil.0 else {
             unreachable!()
         };
-        let mut raw = original.as_ref().clone();
+        let mut raw = original.to_slots();
         raw.union_record = true;
         assert!(!matches!(
-            Type(Repr::Families(Arc::new(raw))).singleton_key(),
+            Type(Repr::Families(FamilyStore::raw(raw))).singleton_key(),
             Some(SingletonKey::Nil)
         ));
-        let mut mixed = original.as_ref().clone();
-        mixed.atoms = Some(Atoms::Set(BTreeSet::new()));
+        let mut mixed = original.to_slots();
+        mixed.atoms = Some(Arc::new(Atoms::Set(BTreeSet::new())));
         assert!(!matches!(
-            Type(Repr::Families(Arc::new(mixed))).singleton_key(),
+            Type(Repr::Families(FamilyStore::raw(mixed))).singleton_key(),
             Some(SingletonKey::Nil)
         ));
         assert!(Type::proper_list(Type::any(), false).is_limited(1));
@@ -5401,24 +5732,26 @@ mod rebuild_base_tests {
     fn rebuild_base_preserves_scalar_payloads_sentinels_and_raw_flags() {
         let source = Slots {
             union_record: true,
-            atoms: Some(Atoms::Set(BTreeSet::from(["leaf".into()]))),
-            bitstrings: Some(Bitstrings {
+            atoms: Some(Arc::new(Atoms::Set(BTreeSet::from(["leaf".into()])))),
+            bitstrings: Some(Arc::new(Bitstrings {
                 unit: 8.into(),
                 base: 3.into(),
-            }),
-            identifiers: Some(Identifiers::Set(BTreeSet::from(["pid".into()]))),
-            number: Some(Numeric::Integer(Integers::Set(BTreeSet::from([42.into()])))),
-            list: Some(Lists::Nil),
-            tuple: Some(Tuples::Any),
-            functions: Some(Functions {
+            })),
+            identifiers: Some(Arc::new(Identifiers::Set(BTreeSet::from(["pid".into()])))),
+            number: Some(Arc::new(Numeric::Integer(Integers::Set(BTreeSet::from([
+                42.into(),
+            ]))))),
+            list: Some(Arc::new(Lists::Nil)),
+            tuple: Some(Arc::new(Tuples::Any)),
+            functions: Some(Arc::new(Functions {
                 domain: Box::new(Type::any()),
                 range: Box::new(Type::any()),
-            }),
-            maps: Some(Maps {
+            })),
+            maps: Some(Arc::new(Maps {
                 entries: vec![],
                 default_key: Box::new(Type::any()),
                 default_value: Box::new(Type::none()),
-            }),
+            })),
         };
         let base = source.rebuild_base();
         assert!(base.union_record);
@@ -5426,19 +5759,19 @@ mod rebuild_base_tests {
         assert_eq!(base.bitstrings, source.bitstrings);
         assert_eq!(base.identifiers, source.identifiers);
         assert_eq!(base.number, source.number);
-        assert_eq!(base.list, Some(Lists::Nil));
-        assert_eq!(base.tuple, Some(Tuples::Any));
+        assert_eq!(base.list.as_deref(), Some(&Lists::Nil));
+        assert_eq!(base.tuple.as_deref(), Some(&Tuples::Any));
         assert!(base.functions.is_none());
         assert!(base.maps.is_none());
     }
     #[test]
     fn substitution_still_skips_tail_lookup_after_impossible_head() {
-        let t = Type(Repr::Families(Arc::new(Slots {
-            list: Some(Lists::List {
+        let t = Type(Repr::Families(FamilyStore::raw(Slots {
+            list: Some(Arc::new(Lists::List {
                 elements: Box::new(Type::variable_atom("head")),
                 tail: Box::new(Type::variable_atom("tail")),
                 nonempty: true,
-            }),
+            })),
             ..Slots::default()
         })));
         let none = Type::none();
@@ -5454,5 +5787,174 @@ mod rebuild_base_tests {
             .unwrap();
         assert_eq!(result, Type::none());
         assert_eq!(*trace.borrow(), vec![VariableId::Atom("head".into())]);
+    }
+}
+
+#[cfg(test)]
+mod family_store_roundtrip_tests {
+    use super::*;
+
+    #[test]
+    fn raw_family_flags_roundtrip_and_debug_and_equality_remain_transparent() {
+        let fixtures = [
+            Type::atoms(["a".into(), "b".into()]),
+            Type::binary(),
+            Type::function(
+                Some(vec![Type::variable_integer(42.into())]),
+                Type::all_atoms(),
+            ),
+            Type::builtin(BuiltinType::Pid).unwrap(),
+            Type::proper_list(Type::variable_integer(42.into()), true),
+            Type::number(),
+            Type::tuple(vec![Type::atom("tag"), Type::all_integers()]).unwrap(),
+            Type::map_any()
+                .map_put(Type::atom("entry"), Type::all_integers())
+                .unwrap(),
+        ];
+        let mut template = Slots::default();
+        for typ in fixtures {
+            let Repr::Families(store) = typ.0 else {
+                panic!("fixture is not a family")
+            };
+            let fields = store.into_slots();
+            if fields.atoms.is_some() {
+                template.atoms = fields.atoms;
+            }
+            if fields.bitstrings.is_some() {
+                template.bitstrings = fields.bitstrings;
+            }
+            if fields.functions.is_some() {
+                template.functions = fields.functions;
+            }
+            if fields.identifiers.is_some() {
+                template.identifiers = fields.identifiers;
+            }
+            if fields.list.is_some() {
+                template.list = fields.list;
+            }
+            if fields.number.is_some() {
+                template.number = fields.number;
+            }
+            if fields.tuple.is_some() {
+                template.tuple = fields.tuple;
+            }
+            if fields.maps.is_some() {
+                template.maps = fields.maps;
+            }
+        }
+        let mut rows = Vec::new();
+        for mask in 0..256 {
+            for union_record in [false, true] {
+                let mut slots = template.clone();
+                slots.union_record = union_record;
+                if mask & 1 == 0 {
+                    slots.atoms = None;
+                }
+                if mask & 2 == 0 {
+                    slots.bitstrings = None;
+                }
+                if mask & 4 == 0 {
+                    slots.functions = None;
+                }
+                if mask & 8 == 0 {
+                    slots.identifiers = None;
+                }
+                if mask & 16 == 0 {
+                    slots.list = None;
+                }
+                if mask & 32 == 0 {
+                    slots.number = None;
+                }
+                if mask & 64 == 0 {
+                    slots.tuple = None;
+                }
+                if mask & 128 == 0 {
+                    slots.maps = None;
+                }
+                let store = FamilyStore::raw(slots.clone());
+                assert_eq!(store.to_slots(), slots);
+                assert_eq!(store.clone().into_slots(), slots);
+                assert_eq!(format!("{store:?}"), format!("{slots:?}"));
+                rows.push((slots, store));
+            }
+        }
+        for (left_slots, left_store) in &rows {
+            for (right_slots, right_store) in &rows {
+                assert_eq!(left_store == right_store, left_slots == right_slots);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod canonical_constructor_tests {
+    use super::*;
+    fn same_owner(a: &FamilyStore, b: &FamilyStore) -> bool {
+        macro_rules! owner { ($($variant:ident),*) => { match (a,b) {
+            $((FamilyStore::$variant(a),FamilyStore::$variant(b))=>Arc::ptr_eq(a,b),)*
+            _=>false,
+        } } }
+        owner!(Atoms, Bitstrings, Functions, Identifiers, Lists, Numeric, Tuples, Maps, Union)
+    }
+
+    #[test]
+    fn all_cached_factories_keep_exact_raw_shapes_debug_and_wire() {
+        let keys = [CanonicalType::Atoms,CanonicalType::Integers,CanonicalType::Float,CanonicalType::Number,CanonicalType::Nil,CanonicalType::Tuple,CanonicalType::Map,CanonicalType::Boolean,CanonicalType::True,CanonicalType::False,CanonicalType::Infinity,CanonicalType::Zero,CanonicalType::One,CanonicalType::MinusOne,CanonicalType::Identifier,CanonicalType::Pid,CanonicalType::Port,CanonicalType::Reference,CanonicalType::Bitstring,CanonicalType::Binary,CanonicalType::NonemptyBitstring,CanonicalType::NonemptyBinary,CanonicalType::List,CanonicalType::NonemptyList,CanonicalType::MaybeImproperList,CanonicalType::Cons,CanonicalType::Function,CanonicalType::Byte,CanonicalType::Char,CanonicalType::PositiveInteger,CanonicalType::NonNegativeInteger,CanonicalType::NegativeInteger];
+        for key in keys {
+            let raw = Type::make_canonical(key);
+            let shared = Type::canonical(key);
+            assert_eq!(shared,raw);
+            assert_eq!(format!("{shared:?}"),format!("{raw:?}"));
+            assert_eq!(shared.to_value(),raw.to_value());
+            let Repr::Families(a)=&shared.0 else {panic!()};
+            let Repr::Families(b)=&Type::canonical(key).0 else {panic!()};
+            assert!(same_owner(a,b));
+        }
+    }
+    #[test]
+    fn atom_conversion_effect_occurs_once_on_every_cached_call() {
+        struct Input<'a>(&'a std::cell::Cell<usize>);
+        impl From<Input<'_>> for String {
+            fn from(input:Input<'_>)->Self {input.0.set(input.0.get()+1);"true".into()}
+        }
+        let count=std::cell::Cell::new(0);
+        for expected in 1..=4 {assert_eq!(Type::atom(Input(&count)),Type::atom("true"));assert_eq!(count.get(),expected);}
+    }
+    #[test]
+    fn malformed_and_noncanonical_inputs_keep_original_boundaries() {
+        for (u,b) in [(-1,0),(1,-1),(-8,-2)] {
+            assert_eq!(Type::bitstring(u.into(),b.into()),Err(BitstringDomainError{unit:u.into(),base:b.into()}));
+        }
+        assert_eq!(Type::identifier(Some(vec!["pid".into(),"bad".into(),"worse".into()])),Err("unsupported identifier kind bad".into()));
+        assert_ne!(Type::identifier(None).unwrap(),Type::identifier(Some(vec!["pid".into(),"port".into(),"reference".into()])).unwrap());
+        assert_eq!(Type::identifier(Some(vec![])).unwrap(),Type::none());
+        assert_ne!(Type::tuple_any(),Type::tuple_arity(0));
+        assert_ne!(Type::function(None,Type::any()),Type::function(Some(vec![]),Type::any()));
+        let raw_nil=Type(Repr::Families(FamilyStore::raw(Slots{union_record:true,list:Some(Arc::new(Lists::Nil)),..Slots::default()})));
+        let list=Type::list(Type::any(),raw_nil.clone(),false);
+        let Repr::Families(slots)=&list.0 else {panic!()};
+        let Some(Lists::List{tail,..})=slots.list() else {panic!()};
+        assert_eq!(**tail,raw_nil);
+        assert_ne!(list,Type::proper_list(Type::any(),false));
+        assert_eq!(Type::list(Type::unit(),Type::any(),false),Type::none());
+    }
+    #[test]
+    fn owned_extraction_mutation_cannot_change_cached_owner() {
+        let original=Type::nil();
+        let Repr::Families(s)=original.clone().0 else {panic!()};
+        let mut owned=s.into_slots();
+        owned.list=None;
+        owned.atoms=Some(Arc::new(Atoms::All));
+        assert_eq!(Type::nil(),original);
+        assert_ne!(Type(Repr::Families(FamilyStore::raw(owned))),original);
+    }
+    #[test]
+    fn per_thread_owners_remain_equal_and_outlive_thread_cache() {
+        let here=Type::nil();
+        let there=std::thread::spawn(Type::nil).join().unwrap();
+        assert_eq!(here,there);
+        let (Repr::Families(a),Repr::Families(b))=(&here.0,&there.0)else{panic!()};
+        assert!(!same_owner(a,b));
+        assert_eq!(there.to_value(),here.to_value());
     }
 }

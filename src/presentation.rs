@@ -211,7 +211,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
             ctx,
         )?,
         Repr::Families(s) => {
-            if s.union_record || s.count() != 1 {
+            if s.union_record() || s.count() != 1 {
                 return union(
                     s.components_with_none()
                         .into_iter()
@@ -219,7 +219,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                     ctx,
                 );
             }
-            if let Some(atoms) = &s.atoms {
+            if let Some(atoms) = s.atoms() {
                 match atoms {
                     Atoms::All => "atom()".into(),
                     Atoms::Set(values)
@@ -235,7 +235,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                         .collect::<Vec<_>>()
                         .join(" | "),
                 }
-            } else if let Some(b) = &s.bitstrings {
+            } else if let Some(b) = s.bitstrings() {
                 match (b.unit.to_string().as_str(), b.base.to_string().as_str()) {
                     ("0", "0") => "<<>>".into(),
                     ("8", "0") => "binary()".into(),
@@ -246,7 +246,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                     (_, "0") => format!("<<_:_*{}>>", b.unit),
                     _ => format!("<<_:{},_:_*{}>>", b.base, b.unit),
                 }
-            } else if let Some(f) = &s.functions {
+            } else if let Some(f) = s.functions() {
                 match &f.domain.0 {
                     Repr::Any if f.range.is_any() => "fun()".into(),
                     Repr::Any => format!("fun((...) -> {})", print_type(&f.range, ctx)?),
@@ -257,7 +257,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                     ),
                     _ => return Err(LatticeError::FunctionClause),
                 }
-            } else if let Some(ids) = &s.identifiers {
+            } else if let Some(ids) = s.identifiers() {
                 match ids {
                     Identifiers::All => "identifier()".into(),
                     Identifiers::Set(set) => set
@@ -266,7 +266,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                         .collect::<Vec<_>>()
                         .join(" | "),
                 }
-            } else if let Some(list) = &s.list {
+            } else if let Some(list) = s.list() {
                 match list {
                     Lists::Nil => "[]".into(),
                     Lists::List {
@@ -308,7 +308,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                         }
                     }
                 }
-            } else if let Some(number) = &s.number {
+            } else if let Some(number) = s.number() {
                 match number {
                     Numeric::Float => "float()".into(),
                     Numeric::Number => "number()".into(),
@@ -341,7 +341,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                         _ => format!("{}..{}", bound_string(from), bound_string(to)),
                     },
                 }
-            } else if let Some(tuple) = &s.tuple {
+            } else if let Some(tuple) = s.tuple() {
                 match tuple {
                     Tuples::Any => "tuple()".into(),
                     Tuples::Set(rows) => {
@@ -353,7 +353,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                             .join(" | ")
                     }
                 }
-            } else if let Some(map) = &s.maps {
+            } else if let Some(map) = s.maps() {
                 if map.entries.is_empty() && map.default_key.is_any() && map.default_value.is_any()
                 {
                     "map()".into()
@@ -407,10 +407,10 @@ impl Type {
         ctx: &PresentationContext,
     ) -> Result<(Vec<usize>, String), LatticeError> {
         let s = self.direct_slots().ok_or(LatticeError::FunctionClause)?;
-        if s.union_record || s.count() != 1 {
+        if s.union_record() || s.count() != 1 {
             return Err(LatticeError::FunctionClause);
         }
-        let Some(Tuples::Set(rows)) = &s.tuple else {
+        let Some(Tuples::Set(rows)) = s.tuple() else {
             return Err(LatticeError::FunctionClause);
         };
         let mut variants = rows.values().flatten();
@@ -468,28 +468,30 @@ impl Type {
                     .collect::<Result<_, _>>()?,
                 n.structural.abstract_records(ctx)?,
             ),
-            Repr::Families(s) if s.union_record || s.count() != 1 => {
+            Repr::Families(s) if s.union_record() || s.count() != 1 => {
                 let mut components = Vec::new();
                 macro_rules! family {
-                    ($field:ident) => {
-                        if let Some(value) = &s.$field {
+                    ($field:ident, $owner:ident) => {
+                        if let Some(value) = s.$owner() {
                             let one = Slots {
                                 $field: Some(value.clone()),
                                 ..Slots::default()
                             };
-                            components
-                                .push(Self(Repr::Families(Arc::new(one))).abstract_records(ctx)?);
+                            components.push(
+                                Self(Repr::Families(FamilyStore::raw(one)))
+                                    .abstract_records(ctx)?,
+                            );
                         }
                     };
                 }
-                family!(atoms);
-                family!(bitstrings);
-                family!(functions);
-                family!(identifiers);
-                family!(list);
-                family!(number);
-                family!(tuple);
-                family!(maps);
+                family!(atoms, atoms_owner);
+                family!(bitstrings, bitstrings_owner);
+                family!(functions, functions_owner);
+                family!(identifiers, identifiers_owner);
+                family!(list, list_owner);
+                family!(number, number_owner);
+                family!(tuple, tuple_owner);
+                family!(maps, maps_owner);
                 Self::supremum(&components)
             }
             Repr::Families(s) => {
@@ -497,7 +499,7 @@ impl Type {
                     elements,
                     tail,
                     nonempty,
-                }) = &s.list
+                }) = s.list()
                 {
                     let elements = elements.abstract_records(ctx)?;
                     if elements.is_none() {
@@ -509,31 +511,31 @@ impl Type {
                     } else {
                         let v = Self::cons(elements, tail)?;
                         let Some(Lists::List { elements, tail, .. }) =
-                            v.direct_slots().and_then(|s| s.list.as_ref())
+                            v.direct_slots().and_then(|s| s.list())
                         else {
                             return Err(LatticeError::BadMatch(Box::new(v)));
                         };
                         ((**elements).clone(), (**tail).clone())
                     };
-                    return Ok(Self(Repr::Families(Arc::new(Slots {
-                        list: Some(Lists::List {
+                    return Ok(Self(Repr::Families(FamilyStore::raw(Slots {
+                        list: Some(Arc::new(Lists::List {
                             elements: Box::new(elements),
                             tail: Box::new(tail),
                             nonempty: *nonempty,
-                        }),
+                        })),
                         ..Slots::default()
                     }))));
                 }
-                if let Some(f) = &s.functions {
-                    return Ok(Self(Repr::Families(Arc::new(Slots {
-                        functions: Some(Functions {
+                if let Some(f) = s.functions() {
+                    return Ok(Self(Repr::Families(FamilyStore::raw(Slots {
+                        functions: Some(Arc::new(Functions {
                             domain: Box::new(f.domain.abstract_records(ctx)?),
                             range: Box::new(f.range.abstract_records(ctx)?),
-                        }),
+                        })),
                         ..Slots::default()
                     }))));
                 }
-                if let Some(Tuples::Set(rows)) = &s.tuple {
+                if let Some(Tuples::Set(rows)) = s.tuple() {
                     let mut types = Vec::new();
                     for tuple in rows.values().flatten() {
                         if let Some(fields) = tuple.tag.as_ref().and_then(|tag| {

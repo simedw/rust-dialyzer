@@ -81,9 +81,6 @@ pub enum BuiltinType {
     Timeout,
 }
 impl Type {
-    fn integer_interval(from: Bound, to: Bound) -> Self {
-        Self::scalar(None, Some(Numeric::Integer(Integers::Range(from, to))))
-    }
     pub fn builtin(kind: BuiltinType) -> Result<Self, LatticeError> {
         use BuiltinType::*;
         Ok(match kind {
@@ -99,32 +96,31 @@ impl Type {
             NonemptyBitstring => {
                 Self::bitstring(1.into(), 1.into()).map_err(|_| LatticeError::BadArg)?
             }
-            Boolean => Self::atoms(["false".into(), "true".into()]),
+            Boolean => Self::canonical(CanonicalType::Boolean),
             Byte | Arity => {
-                Self::integer_interval(Bound::Finite(0.into()), Bound::Finite(255.into()))
+                Self::canonical(CanonicalType::Byte)
             }
-            Char => Self::integer_interval(Bound::Finite(0.into()), Bound::Finite(0x10ffff.into())),
+            Char => Self::canonical(CanonicalType::Char),
             Function => Self::function(std::option::Option::None, Self::any()),
             Identifier => {
-                Self::identifier(std::option::Option::None).map_err(|_| LatticeError::BadArg)?
+                Self::canonical(CanonicalType::Identifier)
             }
-            Pid => Self::identifier(Some(vec!["pid".into()])).map_err(|_| LatticeError::BadArg)?,
+            Pid => Self::canonical(CanonicalType::Pid),
             Port => {
-                Self::identifier(Some(vec!["port".into()])).map_err(|_| LatticeError::BadArg)?
+                Self::canonical(CanonicalType::Port)
             }
-            Reference => Self::identifier(Some(vec!["reference".into()]))
-                .map_err(|_| LatticeError::BadArg)?,
+            Reference => Self::canonical(CanonicalType::Reference),
             Number => Self::number(),
             Float => Self::float(),
             Integer | Fixnum => Self::all_integers(),
             PositiveInteger | PositiveFixnum => {
-                Self::integer_interval(Bound::Finite(1.into()), Bound::PositiveInfinity)
+                Self::canonical(CanonicalType::PositiveInteger)
             }
             NonNegativeInteger | NonNegativeFixnum => {
-                Self::integer_interval(Bound::Finite(0.into()), Bound::PositiveInfinity)
+                Self::canonical(CanonicalType::NonNegativeInteger)
             }
             NegativeInteger => {
-                Self::integer_interval(Bound::NegativeInfinity, Bound::Finite((-1).into()))
+                Self::canonical(CanonicalType::NegativeInteger)
             }
             Cons => Self::list(Self::any(), Self::any(), true),
             Nil => Self::nil(),
@@ -181,30 +177,30 @@ impl Type {
         };
         let t = structural.as_ref().unwrap_or(self);
         let s = t.direct_slots();
-        let number = s.and_then(|s| s.number.as_ref());
-        let list = s.and_then(|s| s.list.as_ref());
+        let number = s.and_then(|s| s.number());
+        let list = s.and_then(|s| s.list());
         Ok(match predicate {
             Any => t.is_any(),
             None => t.is_none(),
             Unit => t.is_unit(),
             Impossible | NoneOrUnit => t.is_impossible(),
-            Atom => s.is_some_and(|s| s.atoms.is_some()),
+            Atom => s.is_some_and(|s| s.atoms().is_some()),
             Boolean => {
-                matches!(s.and_then(|s|s.atoms.as_ref()),Some(Atoms::Set(a)) if !a.is_empty()&&a.iter().all(|v|v=="false"||v=="true"))
+                matches!(s.and_then(|s|s.atoms()),Some(Atoms::Set(a)) if !a.is_empty()&&a.iter().all(|v|v=="false"||v=="true"))
             }
             Binary => {
-                matches!(s.and_then(|s|s.bitstrings.as_ref()),Some(b) if (&b.unit%8u8).is_zero()&&(&b.base%8u8).is_zero())
+                matches!(s.and_then(|s|s.bitstrings()),Some(b) if (&b.unit%8u8).is_zero()&&(&b.base%8u8).is_zero())
             }
-            Bitstring => s.is_some_and(|s| s.bitstrings.is_some()),
-            Function => s.is_some_and(|s| s.functions.is_some()),
-            Identifier => s.is_some_and(|s| s.identifiers.is_some()),
+            Bitstring => s.is_some_and(|s| s.bitstrings().is_some()),
+            Function => s.is_some_and(|s| s.functions().is_some()),
+            Identifier => s.is_some_and(|s| s.identifiers().is_some()),
             Pid | Port | Reference => {
                 let name = match predicate {
                     Pid => "pid",
                     Port => "port",
                     _ => "reference",
                 };
-                matches!(s.and_then(|s|s.identifiers.as_ref()),Some(Identifiers::Set(set))if set.len()==1&&set.contains(name))
+                matches!(s.and_then(|s|s.identifiers()),Some(Identifiers::Set(set))if set.len()==1&&set.contains(name))
             }
             Number => number.is_some(),
             Float => matches!(number, Some(Numeric::Float)),
@@ -236,8 +232,8 @@ impl Type {
             String => {
                 matches!(list,Some(Lists::List{elements,tail,..})if tail.as_ref()==&Self::nil()&&elements.predicate(Char)?)
             }
-            Map => s.is_some_and(|s| s.maps.is_some()),
-            Tuple => s.is_some_and(|s| s.tuple.is_some()),
+            Map => s.is_some_and(|s| s.maps().is_some()),
+            Tuple => s.is_some_and(|s| s.tuple().is_some()),
             NonNegativeInteger => {
                 matches!(number, Some(Numeric::Integer(_)))
                     && t.is_subtype(&Self::builtin(BuiltinType::NonNegativeInteger)?)?
@@ -245,7 +241,7 @@ impl Type {
             Variable => matches!(t.0, Repr::Var(_)),
             Singleton => {
                 matches!(list, Some(Lists::Nil))
-                    || matches!(s.and_then(|s|s.atoms.as_ref()),Some(Atoms::Set(v))if v.len()==1)
+                    || matches!(s.and_then(|s|s.atoms()),Some(Atoms::Set(v))if v.len()==1)
                     || matches!(number,Some(Numeric::Integer(Integers::Set(v)))if v.len()==1)
                     || matches!(number,Some(Numeric::Integer(Integers::Range(a,b)))if a==b)
             }
@@ -258,7 +254,7 @@ impl Type {
     pub fn is_atom_literal(&self, name: &str) -> Result<bool, LatticeError> {
         let t = self.shallow_structural()?;
         Ok(
-            matches!(t.direct_slots().and_then(|s|s.atoms.as_ref()),Some(Atoms::Set(v))if v.len()==1&&v.contains(name)),
+            matches!(t.direct_slots().and_then(|s|s.atoms()),Some(Atoms::Set(v))if v.len()==1&&v.contains(name)),
         )
     }
     pub fn same_opaque(&self, rhs: &Self) -> Result<bool, LatticeError> {
@@ -391,12 +387,12 @@ impl Type {
         let bad = || LatticeError::FunctionClause;
         Ok(match getter {
             AtomValues => {
-                let atoms = if s.is_some_and(|s| s.atoms.is_some()) {
+                let atoms = if s.is_some_and(|s| s.atoms().is_some()) {
                     t.clone()
                 } else {
                     t.meet(&Self::all_atoms())?
                 };
-                let Some(a) = atoms.direct_slots().and_then(|s| s.atoms.as_ref()) else {
+                let Some(a) = atoms.direct_slots().and_then(|s| s.atoms()) else {
                     return Err(LatticeError::BadMatch(Box::new(atoms)));
                 };
                 TypeValue::Atoms(match a {
@@ -405,7 +401,7 @@ impl Type {
                 })
             }
             NumberValues => {
-                let number = if s.is_some_and(|s| s.number.is_some()) {
+                let number = if s.is_some_and(|s| s.number().is_some()) {
                     t.clone()
                 } else {
                     let inf = t.meet(&Self::number())?;
@@ -417,7 +413,7 @@ impl Type {
                     }
                     inf
                 };
-                let Some(n) = number.direct_slots().and_then(|s| s.number.as_ref()) else {
+                let Some(n) = number.direct_slots().and_then(|s| s.number()) else {
                     return Err(bad());
                 };
                 TypeValue::Integers(match n {
@@ -426,7 +422,7 @@ impl Type {
                 })
             }
             NumberMin | NumberMax => {
-                let n = s.and_then(|s| s.number.as_ref()).ok_or_else(bad)?;
+                let n = s.and_then(|s| s.number()).ok_or_else(bad)?;
                 let minimum = matches!(getter, NumberMin);
                 let endpoint = match n {
                     Numeric::Integer(Integers::Range(a, b)) => if minimum { a } else { b }.clone(),
@@ -448,7 +444,7 @@ impl Type {
                 })
             }
             BitstringUnit | BitstringBase => {
-                let b = s.and_then(|s| s.bitstrings.as_ref()).ok_or_else(bad)?;
+                let b = s.and_then(|s| s.bitstrings()).ok_or_else(bad)?;
                 TypeValue::BitLength(if matches!(getter, BitstringUnit) {
                     b.unit.clone()
                 } else {
@@ -456,7 +452,7 @@ impl Type {
                 })
             }
             FunctionArgs | FunctionArity | FunctionRange => {
-                let f = s.and_then(|s| s.functions.as_ref()).ok_or_else(bad)?;
+                let f = s.and_then(|s| s.functions()).ok_or_else(bad)?;
                 if matches!(getter, FunctionRange) {
                     TypeValue::Type(*f.range.clone())
                 } else {
@@ -474,7 +470,7 @@ impl Type {
                 }
             }
             ConsHead | ConsTail | ListElements | ListTermination => {
-                let l = s.and_then(|s| s.list.as_ref()).ok_or_else(bad)?;
+                let l = s.and_then(|s| s.list()).ok_or_else(bad)?;
                 TypeValue::Type(match (getter, l) {
                     (ListElements, Lists::Nil) => Self::none(),
                     (ListTermination, Lists::Nil) => Self::nil(),
@@ -500,7 +496,7 @@ impl Type {
                 })
             }
             TupleArgs | TupleSize | TupleSizes | TupleSubtypes => {
-                let tuples = s.and_then(|s| s.tuple.as_ref()).ok_or_else(bad)?;
+                let tuples = s.and_then(|s| s.tuple()).ok_or_else(bad)?;
                 match (getter, tuples) {
                     (TupleSizes, Tuples::Any) => TypeValue::Arities(Known::Unknown),
                     (TupleSubtypes, Tuples::Any) => TypeValue::Types(Known::Unknown),
@@ -536,7 +532,7 @@ impl Type {
                 }
             }
             MapEntries | MapDefaultKey | MapDefaultValue => {
-                let m = s.and_then(|s| s.maps.as_ref()).ok_or_else(bad)?;
+                let m = s.and_then(|s| s.maps()).ok_or_else(bad)?;
                 match getter {
                     MapEntries => TypeValue::Entries(m.entries.clone()),
                     MapDefaultKey => TypeValue::Type(*m.default_key.clone()),
@@ -566,7 +562,7 @@ impl Type {
     }
     pub fn lift_list_to_pos_empty(&self) -> Result<Self, LatticeError> {
         let t = self.shallow_structural()?;
-        match t.direct_slots().and_then(|s| s.list.as_ref()) {
+        match t.direct_slots().and_then(|s| s.list()) {
             Some(Lists::Nil) => Ok(Self::nil()),
             Some(Lists::List { elements, tail, .. }) => {
                 Ok(Self::list(*elements.clone(), *tail.clone(), false))
@@ -670,28 +666,28 @@ impl Type {
             ),
             Repr::Families(slots) => {
                 let mut s = slots.rebuild_base();
-                if let Some(f) = &slots.functions {
-                    s.functions = Some(Functions {
+                if let Some(f) = slots.functions() {
+                    s.functions = Some(Arc::new(Functions {
                         domain: Box::new(f.domain.widen_to_number()?),
                         range: Box::new(f.range.widen_to_number()?),
-                    });
+                    }));
                 }
                 if let Some(Lists::List {
                     elements,
                     tail,
                     nonempty,
-                }) = &slots.list
+                }) = slots.list()
                 {
-                    s.list = Some(Lists::List {
+                    s.list = Some(Arc::new(Lists::List {
                         elements: Box::new(elements.widen_to_number()?),
                         tail: Box::new(tail.widen_to_number()?),
                         nonempty: *nonempty,
-                    });
+                    }));
                 }
-                if slots.number.is_some() {
-                    s.number = Some(Numeric::Number);
+                if slots.number().is_some() {
+                    s.number = Some(Arc::new(Numeric::Number));
                 }
-                if let Some(Tuples::Set(g)) = &slots.tuple {
+                if let Some(Tuples::Set(g)) = slots.tuple() {
                     let variants = g
                         .iter()
                         .map(|(arity, vs)| {
@@ -723,11 +719,11 @@ impl Type {
                         }
                     }
                     s.tuple = match tuples.0 {
-                        Repr::Families(t) => Arc::unwrap_or_clone(t).tuple,
+                        Repr::Families(t) => t.into_slots().tuple,
                         _ => None,
                     };
                 }
-                if let Some(m) = &slots.maps {
+                if let Some(m) = slots.maps() {
                     s.maps = Maps::canonical_types(
                         m.entries
                             .iter()
@@ -741,10 +737,11 @@ impl Type {
                             .collect::<Result<Vec<_>, LatticeError>>()?,
                         m.default_key.widen_to_number()?,
                         m.default_value.widen_to_number()?,
-                    )?;
+                    )?
+                    .map(Arc::new);
                 }
-                if slots.union_record {
-                    Self(Repr::Families(Arc::new(s)))
+                if slots.union_record() {
+                    Self(Repr::Families(FamilyStore::raw(s)))
                 } else {
                     Self::families(s)
                 }
