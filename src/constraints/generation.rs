@@ -93,6 +93,7 @@ pub struct CallSignature {
     pub arguments: Vec<Type>,
     pub returns: Type,
 }
+#[derive(Clone)]
 pub struct ActiveContract {
     summary: Arc<ContractSummary>,
     captured_record: CaptureEnvironment,
