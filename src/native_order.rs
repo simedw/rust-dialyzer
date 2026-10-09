@@ -348,7 +348,7 @@ impl FamilyStore {
 /// them (reference, fun, port, pid; map; bitstring), which no `NativeValue`
 /// takes.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NativeOrderKey(Box<[u8]>);
+pub struct NativeOrderKey(std::sync::Arc<[u8]>);
 
 const KEY_INTEGER: u8 = 0x10;
 const KEY_ATOM: u8 = 0x20;
@@ -451,7 +451,7 @@ impl KeyWriter {
         self.c(tag, e, |w| w.atom("unknown"))
     }
     fn finish(self) -> NativeOrderKey {
-        NativeOrderKey(self.0.into_boxed_slice())
+        NativeOrderKey(self.0.into())
     }
 }
 impl NativeValue {
@@ -523,7 +523,32 @@ impl Nominal {
 }
 impl Type {
     /// The bytes of `to_native_value`'s order, written without building the tree.
+    /// Keys are a pure function of the interned node, so each thread keeps
+    /// the recent ones by node address.
     pub fn native_order_key(&self) -> NativeOrderKey {
+        const BITS: u32 = 12;
+        type Slot = Option<(usize, NativeOrderKey)>;
+        thread_local! {
+            static KEYS: std::cell::RefCell<Box<[Slot]>> =
+                std::cell::RefCell::new((0..1 << BITS).map(|_| None).collect());
+        }
+        let address = self.0 as *const Node as usize;
+        let slot = (address.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (usize::BITS - BITS)) as usize;
+        let cached = KEYS.with(|keys| match &keys.borrow()[slot] {
+            Some((at, key)) if *at == address => Some(key.clone()),
+            _ => None,
+        });
+        if let Some(key) = cached {
+            if verify_fast_paths() {
+                assert_eq!(key, self.native_order_key_uncached(), "cached order key: {self:?}");
+            }
+            return key;
+        }
+        let key = self.native_order_key_uncached();
+        KEYS.with(|keys| keys.borrow_mut()[slot] = Some((address, key.clone())));
+        key
+    }
+    fn native_order_key_uncached(&self) -> NativeOrderKey {
         let mut w = KeyWriter::default();
         self.write_key(&mut w);
         let key = w.finish();
