@@ -425,6 +425,13 @@ impl Atoms {
             }
         }
     }
+    fn meet_shared(x: &Arc<Self>, y: &Arc<Self>) -> Option<Arc<Self>> {
+        match (&**x, &**y) {
+            (Self::All, _) => Some(y.clone()),
+            (_, Self::All) => Some(x.clone()),
+            (a, b) => a.meet(b).map(|value| reuse(value, x, y)),
+        }
+    }
     fn subtract(&self, rhs: &Self) -> Option<Self> {
         match (self, rhs) {
             (_, Self::All) => None,
@@ -462,6 +469,13 @@ impl Numeric {
             _ => None,
         }
     }
+    fn meet_shared(x: &Arc<Self>, y: &Arc<Self>) -> Option<Arc<Self>> {
+        match (&**x, &**y) {
+            (Self::Number, _) | (Self::Integer(Integers::All), Self::Integer(_)) => Some(y.clone()),
+            (_, Self::Number) | (Self::Integer(_), Self::Integer(Integers::All)) => Some(x.clone()),
+            (a, b) => a.meet(b).map(|value| reuse(value, x, y)),
+        }
+    }
     fn subtract(&self, rhs: &Self) -> Option<Self> {
         match (self, rhs) {
             (_, Self::Number) => None,
@@ -480,65 +494,88 @@ impl Numeric {
         }
     }
 }
-fn join_slot<T: Clone>(
-    a: &Option<Arc<T>>,
-    b: &Option<Arc<T>>,
+/// The operand that already holds `value`, or a fresh allocation, so results
+/// equal to an input keep sharing that input's storage.
+fn reuse<T: PartialEq>(value: T, x: &Arc<T>, y: &Arc<T>) -> Arc<T> {
+    if **x == value {
+        x.clone()
+    } else if **y == value {
+        y.clone()
+    } else {
+        Arc::new(value)
+    }
+}
+fn reuse_arc<T: PartialEq>(value: Arc<T>, x: &Arc<T>, y: &Arc<T>) -> Arc<T> {
+    if value == *x {
+        x.clone()
+    } else if value == *y {
+        y.clone()
+    } else {
+        value
+    }
+}
+fn reuse_left<T: PartialEq>(value: T, x: &Arc<T>) -> Arc<T> {
+    if **x == value { x.clone() } else { Arc::new(value) }
+}
+fn join_slot<T: PartialEq>(
+    a: Option<&Arc<T>>,
+    b: Option<&Arc<T>>,
     op: impl Fn(&T, &T) -> T,
 ) -> Option<Arc<T>> {
     match (a, b) {
-        (Some(x), Some(y)) => Some(Arc::new(op(x, y))),
-        (x, None) | (None, x) => x.clone(),
+        (Some(x), Some(y)) => Some(reuse(op(x, y), x, y)),
+        (x, None) | (None, x) => x.cloned(),
     }
 }
 fn meet_slot<T>(
-    a: &Option<Arc<T>>,
-    b: &Option<Arc<T>>,
-    op: impl Fn(&T, &T) -> Option<T>,
+    a: Option<&Arc<T>>,
+    b: Option<&Arc<T>>,
+    op: impl Fn(&Arc<T>, &Arc<T>) -> Option<Arc<T>>,
 ) -> Option<Arc<T>> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y).map(Arc::new),
+        (Some(x), Some(y)) => op(x, y),
         _ => None,
     }
 }
-fn subtract_slot<T: Clone>(
-    a: &Option<Arc<T>>,
-    b: &Option<Arc<T>>,
+fn subtract_slot<T: PartialEq>(
+    a: Option<&Arc<T>>,
+    b: Option<&Arc<T>>,
     op: impl Fn(&T, &T) -> Option<T>,
 ) -> Option<Arc<T>> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y).map(Arc::new),
-        (x, None) => x.clone(),
+        (Some(x), Some(y)) => op(x, y).map(|value| reuse_left(value, x)),
+        (x, None) => x.cloned(),
         _ => None,
     }
 }
-fn checked_join_slot<T: Clone>(
-    a: &Option<Arc<T>>,
-    b: &Option<Arc<T>>,
-    op: impl Fn(&T, &T) -> Result<Option<T>, LatticeError>,
+fn checked_join_slot<T>(
+    a: Option<&Arc<T>>,
+    b: Option<&Arc<T>>,
+    op: impl Fn(&Arc<T>, &Arc<T>) -> Result<Option<Arc<T>>, LatticeError>,
 ) -> Result<Option<Arc<T>>, LatticeError> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y).map(|value| value.map(Arc::new)),
-        (x, None) | (None, x) => Ok(x.clone()),
+        (Some(x), Some(y)) => op(x, y),
+        (x, None) | (None, x) => Ok(x.cloned()),
     }
 }
 fn checked_meet_slot<T>(
-    a: &Option<Arc<T>>,
-    b: &Option<Arc<T>>,
-    op: impl Fn(&T, &T) -> Result<Option<T>, LatticeError>,
+    a: Option<&Arc<T>>,
+    b: Option<&Arc<T>>,
+    op: impl Fn(&Arc<T>, &Arc<T>) -> Result<Option<Arc<T>>, LatticeError>,
 ) -> Result<Option<Arc<T>>, LatticeError> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y).map(|value| value.map(Arc::new)),
+        (Some(x), Some(y)) => op(x, y),
         _ => Ok(None),
     }
 }
-fn checked_subtract_slot<T: Clone>(
-    a: &Option<Arc<T>>,
-    b: &Option<Arc<T>>,
-    op: impl Fn(&T, &T) -> Result<Option<T>, LatticeError>,
+fn checked_subtract_slot<T>(
+    a: Option<&Arc<T>>,
+    b: Option<&Arc<T>>,
+    op: impl Fn(&Arc<T>, &Arc<T>) -> Result<Option<Arc<T>>, LatticeError>,
 ) -> Result<Option<Arc<T>>, LatticeError> {
     match (a, b) {
-        (Some(x), Some(y)) => op(x, y).map(|value| value.map(Arc::new)),
-        (x, None) => Ok(x.clone()),
+        (Some(x), Some(y)) => op(x, y),
+        (x, None) => Ok(x.cloned()),
         _ => Ok(None),
     }
 }
@@ -728,20 +765,148 @@ impl FamilyStore {
     fn to_slots(&self) -> Slots {
         self.clone().into_slots()
     }
-    fn join(&self, rhs: &Self) -> Result<Slots, LatticeError> {
-        self.to_slots().join(&rhs.to_slots())
+    fn join(&self, b: &Self) -> Result<Slots, LatticeError> {
+        Ok(Slots {
+            union_record: false,
+            atoms: join_slot(self.atoms_owner(), b.atoms_owner(), Atoms::join),
+            bitstrings: join_slot(self.bitstrings_owner(), b.bitstrings_owner(), Bitstrings::join),
+            functions: checked_join_slot(
+                self.functions_owner(),
+                b.functions_owner(),
+                Functions::join_shared,
+            )?,
+            identifiers: join_slot(self.identifiers_owner(), b.identifiers_owner(), Identifiers::join),
+            list: checked_join_slot(self.list_owner(), b.list_owner(), Lists::join_shared)?,
+            number: join_slot(self.number_owner(), b.number_owner(), Numeric::join),
+            tuple: checked_join_slot(self.tuple_owner(), b.tuple_owner(), Tuples::join_shared)?,
+            maps: checked_join_slot(self.maps_owner(), b.maps_owner(), Maps::join_shared)?,
+        })
     }
-    fn meet(&self, rhs: &Self) -> Result<Slots, LatticeError> {
-        self.to_slots().meet(&rhs.to_slots())
+    fn meet(&self, b: &Self) -> Result<Slots, LatticeError> {
+        Ok(Slots {
+            union_record: false,
+            atoms: meet_slot(self.atoms_owner(), b.atoms_owner(), Atoms::meet_shared),
+            bitstrings: meet_slot(self.bitstrings_owner(), b.bitstrings_owner(), |x, y| {
+                x.meet(y).map(|value| reuse(value, x, y))
+            }),
+            functions: checked_meet_slot(
+                self.functions_owner(),
+                b.functions_owner(),
+                Functions::meet_shared,
+            )?,
+            identifiers: meet_slot(
+                self.identifiers_owner(),
+                b.identifiers_owner(),
+                Identifiers::meet_shared,
+            ),
+            list: checked_meet_slot(self.list_owner(), b.list_owner(), Lists::meet_shared)?,
+            number: meet_slot(self.number_owner(), b.number_owner(), Numeric::meet_shared),
+            tuple: checked_meet_slot(self.tuple_owner(), b.tuple_owner(), Tuples::meet_shared)?,
+            maps: checked_meet_slot(self.maps_owner(), b.maps_owner(), Maps::meet_shared)?,
+        })
     }
-    fn subtract(&self, rhs: &Self) -> Result<Slots, LatticeError> {
-        self.to_slots().subtract(&rhs.to_slots())
+    fn subtract(&self, b: &Self) -> Result<Slots, LatticeError> {
+        Ok({
+            let atoms = subtract_slot(self.atoms_owner(), b.atoms_owner(), Atoms::subtract);
+            let bitstrings =
+                subtract_slot(self.bitstrings_owner(), b.bitstrings_owner(), Bitstrings::subtract);
+            let functions = checked_subtract_slot(
+                self.functions_owner(),
+                b.functions_owner(),
+                Functions::subtract_shared,
+            )?;
+            let identifiers =
+                subtract_slot(self.identifiers_owner(), b.identifiers_owner(), Identifiers::subtract);
+            let list = checked_subtract_slot(self.list_owner(), b.list_owner(), Lists::subtract_shared)?;
+            let number = subtract_slot(self.number_owner(), b.number_owner(), Numeric::subtract);
+            let maps =
+                checked_subtract_slot(self.maps_owner(), b.maps_owner(), Maps::subtract_shared)?;
+            let tuple =
+                checked_subtract_slot(self.tuple_owner(), b.tuple_owner(), Tuples::subtract_shared)?;
+            Slots {
+                union_record: false,
+                atoms,
+                bitstrings,
+                functions,
+                identifiers,
+                list,
+                number,
+                tuple,
+                maps,
+            }
+        })
     }
-    fn limit_aux(&self, depth: i64) -> Result<Slots, LatticeError> {
-        self.to_slots().limit_aux(depth)
+    fn limit_aux(&self, k: i64) -> Result<Slots, LatticeError> {
+        Ok(Slots {
+            list: self.list_owner().map(|l| Lists::limit_shared(l, k)).transpose()?,
+            functions: self
+                .functions_owner()
+                .map(|f| Functions::limit_shared(f, k))
+                .transpose()?,
+            tuple: self
+                .tuple_owner()
+                .map(|t| Tuples::limit_shared(t, k))
+                .transpose()?
+                .flatten(),
+            maps: self
+                .maps_owner()
+                .map(|m| Maps::limit_shared(m, k))
+                .transpose()?
+                .flatten(),
+            ..self.rebuild_base()
+        })
     }
     fn rebuild_base(&self) -> Slots {
-        self.to_slots().rebuild_base()
+        Slots {
+            union_record: self.union_record(),
+            atoms: self.atoms_owner().cloned(),
+            bitstrings: self.bitstrings_owner().cloned(),
+            functions: None,
+            identifiers: self.identifiers_owner().cloned(),
+            list: match self.list() {
+                Some(Lists::Nil) => self.list_owner().cloned(),
+                _ => None,
+            },
+            number: self.number_owner().cloned(),
+            tuple: match self.tuple() {
+                Some(Tuples::Any) => self.tuple_owner().cloned(),
+                _ => None,
+            },
+            maps: None,
+        }
+    }
+    /// Whether `Type::families(slots)` would rebuild exactly this store.
+    fn is_families_of(&self, slots: &Slots) -> bool {
+        self.same_fields(slots)
+            && match self {
+                Self::Union(s) => s.union_record && slots.count() > 1,
+                _ => true,
+            }
+    }
+    /// Whether `FamilyStore::raw(slots)` would rebuild exactly this store.
+    fn is_raw_of(&self, slots: &Slots) -> bool {
+        self.same_fields(slots)
+            && match self {
+                Self::Union(s) => s.union_record == slots.union_record && (s.union_record || slots.count() != 1),
+                _ => !slots.union_record,
+            }
+    }
+    fn same_fields(&self, slots: &Slots) -> bool {
+        fn same<T>(a: Option<&Arc<T>>, b: &Option<Arc<T>>) -> bool {
+            match (a, b) {
+                (None, None) => true,
+                (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+                _ => false,
+            }
+        }
+        same(self.atoms_owner(), &slots.atoms)
+            && same(self.bitstrings_owner(), &slots.bitstrings)
+            && same(self.functions_owner(), &slots.functions)
+            && same(self.identifiers_owner(), &slots.identifiers)
+            && same(self.list_owner(), &slots.list)
+            && same(self.number_owner(), &slots.number)
+            && same(self.tuple_owner(), &slots.tuple)
+            && same(self.maps_owner(), &slots.maps)
     }
     fn slot_values(&self) -> Vec<serde_json::Value> {
         self.to_slots().slot_values()
@@ -763,7 +928,6 @@ impl std::fmt::Debug for FamilyStore {
     }
 }
 
-#[cfg(test)]
 impl FamilyStore {
     fn shares_storage(&self, rhs: &Self) -> bool {
         match (self, rhs) {
@@ -781,25 +945,6 @@ impl FamilyStore {
     }
 }
 impl Slots {
-    fn rebuild_base(&self) -> Self {
-        Self {
-            union_record: self.union_record,
-            atoms: self.atoms.clone(),
-            bitstrings: self.bitstrings.clone(),
-            functions: None,
-            identifiers: self.identifiers.clone(),
-            list: match self.list.as_deref() {
-                Some(Lists::Nil) => self.list.clone(),
-                _ => None,
-            },
-            number: self.number.clone(),
-            tuple: match self.tuple.as_deref() {
-                Some(Tuples::Any) => self.tuple.clone(),
-                _ => None,
-            },
-            maps: None,
-        }
-    }
     fn count(&self) -> usize {
         [
             self.atoms.is_some(),
@@ -825,98 +970,6 @@ impl Slots {
             && self.tuple.is_none()
             && self.maps.is_none()
     }
-    fn join(&self, b: &Self) -> Result<Self, LatticeError> {
-        Ok({
-            Self {
-                union_record: false,
-                atoms: join_slot(&self.atoms, &b.atoms, Atoms::join),
-                bitstrings: join_slot(&self.bitstrings, &b.bitstrings, Bitstrings::join),
-                functions: checked_join_slot(&self.functions, &b.functions, |a, b| {
-                    a.join(b).map(Some)
-                })?,
-                identifiers: join_slot(&self.identifiers, &b.identifiers, Identifiers::join),
-                list: checked_join_slot(&self.list, &b.list, |a, b| a.join(b).map(Some))?,
-                number: join_slot(&self.number, &b.number, Numeric::join),
-                tuple: checked_join_slot(&self.tuple, &b.tuple, |a, b| a.join(b).map(Some))?,
-                maps: checked_join_slot(&self.maps, &b.maps, Maps::join)?,
-            }
-        })
-    }
-    fn meet(&self, b: &Self) -> Result<Self, LatticeError> {
-        Ok({
-            Self {
-                union_record: false,
-                atoms: meet_slot(&self.atoms, &b.atoms, Atoms::meet),
-                bitstrings: meet_slot(&self.bitstrings, &b.bitstrings, Bitstrings::meet),
-                functions: checked_meet_slot(&self.functions, &b.functions, Functions::meet)?,
-                identifiers: meet_slot(&self.identifiers, &b.identifiers, Identifiers::meet),
-                list: checked_meet_slot(&self.list, &b.list, Lists::meet)?,
-                number: meet_slot(&self.number, &b.number, Numeric::meet),
-                tuple: checked_meet_slot(&self.tuple, &b.tuple, Tuples::meet)?,
-                maps: checked_meet_slot(&self.maps, &b.maps, Maps::meet)?,
-            }
-        })
-    }
-    fn subtract(&self, b: &Self) -> Result<Self, LatticeError> {
-        Ok({
-            Self {
-                union_record: false,
-                atoms: subtract_slot(&self.atoms, &b.atoms, Atoms::subtract),
-                bitstrings: subtract_slot(&self.bitstrings, &b.bitstrings, Bitstrings::subtract),
-                functions: checked_subtract_slot(
-                    &self.functions,
-                    &b.functions,
-                    Functions::subtract,
-                )?,
-                identifiers: subtract_slot(
-                    &self.identifiers,
-                    &b.identifiers,
-                    Identifiers::subtract,
-                ),
-                list: checked_subtract_slot(&self.list, &b.list, Lists::subtract)?,
-                number: subtract_slot(&self.number, &b.number, Numeric::subtract),
-                maps: match (&self.maps, &b.maps) {
-                    (Some(a), Some(b)) => a.subtract(b)?.map(Arc::new),
-                    (a, None) => a.clone(),
-                    _ => None,
-                },
-                tuple: match (&self.tuple, &b.tuple) {
-                    (Some(a), Some(b)) => a.subtract(b)?.map(Arc::new),
-                    (a, None) => a.clone(),
-                    _ => None,
-                },
-            }
-        })
-    }
-    fn limit_aux(&self, k: i64) -> Result<Self, LatticeError> {
-        Ok({
-            Self {
-                list: self
-                    .list
-                    .as_deref()
-                    .map(|l| l.limit_aux(k).map(Arc::new))
-                    .transpose()?,
-                functions: self
-                    .functions
-                    .as_deref()
-                    .map(|f| f.limit_aux(k).map(Arc::new))
-                    .transpose()?,
-                tuple: self
-                    .tuple
-                    .as_deref()
-                    .map(|t| t.limit_aux(k).map(|value| value.map(Arc::new)))
-                    .transpose()?
-                    .flatten(),
-                maps: self
-                    .maps
-                    .as_deref()
-                    .map(|m| m.limit_aux(k).map(|value| value.map(Arc::new)))
-                    .transpose()?
-                    .flatten(),
-                ..self.rebuild_base()
-            }
-        })
-    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Identifiers {
@@ -941,6 +994,13 @@ impl Identifiers {
                     Some(Self::Set(s))
                 }
             }
+        }
+    }
+    fn meet_shared(x: &Arc<Self>, y: &Arc<Self>) -> Option<Arc<Self>> {
+        match (&**x, &**y) {
+            (Self::All, _) => Some(y.clone()),
+            (_, Self::All) => Some(x.clone()),
+            (a, b) => a.meet(b).map(|value| reuse(value, x, y)),
         }
     }
     fn subtract(&self, b: &Self) -> Option<Self> {
@@ -974,131 +1034,151 @@ enum Lists {
     },
 }
 impl Lists {
-    fn join(&self, b: &Self) -> Result<Self, LatticeError> {
-        Ok({
-            match (self, b) {
-                (Self::Nil, Self::Nil) => Self::Nil,
-                (Self::Nil, Self::List { elements, tail, .. })
-                | (Self::List { elements, tail, .. }, Self::Nil) => Self::List {
-                    elements: elements.clone(),
-                    tail: Box::new(tail.join(&Type::nil())?),
-                    nonempty: false,
-                },
-                (
-                    Self::List {
-                        elements: a,
-                        tail: x,
-                        nonempty: n,
-                    },
-                    Self::List {
-                        elements: b,
-                        tail: y,
-                        nonempty: m,
-                    },
-                ) => Self::List {
-                    elements: Box::new(a.join(b)?),
-                    tail: Box::new(x.join(y)?),
-                    nonempty: *n && *m,
-                },
-            }
-        })
+    /// A list node with these fields, reusing `x` or `y` when one already
+    /// holds exactly them.
+    fn shared(elements: Type, tail: Type, nonempty: bool, x: &Arc<Self>, y: &Arc<Self>) -> Arc<Self> {
+        let holds = |l: &Self| {
+            matches!(l, Self::List { elements: e, tail: t, nonempty: n }
+                if *n == nonempty && **e == elements && **t == tail)
+        };
+        if holds(x) {
+            x.clone()
+        } else if holds(y) {
+            y.clone()
+        } else {
+            Arc::new(Self::List {
+                elements: Box::new(elements),
+                tail: Box::new(tail),
+                nonempty,
+            })
+        }
     }
-    fn meet(&self, b: &Self) -> Result<Option<Self>, LatticeError> {
+    fn join_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
+        Ok(Some(match (&**x, &**y) {
+            (Self::Nil, Self::Nil) => x.clone(),
+            (Self::Nil, Self::List { elements, tail, .. })
+            | (Self::List { elements, tail, .. }, Self::Nil) => Self::shared(
+                (**elements).clone(),
+                tail.join(&Type::nil())?,
+                false,
+                x,
+                y,
+            ),
+            (
+                Self::List {
+                    elements: a,
+                    tail: t,
+                    nonempty: n,
+                },
+                Self::List {
+                    elements: b,
+                    tail: u,
+                    nonempty: m,
+                },
+            ) => {
+                let elements = a.join(b)?;
+                Self::shared(elements, t.join(u)?, *n && *m, x, y)
+            }
+        }))
+    }
+    fn meet_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
         Ok({
-            match (self, b) {
-                (Self::Nil, Self::Nil) => Some(Self::Nil),
+            match (&**x, &**y) {
+                (Self::Nil, Self::Nil) => Some(x.clone()),
                 (Self::Nil, Self::List { nonempty: true, .. })
                 | (Self::List { nonempty: true, .. }, Self::Nil) => None,
                 (Self::Nil, Self::List { tail, .. }) | (Self::List { tail, .. }, Self::Nil) => {
                     if tail.structural()?.meet(&Type::nil())?.impossible() {
                         None
+                    } else if matches!(**x, Self::Nil) {
+                        Some(x.clone())
                     } else {
-                        Some(Self::Nil)
+                        Some(y.clone())
                     }
                 }
                 (
                     Self::List {
                         elements: a,
-                        tail: x,
+                        tail: t,
                         nonempty: n,
                     },
                     Self::List {
                         elements: b,
-                        tail: y,
+                        tail: u,
                         nonempty: m,
                     },
                 ) => {
-                    let tail = x.meet(y)?;
+                    let tail = t.meet(u)?;
                     if tail == Type::none() {
                         return Ok(None);
                     }
                     let elements = a.meet(b)?;
                     if elements == Type::none() {
-                        if !n && !m { Some(Self::Nil) } else { None }
+                        if !n && !m { Some(Arc::new(Self::Nil)) } else { None }
                     } else {
-                        Some(Self::List {
-                            elements: Box::new(elements),
-                            tail: Box::new(tail),
-                            nonempty: *n || *m,
-                        })
+                        Some(Self::shared(elements, tail, *n || *m, x, y))
                     }
                 }
             }
         })
     }
-    fn subtract(&self, b: &Self) -> Result<Option<Self>, LatticeError> {
+    fn subtract_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
         Ok({
-            match (self, b) {
+            match (&**x, &**y) {
                 (Self::Nil, Self::Nil) => None,
-                (Self::Nil, Self::List { nonempty: true, .. }) => Some(Self::Nil),
+                (Self::Nil, Self::List { nonempty: true, .. }) => Some(x.clone()),
                 (Self::Nil, Self::List { .. }) => None,
-                (Self::List { tail, .. }, Self::Nil) => {
-                    let mut out = self.clone();
-                    if **tail == Type::nil()
-                        && let Self::List { nonempty, .. } = &mut out
-                    {
-                        *nonempty = true;
-                    }
-                    Some(out)
-                }
+                (
+                    Self::List {
+                        elements,
+                        tail,
+                        nonempty: false,
+                    },
+                    Self::Nil,
+                ) if **tail == Type::nil() => Some(Arc::new(Self::List {
+                    elements: elements.clone(),
+                    tail: tail.clone(),
+                    nonempty: true,
+                })),
+                (Self::List { .. }, Self::Nil) => Some(x.clone()),
                 (
                     Self::List {
                         elements: a,
-                        tail: x,
+                        tail: t,
                         nonempty: n,
                     },
                     Self::List {
                         elements: b,
-                        tail: y,
+                        tail: u,
                         nonempty: m,
                     },
                 ) => {
-                    if a.is_subtype(b)? && x.is_subtype(y)? {
-                        if !n && *m { Some(Self::Nil) } else { None }
+                    if a.is_subtype(b)? && t.is_subtype(u)? {
+                        if !n && *m { Some(Arc::new(Self::Nil)) } else { None }
                     } else {
-                        Some(self.clone())
+                        Some(x.clone())
                     }
                 }
             }
         })
     }
-    fn limit_aux(&self, k: i64) -> Result<Self, LatticeError> {
+    fn limit_shared(x: &Arc<Self>, k: i64) -> Result<Arc<Self>, LatticeError> {
         Ok({
-            match self {
-                Self::Nil => Self::Nil,
+            match &**x {
+                Self::Nil => x.clone(),
                 Self::List {
                     elements,
                     tail,
                     nonempty,
-                } => Self::List {
-                    elements: Box::new(elements.limit_aux(k - 1)?),
-                    tail: Box::new(if **tail == Type::nil() {
+                } => {
+                    let elements = elements.limit_aux(k - 1)?;
+                    let tail = if **tail == Type::nil() {
                         Type::nil()
                     } else {
                         tail.limit_aux((k - 1).max(1))?
-                    }),
-                    nonempty: *nonempty,
-                },
+                    };
+                    Self::shared(elements, tail, *nonempty, x, x)
+                }
             }
         })
     }
@@ -1164,6 +1244,13 @@ impl Tuples {
             variants,
         )]))))
     }
+    fn join_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
+        match (&**x, &**y) {
+            (Self::Any, _) => Ok(Some(x.clone())),
+            (_, Self::Any) => Ok(Some(y.clone())),
+            (a, b) => Ok(Some(reuse(a.join(b)?, x, y))),
+        }
+    }
     fn join(&self, b: &Self) -> Result<Self, LatticeError> {
         Ok({
             let (Self::Set(a), Self::Set(b)) = (self, b) else {
@@ -1218,13 +1305,13 @@ impl Tuples {
             Self::Set(groups)
         })
     }
-    fn meet(&self, b: &Self) -> Result<Option<Self>, LatticeError> {
+    fn meet_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
         Ok({
-            let (Self::Set(a), Self::Set(b)) = (self, b) else {
-                return Ok(Some(if matches!(self, Self::Any) {
-                    b.clone()
+            let (Self::Set(a), Self::Set(b)) = (&**x, &**y) else {
+                return Ok(Some(if matches!(**x, Self::Any) {
+                    y.clone()
                 } else {
-                    self.clone()
+                    x.clone()
                 }));
             };
             // Native plain tuple meet ignores tags retained by opacity marking.
@@ -1251,7 +1338,7 @@ impl Tuples {
                     }
                 }
             }
-            out.tuple_domain().cloned()
+            out.into_tuple_slot().map(|t| reuse_arc(t, x, y))
         })
     }
     fn subtract_one(a: &TupleVariant, b: &TupleVariant) -> Result<Type, LatticeError> {
@@ -1275,14 +1362,14 @@ impl Tuples {
             },
         )
     }
-    fn subtract(&self, b: &Self) -> Result<Option<Self>, LatticeError> {
-        if matches!(b, Self::Any) {
+    fn subtract_shared(x: &Arc<Self>, b: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
+        if matches!(**b, Self::Any) {
             return Ok(None);
         }
-        let Self::Set(a) = self else {
-            return Ok(Some(Self::Any));
+        let Self::Set(a) = &**x else {
+            return Ok(Some(x.clone()));
         };
-        let Self::Set(b) = b else { unreachable!() };
+        let Self::Set(b) = &**b else { unreachable!() };
         let mut out = Type::none();
         for (arity, variants) in a {
             for v in variants {
@@ -1299,12 +1386,12 @@ impl Tuples {
                 out = out.join(&value)?
             }
         }
-        Ok(out.tuple_domain().cloned())
+        Ok(out.into_tuple_slot().map(|t| reuse_arc(t, x, x)))
     }
-    fn limit_aux(&self, k: i64) -> Result<Option<Self>, LatticeError> {
+    fn limit_shared(x: &Arc<Self>, k: i64) -> Result<Option<Arc<Self>>, LatticeError> {
         Ok({
-            match self {
-                Self::Any => Some(Self::Any),
+            match &**x {
+                Self::Any => Some(x.clone()),
                 Self::Set(groups) => {
                     let mut out = Type::none();
                     for (arity, variants) in groups {
@@ -1322,7 +1409,7 @@ impl Tuples {
                             out = out.join(&tuple)?
                         }
                     }
-                    out.tuple_domain().cloned()
+                    out.into_tuple_slot().map(|t| reuse_arc(t, x, x))
                 }
             }
         })
@@ -1462,43 +1549,45 @@ struct Functions {
     range: Box<Type>,
 }
 impl Functions {
-    fn join(&self, b: &Self) -> Result<Self, LatticeError> {
-        Ok({
-            Self {
-                domain: Box::new(self.domain.join(&b.domain)?),
-                range: Box::new(self.range.join(&b.range)?),
-            }
-        })
+    fn shared(domain: Type, range: Type, x: &Arc<Self>, y: &Arc<Self>) -> Arc<Self> {
+        let holds = |f: &Self| *f.domain == domain && *f.range == range;
+        if holds(x) {
+            x.clone()
+        } else if holds(y) {
+            y.clone()
+        } else {
+            Arc::new(Self {
+                domain: Box::new(domain),
+                range: Box::new(range),
+            })
+        }
     }
-    fn meet(&self, b: &Self) -> Result<Option<Self>, LatticeError> {
+    fn join_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
+        let domain = x.domain.join(&y.domain)?;
+        Ok(Some(Self::shared(domain, x.range.join(&y.range)?, x, y)))
+    }
+    fn meet_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
         Ok({
-            let domain = self.domain.meet(&b.domain)?;
+            let domain = x.domain.meet(&y.domain)?;
             if domain == Type::none() {
                 None
             } else {
-                Some(Self {
-                    domain: Box::new(domain),
-                    range: Box::new(self.range.meet(&b.range)?),
-                })
+                Some(Self::shared(domain, x.range.meet(&y.range)?, x, y))
             }
         })
     }
-    fn subtract(&self, b: &Self) -> Result<Option<Self>, LatticeError> {
+    fn subtract_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
         Ok({
-            if self.meet(b)?.as_ref() == Some(self) {
+            if Self::meet_shared(x, y)?.is_some_and(|m| m == *x) {
                 None
             } else {
-                Some(self.clone())
+                Some(x.clone())
             }
         })
     }
-    fn limit_aux(&self, k: i64) -> Result<Self, LatticeError> {
-        Ok({
-            Self {
-                domain: Box::new(self.domain.limit_aux(k)?),
-                range: Box::new(self.range.limit_aux(k - 1)?),
-            }
-        })
+    fn limit_shared(x: &Arc<Self>, k: i64) -> Result<Arc<Self>, LatticeError> {
+        let domain = x.domain.limit_aux(k)?;
+        Ok(Self::shared(domain, x.range.limit_aux(k - 1)?, x, x))
     }
     fn value(&self) -> Value {
         let domain = match &self.domain.0 {
@@ -2281,6 +2370,53 @@ impl Maps {
             })
             .collect()
     }
+    fn join_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
+        Ok(x.join(y)?.map(|m| reuse(m, x, y)))
+    }
+    fn meet_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
+        Ok(x.meet(y)?.map(|m| reuse(m, x, y)))
+    }
+    fn subtract_shared(x: &Arc<Self>, y: &Arc<Self>) -> Result<Option<Arc<Self>>, LatticeError> {
+        if !x.default_key.is_subtype(&y.default_key)?
+            || !x.default_value.is_subtype(&y.default_value)?
+        {
+            return Ok(Some(x.clone()));
+        }
+        let mut constraints = Vec::new();
+        for (key, p, a, q, b) in x.aligned(y)? {
+            let d = a.subtract(&b)?;
+            if p == Presence::Optional && q == Presence::Mandatory {
+                constraints.push(MapEntry {
+                    key,
+                    presence: Presence::Optional,
+                    value: d,
+                })
+            } else if !d.is_none() {
+                constraints.push(MapEntry {
+                    key,
+                    presence: Presence::Mandatory,
+                    value: d,
+                })
+            }
+        }
+        match constraints.len() {
+            0 => Ok(None),
+            1 => {
+                let mut entries = x.entries.clone();
+                Self::store(&mut entries, constraints.pop().unwrap());
+                Ok(Self::canonical(
+                    entries,
+                    *x.default_key.clone(),
+                    *x.default_value.clone(),
+                )?
+                .map(|m| reuse_left(m, x)))
+            }
+            _ => Ok(Some(x.clone())),
+        }
+    }
+    fn limit_shared(x: &Arc<Self>, k: i64) -> Result<Option<Arc<Self>>, LatticeError> {
+        Ok(x.limit_aux(k)?.map(|m| reuse_left(m, x)))
+    }
     fn join(&self, b: &Self) -> Result<Option<Self>, LatticeError> {
         let entries = self
             .aligned(b)?
@@ -2320,43 +2456,6 @@ impl Maps {
             self.default_key.meet(&b.default_key)?,
             self.default_value.meet(&b.default_value)?,
         )
-    }
-    fn subtract(&self, b: &Self) -> Result<Option<Self>, LatticeError> {
-        if !self.default_key.is_subtype(&b.default_key)?
-            || !self.default_value.is_subtype(&b.default_value)?
-        {
-            return Ok(Some(self.clone()));
-        }
-        let mut constraints = Vec::new();
-        for (key, p, x, q, y) in self.aligned(b)? {
-            let d = x.subtract(&y)?;
-            if p == Presence::Optional && q == Presence::Mandatory {
-                constraints.push(MapEntry {
-                    key,
-                    presence: Presence::Optional,
-                    value: d,
-                })
-            } else if !d.is_none() {
-                constraints.push(MapEntry {
-                    key,
-                    presence: Presence::Mandatory,
-                    value: d,
-                })
-            }
-        }
-        match constraints.len() {
-            0 => Ok(None),
-            1 => {
-                let mut entries = self.entries.clone();
-                Self::store(&mut entries, constraints.pop().unwrap());
-                Self::canonical(
-                    entries,
-                    *self.default_key.clone(),
-                    *self.default_value.clone(),
-                )
-            }
-            _ => Ok(Some(self.clone())),
-        }
     }
     fn limit_aux(&self, k: i64) -> Result<Option<Self>, LatticeError> {
         let mut dk = *self.default_key.clone();
@@ -2730,9 +2829,10 @@ impl Type {
             _ => None,
         }
     }
-    fn tuple_domain(&self) -> Option<&Tuples> {
-        match &self.0 {
-            Repr::Families(s) => s.tuple(),
+    /// The tuple family slot of a family value, moved out without copying.
+    fn into_tuple_slot(self) -> Option<Arc<Tuples>> {
+        match self.0 {
+            Repr::Families(s) => s.into_slots().tuple,
             _ => None,
         }
     }
@@ -2852,6 +2952,51 @@ impl Type {
     fn raw_product(elements: Vec<Self>) -> Self {
         Self(Repr::Product(Arc::new(elements)))
     }
+    /// `raw_product(elements)`, reusing `a` or `b` when it is a product of
+    /// exactly these elements.
+    fn product_sharing(elements: Vec<Self>, a: &Self, b: &Self) -> Self {
+        let holds = |t: &Self| {
+            matches!(&t.0, Repr::Product(p)
+                if p.len() == elements.len() && p.iter().zip(&elements).all(|(x, y)| x.same(y)))
+        };
+        if holds(a) {
+            a.clone()
+        } else if holds(b) {
+            b.clone()
+        } else {
+            Self::raw_product(elements)
+        }
+    }
+    /// `families(slots)`, reusing `a` or `b` when it already stores exactly
+    /// these slots.
+    fn families_sharing(slots: Slots, a: &Self, b: &Self) -> Self {
+        let shared = [a, b].into_iter().find(|t| {
+            matches!(&t.0, Repr::Families(store) if store.is_families_of(&slots))
+        });
+        match shared {
+            Some(t) => {
+                if verify_fast_paths() {
+                    assert_eq!(*t, Self::families(slots), "families sharing");
+                }
+                t.clone()
+            }
+            None => Self::families(slots),
+        }
+    }
+    /// Whether both values share storage, which implies equality; cheap,
+    /// but may miss equal values stored separately.
+    fn same(&self, other: &Self) -> bool {
+        use Repr::*;
+        match (&self.0, &other.0) {
+            (Any, Any) | (None, None) | (Unit, Unit) | (Opaque, Opaque) => true,
+            (Var(a), Var(b)) => a == b,
+            (Product(a), Product(b)) => Arc::ptr_eq(a, b),
+            (Nominal(a), Nominal(b)) => Arc::ptr_eq(a, b),
+            (NominalSet(a), NominalSet(b)) => Arc::ptr_eq(a, b),
+            (Families(a), Families(b)) => a.shares_storage(b),
+            _ => false,
+        }
+    }
     pub fn product(elements: Vec<Self>) -> Self {
         if elements.len() == 1 {
             elements.into_iter().next().unwrap()
@@ -2876,17 +3021,19 @@ impl Type {
                 (Opaque, _) => rhs.clone(),
                 (_, Opaque) => self.clone(),
                 (Var(_), _) | (_, Var(_)) => Self::any(),
-                (Product(a), Product(b)) if a.len() == b.len() => Self::raw_product(
+                (Product(a), Product(b)) if a.len() == b.len() => Self::product_sharing(
                     a.iter()
                         .zip(b.iter())
                         .map(|(x, y)| x.join(y))
                         .collect::<Result<Vec<_>, _>>()?,
+                    self,
+                    rhs,
                 ),
                 (Product(_), _) | (_, Product(_)) => Self::any(),
                 (Nominal(_) | NominalSet(_), _) | (_, Nominal(_) | NominalSet(_)) => {
                     self.nominal_join(rhs)?
                 }
-                (Families(a), Families(b)) => Self::families(a.join(b)?),
+                (Families(a), Families(b)) => Self::families_sharing(a.join(b)?, self, rhs),
             }
         })
     }
@@ -2906,14 +3053,16 @@ impl Type {
                 (Nominal(_) | NominalSet(_), _) | (_, Nominal(_) | NominalSet(_)) => {
                     self.nominal_meet(rhs)?
                 }
-                (Product(a), Product(b)) if a.len() == b.len() => Self::raw_product(
+                (Product(a), Product(b)) if a.len() == b.len() => Self::product_sharing(
                     a.iter()
                         .zip(b.iter())
                         .map(|(x, y)| x.meet(y))
                         .collect::<Result<Vec<_>, _>>()?,
+                    self,
+                    rhs,
                 ),
                 (Product(_), _) | (_, Product(_)) | (Opaque, _) | (_, Opaque) => Self::none(),
-                (Families(a), Families(b)) => Self::families(a.meet(b)?),
+                (Families(a), Families(b)) => Self::families_sharing(a.meet(b)?, self, rhs),
             }
         })
     }
@@ -2950,7 +3099,7 @@ impl Type {
                 }
             }
             (Product(_), _) | (_, Product(_)) => self.clone(),
-            (Families(a), Families(b)) => Self::families(a.subtract(b)?),
+            (Families(a), Families(b)) => Self::families_sharing(a.subtract(b)?, self, self),
             (Opaque, _) | (_, Opaque) => return Err(LatticeError::OpaqueSentinelSubtraction),
         })
     }
@@ -2981,15 +3130,21 @@ impl Type {
                 Repr::Families(s) => {
                     let limited = s.limit_aux(depth)?;
                     if s.union_record() {
-                        Self(Repr::Families(FamilyStore::raw(limited)))
+                        if s.is_raw_of(&limited) {
+                            self.clone()
+                        } else {
+                            Self(Repr::Families(FamilyStore::raw(limited)))
+                        }
                     } else {
-                        Self::families(limited)
+                        Self::families_sharing(limited, self, self)
                     }
                 }
-                Repr::Product(es) => Self::raw_product(
+                Repr::Product(es) => Self::product_sharing(
                     es.iter()
                         .map(|e| e.limit_aux(depth - 1))
                         .collect::<Result<Vec<_>, _>>()?,
+                    self,
+                    self,
                 ),
                 _ => self.clone(),
             }
@@ -3587,25 +3742,23 @@ impl Type {
                     return Ok(self.clone());
                 }
                 let mut s = slots.rebuild_base();
-                if let Some(Functions { domain, range }) = slots.functions() {
-                    s.functions = Some(Arc::new(Functions {
-                        domain: Box::new(f(domain)?),
-                        range: Box::new(f(range)?),
-                    }));
+                if let Some(x) = slots.functions_owner() {
+                    let domain = f(&x.domain)?;
+                    s.functions = Some(Functions::shared(domain, f(&x.range)?, x, x));
                 }
-                if let Some(Lists::List {
-                    elements,
-                    tail,
-                    nonempty,
-                }) = slots.list()
+                if let Some(x) = slots.list_owner()
+                    && let Lists::List {
+                        elements,
+                        tail,
+                        nonempty,
+                    } = &**x
                 {
-                    s.list = Some(Arc::new(Lists::List {
-                        elements: Box::new(f(elements)?),
-                        tail: Box::new(f(tail)?),
-                        nonempty: *nonempty,
-                    }));
+                    let elements = f(elements)?;
+                    s.list = Some(Lists::shared(elements, f(tail)?, *nonempty, x, x));
                 }
-                if let Some(Tuples::Set(groups)) = slots.tuple() {
+                if let Some(x) = slots.tuple_owner()
+                    && let Tuples::Set(groups) = &**x
+                {
                     let mut out = BTreeMap::new();
                     for (arity, variants) in groups {
                         let mut vs = Vec::new();
@@ -3621,10 +3774,10 @@ impl Type {
                         }
                         out.insert(*arity, vs);
                     }
-                    s.tuple = Some(Arc::new(Tuples::Set(out)));
+                    s.tuple = Some(reuse_left(Tuples::Set(out), x));
                 }
-                if let Some(m) = slots.maps() {
-                    let entries = m
+                if let Some(x) = slots.maps_owner() {
+                    let entries = x
                         .entries
                         .iter()
                         .map(|e| {
@@ -3635,10 +3788,10 @@ impl Type {
                             })
                         })
                         .collect::<Result<Vec<_>, LatticeError>>()?;
-                    s.maps = Maps::canonical(entries, f(&m.default_key)?, f(&m.default_value)?)?
-                        .map(Arc::new);
+                    s.maps = Maps::canonical(entries, f(&x.default_key)?, f(&x.default_value)?)?
+                        .map(|m| reuse_left(m, x));
                 }
-                Self::families(s)
+                Self::families_sharing(s, self, self)
             }
             _ => self.clone(),
         })
@@ -5838,7 +5991,7 @@ mod rebuild_base_tests {
                 default_value: Box::new(Type::none()),
             })),
         };
-        let base = source.rebuild_base();
+        let base = FamilyStore::raw(source.clone()).rebuild_base();
         assert!(base.union_record);
         assert_eq!(base.atoms, source.atoms);
         assert_eq!(base.bitstrings, source.bitstrings);
