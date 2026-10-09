@@ -249,7 +249,7 @@ pub struct BodyFlow<'a, 'b, 'c> {
     pub guards: Option<&'a crate::guard_control::GuardControl<'a, 'c, 'c>>,
     pub letrec: &'a crate::letrec_types::LetrecLinks,
 }
-impl BodyFlow<'_, '_, '_> {
+impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
     pub fn analyze_module<
         W: Clone
             + PartialEq
@@ -353,9 +353,30 @@ impl BodyFlow<'_, '_, '_> {
     fn refresh_letrec<W>(&self, state: &mut BinderState<W>) -> Result<()> {
         let generation = self.functions.signature_generation();
         if state.letrec.is_current(self.letrec, generation) { return Ok(()); }
-        let letrec = state.letrec.make_mut();
+        // Only changed entries are written, so an unchanged table is not copied;
+        // on failure the entries before it are still written, as before.
+        let mut changes = Vec::new();
+        let mut failure = None;
         for (&variable, &function) in self.letrec {
-            letrec.insert(variable.into(), self.function_type(function)?);
+            match self.function_type(function) {
+                Ok(typ) => {
+                    let key = variable.into();
+                    if state.letrec.get(&key) != Some(&typ) {
+                        changes.push((key, typ));
+                    }
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        if !changes.is_empty() || failure.is_some() {
+            let letrec = state.letrec.make_mut();
+            letrec.extend(changes);
+        }
+        if let Some(error) = failure {
+            return Err(error);
         }
         state.letrec.mark_current(self.letrec, generation);
         Ok(())
@@ -1004,8 +1025,9 @@ impl BodyFlow<'_, '_, '_> {
             }
             match frame {
                 Frame::Visit(node, mut map) => {
-                    let expr = self.patterns.nodes.expression(node)?.clone();
-                    let reference = |id: crate::core::NodeId| NodeRef {
+                    let nodes: &'b crate::dataflow_nodes::DataflowNodes<'c> = self.patterns.nodes;
+                    let expr = nodes.expression(node)?;
+                    let reference = |id: &crate::core::NodeId| NodeRef {
                         module: node.module,
                         node: id.0,
                     };
@@ -1021,7 +1043,7 @@ impl BodyFlow<'_, '_, '_> {
                         }
                         CoreExpr::Literal(id) => values.push(Value {
                             map,
-                            typ: self.patterns.nodes.literal_type(node.module, id)?,
+                            typ: self.patterns.nodes.literal_type(node.module, *id)?,
                         }),
                         CoreExpr::Var(_) => {
                             let label = self.patterns.nodes.label(node)?;
@@ -1206,9 +1228,9 @@ impl BodyFlow<'_, '_, '_> {
                                     Type::any(),
                                 ]),
                                 "recv_wait_timeout" => {
-                                    let [arg]: [crate::core::NodeId; 1] = args
-                                        .try_into()
-                                        .map_err(|_| LatticeError::FunctionClause)?;
+                                    let [arg] = args.as_slice() else {
+                                        return Err(LatticeError::FunctionClause.into());
+                                    };
                                     todo.push(Frame::Timeout);
                                     todo.push(Frame::Visit(reference(arg), map));
                                     continue;
