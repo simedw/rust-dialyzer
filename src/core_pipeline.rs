@@ -194,17 +194,13 @@ pub fn analyze_prepared<'a>(
     .prepare(&modules)
     .map_err(|e| PipelineError::Boundary(format!("diagnostics prepare: {e:?}")))?;
     diagnostic_timings.mark("prepare_inputs");
-    let mut raw_warnings = diagnostics
-        .contracts(phases.bifs)
-        .map_err(|e| PipelineError::Boundary(format!("diagnostics contracts: {e:?}")))?;
-    diagnostic_timings.mark("contract_warnings");
     let mut documentation = FunctionTypes::new();
     let bodies = phases.module_bodies();
     let mut order: Vec<usize> = (0..modules.len()).collect();
     order.sort_by_key(|&index| {
         std::cmp::Reverse(phases.nodes.core().modules[modules[index].0].nodes.len())
     });
-    let completed = crate::ordered_parallel::parallel_map(&order, |&index| {
+    let diagnose_modules = || crate::ordered_parallel::parallel_map(&order, |&index| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let module = modules[index];
             let mut module_timings = crate::phase_timings::PhaseTimings::new("diagnostic_module_components");
@@ -225,6 +221,13 @@ pub fn analyze_prepared<'a>(
             Ok((missing, body, callbacks))
         }))
     });
+    let (contracts, completed) = crate::ordered_parallel::join(
+        || diagnostics.contracts(phases.bifs),
+        diagnose_modules,
+    );
+    let mut raw_warnings = contracts
+        .map_err(|e| PipelineError::Boundary(format!("diagnostics contracts: {e:?}")))?;
+    diagnostic_timings.mark("contract_and_module_warnings");
     let mut results: Vec<_> = (0..modules.len()).map(|_| None).collect();
     for (index, result) in order.into_iter().zip(completed) {
         results[index] = Some(result);
