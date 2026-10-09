@@ -16,7 +16,8 @@ Phoenix scenario: 600 modules from scratch. That is the 93 Phoenix modules plus 
 |---|---:|---:|---:|---:|
 | OTP dialyzer (`run_dialyzer.exs build`, 14 schedulers), load 13–16 | 17.0–17.4 s | ~83 s | 0.89 T | |
 | Rust @ e3ed138, interleaved, load 14–17 | 12.7–13.9 s | ~75 s | 0.68 T | 15.0 GB |
-| Rust @ 4965204, interleaved, load 14–17 | **8.1–8.4 s** | **~59 s** | **0.51 T** | **10.9 GB** |
+| Rust @ 4965204, interleaved, load 14–17 | 8.1–8.4 s | ~59 s | 0.51 T | 10.9 GB |
+| Rust @ 296e2ad (shared arenas) | ~7.8–8.0 s | | **0.49 T** | **7.1 GB** |
 
 Caveat: OTP's time includes compiling beams to Core. Rust reads a prebuilt Core cache instead. A cold cache build for 1,082 modules takes about 6.7 s; a warm cache check takes about 0.2 s.
 
@@ -26,7 +27,9 @@ Parity at 4965204, all exact (full verify needed a re-run, see known issue 1):
 - **Subset:** 7,433 warnings and 7,117 signatures, both parallel and sequential.
 - **Unit tests:** 248 pass.
 
-Peak memory is 10.9 GB on Phoenix and 14.0 GB on the full run (1.075 T instructions, was 1.33 T). Verify mode on the full run peaks at 28–36 GB, on every branch including the old baseline; it is close to the machine's limit.
+Peak memory is 7.1 GB on Phoenix and 11.0 GB on the full run (1.05 T instructions, was 1.33 T). Verify mode on the full run peaks at about 26 GB (was 28–36 GB).
+
+**Where the memory goes** (2026-10-09, after the shared arenas): RSS reaches its peak at the end of setup and stays flat through inference. Module term and node arenas are `SharedVec`s (`src/shared_vec.rs`): a shared prefix behind an `Arc` plus the entries a copy appended, so setup phases that need "the module arena plus a few terms" no longer deep-copy it. Remaining large holders in the last heap snapshot: term-order arenas (~1.2 GB), the loaded Core itself (~1 GB), `Program::bind`/`build_with_contracts` (~0.55 GB), interned types and memos (~0.35 GB). To re-measure: build with `RUSTFLAGS="--cfg dialyzer_tsan"` (system malloc), run with `MallocStackLogging=lite`, stop the process after setup, and run `malloc_history <pid> -callTree -invert`.
 
 Timeline on Phoenix: start of session about 44 s wall (6.6 T instructions on the full run). After micro-optimisation and parallelism, about 20 s and 1.13 T. After the type and refinement redesign, 12 s and 0.68 T. After the four parallel branches below, 8.3 s and 0.51 T.
 
