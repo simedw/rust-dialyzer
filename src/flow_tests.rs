@@ -94,7 +94,7 @@ impl RawCore {
                 source_forms: TermId(0),
                 core,
                 terms: self.terms.into(),
-                nodes: self.nodes,
+                nodes: self.nodes.into(),
             }],
             node_count,
             term_count,

@@ -379,7 +379,7 @@ mod location_snapshot_tests {
             core.modules.push(crate::core::CoreModule {
                 name: format!("m{module}"), source_forms: TermId(0), core: crate::core::NodeId(0),
                 terms: vec![ErlangTerm::Nil, ErlangTerm::Integer((module + 10).to_string()), ErlangTerm::List { items: vec![TermId(1)], tail: TermId(0) }].into(),
-                nodes: vec![], map_iterator_orders: BTreeMap::new(), contract_variable_maps: BTreeMap::new(),
+                nodes: crate::shared_vec::SharedVec::new(), map_iterator_orders: BTreeMap::new(), contract_variable_maps: BTreeMap::new(),
             });
             program.metadata.push(crate::program::Metadata {
                 module: ModuleId(module), kind: MetadataKind::Spec, raw: TermId(0),

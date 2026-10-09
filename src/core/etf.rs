@@ -235,7 +235,7 @@ pub fn module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
     }
     let terms: crate::shared_vec::SharedVec<ErlangTerm> = terms.into();
 
-    let mut nodes: Vec<CoreNode> = Vec::with_capacity(raw_nodes.len());
+    let mut nodes = crate::shared_vec::SharedVec::<CoreNode>::with_capacity(raw_nodes.len());
     for (id, entry) in raw_nodes.iter().enumerate() {
         let Term::Tuple(f) = entry else {
             return Err(format!("{path}.nodes[{id}]: expected node tuple"));
@@ -274,7 +274,10 @@ pub fn module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
         source_forms: TermId(int(source_forms)? as usize),
         core: NodeId(int(core)? as usize),
         terms,
-        nodes,
+        nodes: {
+            nodes.freeze();
+            nodes
+        },
         map_iterator_orders,
         contract_variable_maps,
     })

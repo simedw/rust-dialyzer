@@ -292,24 +292,13 @@ pub struct CompilerProfile {
     pub core_options: Vec<String>,
     pub term_map_order: TermMapOrder,
 }
-/// Moves a vector with much unused capacity into an exact allocation.
-/// `shrink_to_fit` is not enough: mimalloc keeps a block in place when the
-/// new size is at least half the old one, as after one doubling.
-pub fn exact_capacity<T>(items: Vec<T>) -> Vec<T> {
-    if items.capacity() - items.len() <= items.len() / 8 {
-        return items;
-    }
-    let mut exact = Vec::with_capacity(items.len());
-    exact.extend(items);
-    exact
-}
 #[derive(Clone, Debug)]
 pub struct CoreModule {
     pub name: String,
     pub source_forms: TermId,
     pub core: NodeId,
     pub terms: crate::shared_vec::SharedVec<ErlangTerm>,
-    pub nodes: Vec<CoreNode>,
+    pub nodes: crate::shared_vec::SharedVec<CoreNode>,
     pub map_iterator_orders: BTreeMap<TermId, Vec<usize>>,
     pub contract_variable_maps: BTreeMap<TermId, TermId>,
 }
@@ -507,7 +496,7 @@ impl CoreProgram {
                     "{path}.contract_variable_maps: missing compiler provenance"
                 ));
             }
-            let mut nodes = Vec::new();
+            let mut nodes = crate::shared_vec::SharedVec::new();
             for (j, raw) in array(field(obj, "nodes", &path)?, format!("{path}.nodes"))?
                 .iter()
                 .enumerate()
@@ -532,6 +521,7 @@ impl CoreProgram {
             }
             node_count += nodes.len();
             term_count += terms.len();
+            nodes.freeze();
             modules.push(CoreModule {
                 name,
                 source_forms,
@@ -705,7 +695,7 @@ fn parse_node(
     raw: &Value,
     path: impl std::fmt::Display + Copy,
     id: usize,
-    nodes: &[CoreNode],
+    nodes: &crate::shared_vec::SharedVec<CoreNode>,
     terms: &crate::shared_vec::SharedVec<ErlangTerm>,
 ) -> Result<CoreNode> {
     let obj = object(raw, path)?;
@@ -773,7 +763,7 @@ pub(crate) fn build_node(
     raw: &RawNode<'_>,
     path: impl std::fmt::Display + Copy,
     id: usize,
-    nodes: &[CoreNode],
+    nodes: &crate::shared_vec::SharedVec<CoreNode>,
     terms: &crate::shared_vec::SharedVec<ErlangTerm>,
 ) -> Result<CoreNode> {
     let kind = raw.kind;
@@ -1044,7 +1034,7 @@ pub(crate) fn build_node(
     })
 }
 fn definition_pairs(
-    nodes: &[CoreNode],
+    nodes: &crate::shared_vec::SharedVec<CoreNode>,
     terms: &crate::shared_vec::SharedVec<ErlangTerm>,
     raw: Vec<NodeId>,
     path: impl std::fmt::Display + Copy,
@@ -1078,7 +1068,7 @@ fn definition_pairs(
 }
 fn function_name<'a>(
     id: NodeId,
-    nodes: &[CoreNode],
+    nodes: &crate::shared_vec::SharedVec<CoreNode>,
     terms: &'a crate::shared_vec::SharedVec<ErlangTerm>,
 ) -> Option<(&'a str, usize)> {
     if let CoreExpr::Var(term) = nodes[id.0].expr
@@ -1100,7 +1090,7 @@ fn valid_var_name(id: TermId, terms: &crate::shared_vec::SharedVec<ErlangTerm>) 
         _ => false,
     }
 }
-fn literal_atom<'a>(id: NodeId, nodes: &[CoreNode], terms: &'a crate::shared_vec::SharedVec<ErlangTerm>) -> Option<&'a str> {
+fn literal_atom<'a>(id: NodeId, nodes: &crate::shared_vec::SharedVec<CoreNode>, terms: &'a crate::shared_vec::SharedVec<ErlangTerm>) -> Option<&'a str> {
     if let CoreExpr::Literal(term) = nodes[id.0].expr
         && let ErlangTerm::Atom(name) = &terms[term.0]
     {
@@ -1109,7 +1099,7 @@ fn literal_atom<'a>(id: NodeId, nodes: &[CoreNode], terms: &'a crate::shared_vec
         None
     }
 }
-fn require_kind(nodes: &[CoreNode], id: NodeId, kind: &str, path: impl std::fmt::Display + Copy) -> Result<()> {
+fn require_kind(nodes: &crate::shared_vec::SharedVec<CoreNode>, id: NodeId, kind: &str, path: impl std::fmt::Display + Copy) -> Result<()> {
     if nodes[id.0].expr.kind() == kind {
         Ok(())
     } else {
@@ -1119,7 +1109,7 @@ fn require_kind(nodes: &[CoreNode], id: NodeId, kind: &str, path: impl std::fmt:
         ))
     }
 }
-fn require_kinds(nodes: &[CoreNode], ids: &[NodeId], kind: &str, path: impl std::fmt::Display + Copy) -> Result<()> {
+fn require_kinds(nodes: &crate::shared_vec::SharedVec<CoreNode>, ids: &[NodeId], kind: &str, path: impl std::fmt::Display + Copy) -> Result<()> {
     for (i, id) in ids.iter().enumerate() {
         require_kind(nodes, *id, kind, format_args!("{path}[{i}]"))?;
     }
@@ -1395,7 +1385,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, raw)| parse_term(raw, &format!("$.terms[{i}]"), i))
                 .collect::<Result<crate::shared_vec::SharedVec<_>>>()?;
-            let mut nodes = Vec::new();
+            let mut nodes = crate::shared_vec::SharedVec::new();
             for (i, raw) in self.nodes.iter().enumerate() {
                 nodes.push(parse_node(
                     raw,
@@ -1405,7 +1395,7 @@ mod tests {
                     &terms,
                 )?);
             }
-            Ok(nodes)
+            Ok(nodes.to_vec())
         }
     }
     #[test]

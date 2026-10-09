@@ -17,6 +17,12 @@ impl<T> SharedVec<T> {
     pub fn new() -> Self {
         Self::from(Vec::new())
     }
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            base: Arc::new(Vec::new()),
+            own: Vec::with_capacity(capacity),
+        }
+    }
     pub fn len(&self) -> usize {
         self.base.len() + self.own.len()
     }
@@ -34,6 +40,17 @@ impl<T> SharedVec<T> {
     }
     pub fn push(&mut self, item: T) {
         self.own.push(item);
+    }
+    /// Mutable access to one entry; copies the shared prefix if another
+    /// clone holds it.
+    pub fn make_mut(&mut self, index: usize) -> &mut T
+    where
+        T: Clone,
+    {
+        match index.checked_sub(self.base.len()) {
+            None => &mut Arc::make_mut(&mut self.base)[index],
+            Some(at) => &mut self.own[at],
+        }
     }
     /// Replaces one entry; copies the shared prefix if another clone holds it.
     pub fn set(&mut self, index: usize, item: T)
@@ -61,6 +78,10 @@ impl<T> SharedVec<T> {
             return;
         }
         let own = std::mem::take(&mut self.own);
+        if self.base.is_empty() {
+            self.base = Arc::new(own);
+            return;
+        }
         match Arc::get_mut(&mut self.base) {
             Some(base) => {
                 base.reserve_exact(own.len());

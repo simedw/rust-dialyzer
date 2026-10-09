@@ -102,7 +102,7 @@ impl RawCore {
                 source_forms: TermId(0),
                 core,
                 terms: self.terms.into(),
-                nodes: self.nodes,
+                nodes: self.nodes.into(),
             }],
             node_count,
             term_count,
@@ -229,7 +229,7 @@ fn try_results_and_exception_variables_have_separate_scopes() {
     let CoreExpr::Var(value) = wrong.modules[0].nodes[success.0].expr else {
         panic!()
     };
-    wrong.modules[0].nodes[handler.0].expr = CoreExpr::Var(value);
+    wrong.modules[0].nodes.make_mut(handler.0).expr = CoreExpr::Var(value);
     assert!(
         Program::build(&wrong)
             .unwrap_err()

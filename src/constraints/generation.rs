@@ -2365,7 +2365,7 @@ mod capture_store_tests {
     fn malformed_table_error_stays_at_first_use() {
         let mut core = program();
         let labels = Labels::build(&core, CoreLabel(0)).unwrap();
-        core.modules[0].nodes[1].annotations = TermId(1);
+        core.modules[0].nodes.make_mut(1).annotations = TermId(1);
         let store = CoreCaptureStore::new(&core, &labels);
         assert!(store.modules[0].get().is_none());
         let expected = crate::core_capture::CoreCaptures::build(&core, &labels, ModuleId(0))

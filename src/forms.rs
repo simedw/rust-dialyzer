@@ -1002,7 +1002,7 @@ mod tests {
                 source_forms: TermId(0),
                 core: NodeId(0),
                 terms: vec![ErlangTerm::Nil, ErlangTerm::Integer("1".into())].into(),
-                nodes: vec![],
+                nodes: crate::shared_vec::SharedVec::new(),
                 map_iterator_orders: BTreeMap::new(),
                 contract_variable_maps: BTreeMap::new(),
             })

@@ -561,7 +561,7 @@ mod tests {
                 source_forms: TermId(0),
                 core: pattern,
                 terms: terms.into(),
-                nodes,
+                nodes: nodes.into(),
                 map_iterator_orders: BTreeMap::new(),
                 contract_variable_maps: BTreeMap::new(),
             }],

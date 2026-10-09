@@ -263,7 +263,8 @@ impl CoreModule {
                     checked(id.0, i, format_args!("{at}.groups[{g}][{j}]"))?;
                 }
             }
-            let prior = &self.nodes[..i];
+            // Every id below was checked to precede node i.
+            let prior = &self.nodes;
             match &node.expr {
                 CoreExpr::Literal(t) | CoreExpr::Opaque(t) => {
                     checked(t.0, self.terms.len(), format_args!("{at}.value"))?

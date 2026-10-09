@@ -127,7 +127,7 @@ fn import_mode(
         },
         map_iterator_orders: BTreeMap::new(),
         contract_variable_maps: BTreeMap::new(),
-        nodes: Vec::new(),
+        nodes: crate::shared_vec::SharedVec::new(),
     };
     for (module, table) in modules {
         let name = atom(&tables.terms, *module)?.to_owned();
