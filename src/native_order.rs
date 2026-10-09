@@ -112,7 +112,7 @@ impl Type {
     }
     fn native_value(&self) -> NativeValue {
         use NativeValue as N;
-        match &self.0 {
+        match &self.repr {
             Repr::Any => N::atom("any"),
             Repr::None => N::atom("none"),
             Repr::Unit => N::atom("unit"),

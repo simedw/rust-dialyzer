@@ -175,7 +175,7 @@ fn print_tuple(tuple: &TupleVariant, ctx: &PresentationContext) -> Result<String
     Ok(format!("{{{}}}", comma(&tuple.elements, ctx)?))
 }
 fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeError> {
-    Ok(match &t.0 {
+    Ok(match &t.repr {
         Repr::Any => "any()".into(),
         Repr::None => "none()".into(),
         Repr::Unit => "no_return()".into(),
@@ -197,7 +197,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                     ctx.atom_latin1(module),
                     ctx.atom_to_string(name)
                 );
-                if matches!(n.inner.0, Repr::Opaque) || *opacity == Opacity::Opaque {
+                if matches!(n.inner.repr, Repr::Opaque) || *opacity == Opacity::Opaque {
                     named
                 } else {
                     format!("({named} :: {})", print_type(&n.inner, ctx)?)
@@ -247,7 +247,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                     _ => format!("<<_:{},_:_*{}>>", b.base, b.unit),
                 }
             } else if let Some(f) = s.functions() {
-                match &f.domain.0 {
+                match &f.domain.repr {
                     Repr::Any if f.range.is_any() => "fun()".into(),
                     Repr::Any => format!("fun((...) -> {})", print_type(&f.range, ctx)?),
                     Repr::Product(args) => format!(
@@ -445,7 +445,7 @@ impl Type {
 
 impl Type {
     pub fn abstract_records(&self, ctx: &PresentationContext) -> Result<Self, LatticeError> {
-        match &self.0 {
+        match &self.repr {
             Repr::Product(v) => Ok(Self::raw_product(
                 v.iter()
                     .map(|t| t.abstract_records(ctx))
@@ -453,8 +453,8 @@ impl Type {
             )),
             Repr::Nominal(n) => {
                 let inner = n.inner.abstract_records(ctx)?;
-                if matches!(n.inner.0, Repr::Nominal(_) | Repr::NominalSet(_))
-                    && !matches!(inner.0, Repr::Nominal(_) | Repr::NominalSet(_))
+                if matches!(n.inner.repr, Repr::Nominal(_) | Repr::NominalSet(_))
+                    && !matches!(inner.repr, Repr::Nominal(_) | Repr::NominalSet(_))
                 {
                     Ok(Self::any())
                 } else {
@@ -478,7 +478,7 @@ impl Type {
                                 ..Slots::default()
                             };
                             components.push(
-                                Self(Repr::Families(FamilyStore::raw(one)))
+                                Self::new(Repr::Families(FamilyStore::raw(one)))
                                     .abstract_records(ctx)?,
                             );
                         }
@@ -517,7 +517,7 @@ impl Type {
                         };
                         ((**elements).clone(), (**tail).clone())
                     };
-                    return Ok(Self(Repr::Families(FamilyStore::raw(Slots {
+                    return Ok(Self::new(Repr::Families(FamilyStore::raw(Slots {
                         list: Some(Arc::new(Lists::List {
                             elements: Box::new(elements),
                             tail: Box::new(tail),
@@ -527,7 +527,7 @@ impl Type {
                     }))));
                 }
                 if let Some(f) = s.functions() {
-                    return Ok(Self(Repr::Families(FamilyStore::raw(Slots {
+                    return Ok(Self::new(Repr::Families(FamilyStore::raw(Slots {
                         functions: Some(Arc::new(Functions {
                             domain: Box::new(f.domain.abstract_records(ctx)?),
                             range: Box::new(f.range.abstract_records(ctx)?),

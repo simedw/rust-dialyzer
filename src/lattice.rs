@@ -77,8 +77,108 @@ impl NativeTypeOutcome {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Type(Repr);
+#[derive(Clone)]
+pub struct Type {
+    repr: Repr,
+    info: Info,
+}
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        self.repr == other.repr
+    }
+}
+impl Eq for Type {}
+impl std::fmt::Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Type").field(&self.repr).finish()
+    }
+}
+/// `has_var()` holds.
+const HAS_VAR: u8 = 1;
+/// A variable is reachable through `append_children`.
+const ANY_VAR: u8 = 2;
+/// `contains_nominal()` holds.
+const NOMINAL: u8 = 4;
+/// Facts about a type that would otherwise need a walk over it, computed once
+/// from the children's facts when the type is built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Info {
+    flags: u8,
+    /// The least depth for which `is_limited` holds; it holds for every
+    /// greater depth too.
+    limited_from: i32,
+}
+impl Info {
+    fn of(repr: &Repr) -> Self {
+        let deeper = |t: &Type| t.info.limited_from.saturating_add(1);
+        let mut flags = 0;
+        let mut from = 1;
+        match repr {
+            Repr::Any => return Self { flags: 0, limited_from: i32::MIN },
+            Repr::None | Repr::Unit => {}
+            Repr::Var(_) => flags = HAS_VAR | ANY_VAR,
+            Repr::Opaque => flags = NOMINAL,
+            Repr::Nominal(n) => {
+                flags = NOMINAL | (n.inner.info.flags & (HAS_VAR | ANY_VAR));
+                from = from.max(n.inner.info.limited_from);
+            }
+            Repr::NominalSet(n) => {
+                flags = NOMINAL;
+                let s = n.structural.info;
+                if s.flags & HAS_VAR != 0 && n.nominals.iter().any(|m| m.inner.info.flags & HAS_VAR != 0) {
+                    flags |= HAS_VAR;
+                }
+                flags |= s.flags & ANY_VAR;
+                from = from.max(s.limited_from);
+                for m in &n.nominals {
+                    flags |= m.inner.info.flags & ANY_VAR;
+                    from = from.max(m.inner.info.limited_from);
+                }
+            }
+            Repr::Product(p) => {
+                for t in p.iter() {
+                    flags |= t.info.flags;
+                    from = from.max(deeper(t));
+                }
+            }
+            Repr::Families(s) => {
+                if let Some(f) = s.functions() {
+                    flags |= f.domain.info.flags | f.range.info.flags;
+                    from = from.max(f.domain.info.limited_from).max(deeper(&f.range));
+                }
+                if let Some(Lists::List { elements, tail, .. }) = s.list() {
+                    flags |= elements.info.flags | tail.info.flags;
+                    from = from.max(deeper(elements));
+                    if tail.info.limited_from > 1
+                        && !matches!(tail.singleton_key(), Some(SingletonKey::Nil))
+                    {
+                        from = from.max(deeper(tail));
+                    }
+                }
+                if let Some(Tuples::Set(groups)) = s.tuple() {
+                    for v in groups.values().flatten() {
+                        if v.tag.is_some() {
+                            from = from.max(2);
+                        }
+                        for t in &v.elements {
+                            flags |= t.info.flags;
+                            from = from.max(deeper(t));
+                        }
+                    }
+                }
+                if let Some(m) = s.maps() {
+                    flags |= m.default_key.info.flags | m.default_value.info.flags;
+                    for e in &m.entries {
+                        flags |= e.value.info.flags & NOMINAL;
+                        from = from.max(2).max(deeper(&e.value));
+                    }
+                    from = from.max(deeper(&m.default_key)).max(deeper(&m.default_value));
+                }
+            }
+        }
+        Self { flags, limited_from: from }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Repr {
     Any,
@@ -106,6 +206,10 @@ thread_local! {
         const { [const { std::cell::OnceCell::new() }; CANONICAL_TYPE_COUNT] };
 }
 impl Type {
+    fn new(repr: Repr) -> Self {
+        let info = Info::of(&repr);
+        Self { repr, info }
+    }
     fn integer_interval(from: Bound, to: Bound) -> Self {
         Self::scalar(None, Some(Numeric::Integer(Integers::Range(from, to))))
     }
@@ -1213,7 +1317,7 @@ impl Tuples {
         let first = elements.first().map(Type::shallow_structural).transpose()?;
         let tags = first
             .as_ref()
-            .and_then(|first| match &first.0 {
+            .and_then(|first| match &first.repr {
                 Repr::Families(slots) => {
                     if !slots.union_record()
                         && slots.count() == usize::from(slots.atoms().is_some())
@@ -1590,7 +1694,7 @@ impl Functions {
         Ok(Self::shared(domain, x.range.limit_aux(k - 1)?, x, x))
     }
     fn value(&self) -> Value {
-        let domain = match &self.domain.0 {
+        let domain = match &self.domain.repr {
             Repr::Any => Value::Null,
             Repr::Product(es) => json!(es.iter().map(Type::to_value).collect::<Vec<_>>()),
             _ => unreachable!("function domain is a product or any"),
@@ -1674,7 +1778,7 @@ struct Nominal {
 }
 impl Nominal {
     fn as_type(&self) -> Type {
-        Type(Repr::Nominal(Arc::new(self.clone())))
+        Type::new(Repr::Nominal(Arc::new(self.clone())))
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1684,7 +1788,7 @@ struct NominalSet {
 }
 impl NominalSet {
     fn raw(nominals: Vec<Nominal>, structural: Type) -> Type {
-        Type(Repr::NominalSet(Arc::new(Self {
+        Type::new(Repr::NominalSet(Arc::new(Self {
             nominals,
             structural: Box::new(structural),
         })))
@@ -1706,8 +1810,8 @@ thread_local! {static ACTIVE_PAIRS:std::cell::RefCell<Vec<ActivePair>>=const{std
 struct ActivePairGuard;
 impl ActivePairGuard {
     fn enter(operation: Operation, a: &Type, b: &Type) -> Result<Option<Self>, LatticeError> {
-        if !matches!(a.0, Repr::Nominal(_) | Repr::NominalSet(_))
-            && !matches!(b.0, Repr::Nominal(_) | Repr::NominalSet(_))
+        if !matches!(a.repr, Repr::Nominal(_) | Repr::NominalSet(_))
+            && !matches!(b.repr, Repr::Nominal(_) | Repr::NominalSet(_))
         {
             return Ok(None);
         }
@@ -1742,14 +1846,14 @@ impl Type {
         if inner.is_impossible() {
             Self::none()
         } else {
-            Self(Repr::Nominal(Arc::new(Nominal {
+            Self::new(Repr::Nominal(Arc::new(Nominal {
                 name,
                 inner: Box::new(inner),
             })))
         }
     }
     fn raw_nominal(name: NominalName, inner: Self) -> Self {
-        Self(Repr::Nominal(Arc::new(Nominal {
+        Self::new(Repr::Nominal(Arc::new(Nominal {
             name,
             inner: Box::new(inner),
         })))
@@ -1767,7 +1871,7 @@ impl Type {
                     _ => {
                         let mut ns = Vec::new();
                         for t in done {
-                            let Repr::Nominal(n) = t.0 else {
+                            let Repr::Nominal(n) = t.repr else {
                                 return Err(LatticeError::FunctionClause);
                             };
                             ns.push(Arc::unwrap_or_clone(n))
@@ -1793,7 +1897,7 @@ impl Type {
     fn from_nominal_types(types: Vec<Self>, other: Self) -> Result<Self, LatticeError> {
         let mut ns = Vec::new();
         for t in types {
-            if let Repr::Nominal(n) = t.0 {
+            if let Repr::Nominal(n) = t.repr {
                 ns.push(Arc::unwrap_or_clone(n))
             } else if !t.is_none() {
                 return Err(LatticeError::FunctionClause);
@@ -1804,7 +1908,7 @@ impl Type {
     fn nominal_absorb(ns: &[Nominal], sup: &Nominal) -> Result<Self, LatticeError> {
         let mut acc = Vec::new();
         for (i, n) in ns.iter().enumerate() {
-            match n.as_type().meet(&sup.as_type())?.0 {
+            match n.as_type().meet(&sup.as_type())?.repr {
                 Repr::Nominal(_) => {
                     acc.extend_from_slice(&ns[i + 1..]);
                     return self::NominalSet::raw(acc, Self::none())
@@ -1830,14 +1934,14 @@ impl Type {
     }
     fn nominal_join(&self, rhs: &Self) -> Result<Self, LatticeError> {
         use Repr::*;
-        Ok(match (&self.0, &rhs.0) {
+        Ok(match (&self.repr, &rhs.repr) {
             (Nominal(a), Nominal(b)) if a.name == b.name => {
                 Self::raw_nominal(a.name.clone(), a.inner.join(&b.inner)?)
             }
-            (Nominal(a), Nominal(b)) => match (&a.inner.0, &b.inner.0) {
+            (Nominal(a), Nominal(b)) => match (&a.inner.repr, &b.inner.repr) {
                 (Nominal(x), Nominal(y)) => {
                     let sup = a.inner.join(&b.inner)?;
-                    match &sup.0 {
+                    match &sup.repr {
                         Nominal(n) if n.name == x.name && n.name == b.name => {
                             Self::raw_nominal(b.name.clone(), sup)
                         }
@@ -1857,7 +1961,7 @@ impl Type {
                 (NominalSet(_), Nominal(_)) => rhs.nominal_join(self)?,
                 (Nominal(x), _) => {
                     let sup = a.inner.join(rhs)?;
-                    match &sup.0 {
+                    match &sup.repr {
                         NominalSet(ns) if ns.structural.is_none() => Self::nominal_pair(a, b),
                         Nominal(n) if n.name == b.name => sup,
                         Nominal(n) if n.name == x.name => Self::raw_nominal(a.name.clone(), sup),
@@ -1958,14 +2062,14 @@ impl Type {
     }
     fn nominal_meet(&self, rhs: &Self) -> Result<Self, LatticeError> {
         use Repr::*;
-        Ok(match (&self.0, &rhs.0) {
+        Ok(match (&self.repr, &rhs.repr) {
             (Nominal(a), Nominal(b)) if a.name == b.name => {
                 Self::nominal(a.name.clone(), a.inner.meet(&b.inner)?)
             }
-            (Nominal(a), Nominal(b)) => match (&a.inner.0, &b.inner.0) {
+            (Nominal(a), Nominal(b)) => match (&a.inner.repr, &b.inner.repr) {
                 (Nominal(x), Nominal(y)) => {
                     let inf = a.inner.meet(&b.inner)?;
-                    match &inf.0 {
+                    match &inf.repr {
                         Nominal(n) if n.name == x.name && n.name == b.name => {
                             Self::raw_nominal(a.name.clone(), inf)
                         }
@@ -1986,7 +2090,7 @@ impl Type {
                         ts
                     };
                     let inf = Self::nominal_cartesian(&expand(&a.name, x), &expand(&b.name, y))?;
-                    match &inf.0 {
+                    match &inf.repr {
                         Nominal(n) if n.name == a.name || n.name == b.name => inf,
                         Repr::None => inf,
                         _ => return Err(LatticeError::CaseClause(Box::new(inf))),
@@ -2026,7 +2130,7 @@ impl Type {
     }
     fn nominal_subtract(&self, rhs: &Self) -> Result<Self, LatticeError> {
         use Repr::*;
-        Ok(match (&self.0, &rhs.0) {
+        Ok(match (&self.repr, &rhs.repr) {
             (NominalSet(a), NominalSet(b)) => {
                 let mut rows = Vec::new();
                 for x in Self::nominal_components(a) {
@@ -2050,7 +2154,7 @@ impl Type {
             ))?,
             (NominalSet(a), _) => {
                 let overlap = self.meet(rhs)?;
-                match overlap.0 {
+                match overlap.repr {
                     NominalSet(_) | Nominal(_) => self.subtract(&overlap)?,
                     _ => Self::normalized_nominals(
                         a.nominals.iter().map(self::Nominal::as_type).collect(),
@@ -2064,7 +2168,7 @@ impl Type {
             }
             (Nominal(a), _) => {
                 let overlap = self.meet(rhs)?;
-                match &overlap.0 {
+                match &overlap.repr {
                     Nominal(n) if n.name == a.name => self.subtract(&overlap)?,
                     _ => self.clone(),
                 }
@@ -2074,7 +2178,7 @@ impl Type {
         })
     }
     pub fn shallow_structural(&self) -> Result<Self, LatticeError> {
-        match &self.0 {
+        match &self.repr {
             Repr::Nominal(n) => n.inner.shallow_structural(),
             Repr::NominalSet(ns) => {
                 let mut s = *ns.structural.clone();
@@ -2087,7 +2191,7 @@ impl Type {
         }
     }
     pub fn is_opaque(&self, module: &str) -> bool {
-        match &self.0 {
+        match &self.repr {
             Repr::Nominal(n) => match &n.name {
                 NominalName::Defined {
                     module: m,
@@ -2566,7 +2670,7 @@ impl Type {
         if self.is_impossible() {
             return Ok(None);
         }
-        if let Repr::Families(s) = &self.0 {
+        if let Repr::Families(s) = &self.repr {
             if !s.union_record() && s.count() == usize::from(s.maps().is_some()) {
                 return Ok(s.maps());
             }
@@ -2671,20 +2775,20 @@ impl Type {
         Self::canonical(CanonicalType::Map)
     }
     pub fn any() -> Self {
-        Self(Repr::Any)
+        Self::new(Repr::Any)
     }
     pub fn none() -> Self {
-        Self(Repr::None)
+        Self::new(Repr::None)
     }
     pub fn unit() -> Self {
-        Self(Repr::Unit)
+        Self::new(Repr::Unit)
     }
     fn families(mut slots: Slots) -> Self {
         slots.union_record = slots.count() > 1;
         if slots.empty() {
             Self::none()
         } else {
-            Self(Repr::Families(FamilyStore::raw(slots)))
+            Self::new(Repr::Families(FamilyStore::raw(slots)))
         }
     }
     fn scalar(atoms: Option<Atoms>, number: Option<Numeric>) -> Self {
@@ -2764,7 +2868,7 @@ impl Type {
     pub fn list(elements: Self, tail: Self, nonempty: bool) -> Self {
         if elements.is_any() {
             if tail.is_any() { return Self::canonical(if nonempty { CanonicalType::Cons } else { CanonicalType::MaybeImproperList }); }
-            if matches!(&tail.0, Repr::Families(s) if !s.union_record() && s.count() == 1 && matches!(s.list(), Some(Lists::Nil))) {
+            if matches!(&tail.repr, Repr::Families(s) if !s.union_record() && s.count() == 1 && matches!(s.list(), Some(Lists::Nil))) {
                 return Self::canonical(if nonempty { CanonicalType::NonemptyList } else { CanonicalType::List });
             }
         }
@@ -2793,7 +2897,7 @@ impl Type {
             if head.impossible() || tail.impossible() {
                 return Ok(Self::none());
             }
-            if let Repr::Families(slots) = &tail.0 {
+            if let Repr::Families(slots) = &tail.repr {
                 if !slots.union_record()
                     && slots.count() == usize::from(slots.list().is_some())
                     && let Some(Lists::List {
@@ -2824,20 +2928,20 @@ impl Type {
         })
     }
     fn list_domain(&self) -> Option<&Lists> {
-        match &self.0 {
+        match &self.repr {
             Repr::Families(s) => s.list(),
             _ => None,
         }
     }
     /// The tuple family slot of a family value, moved out without copying.
     fn into_tuple_slot(self) -> Option<Arc<Tuples>> {
-        match self.0 {
+        match self.repr {
             Repr::Families(s) => s.into_slots().tuple,
             _ => None,
         }
     }
     fn impossible(&self) -> bool {
-        matches!(self.0, Repr::None | Repr::Unit)
+        matches!(self.repr, Repr::None | Repr::Unit)
     }
     pub fn tuple_any() -> Self {
         Self::canonical(CanonicalType::Tuple)
@@ -2950,13 +3054,13 @@ impl Type {
         })
     }
     fn raw_product(elements: Vec<Self>) -> Self {
-        Self(Repr::Product(Arc::new(elements)))
+        Self::new(Repr::Product(Arc::new(elements)))
     }
     /// `raw_product(elements)`, reusing `a` or `b` when it is a product of
     /// exactly these elements.
     fn product_sharing(elements: Vec<Self>, a: &Self, b: &Self) -> Self {
         let holds = |t: &Self| {
-            matches!(&t.0, Repr::Product(p)
+            matches!(&t.repr, Repr::Product(p)
                 if p.len() == elements.len() && p.iter().zip(&elements).all(|(x, y)| x.same(y)))
         };
         if holds(a) {
@@ -2971,7 +3075,7 @@ impl Type {
     /// these slots.
     fn families_sharing(slots: Slots, a: &Self, b: &Self) -> Self {
         let shared = [a, b].into_iter().find(|t| {
-            matches!(&t.0, Repr::Families(store) if store.is_families_of(&slots))
+            matches!(&t.repr, Repr::Families(store) if store.is_families_of(&slots))
         });
         match shared {
             Some(t) => {
@@ -2987,7 +3091,7 @@ impl Type {
     /// but may miss equal values stored separately.
     fn same(&self, other: &Self) -> bool {
         use Repr::*;
-        match (&self.0, &other.0) {
+        match (&self.repr, &other.repr) {
             (Any, Any) | (None, None) | (Unit, Unit) | (Opaque, Opaque) => true,
             (Var(a), Var(b)) => a == b,
             (Product(a), Product(b)) => Arc::ptr_eq(a, b),
@@ -3005,13 +3109,13 @@ impl Type {
         }
     }
     pub fn opaque_sentinel() -> Self {
-        Self(Repr::Opaque)
+        Self::new(Repr::Opaque)
     }
     pub fn join(&self, rhs: &Self) -> Result<Self, LatticeError> {
         let _active = ActivePairGuard::enter(Operation::Join, self, rhs)?;
         Ok({
             use Repr::*;
-            match (&self.0, &rhs.0) {
+            match (&self.repr, &rhs.repr) {
                 (Any, _) | (_, Any) => Self::any(),
                 (None, _) => rhs.clone(),
                 (_, None) => self.clone(),
@@ -3041,7 +3145,7 @@ impl Type {
         let _active = ActivePairGuard::enter(Operation::Meet, self, rhs)?;
         Ok({
             use Repr::*;
-            match (&self.0, &rhs.0) {
+            match (&self.repr, &rhs.repr) {
                 (Var(_), Var(_)) => Self::any(),
                 (Var(_), _) => rhs.clone(),
                 (_, Var(_)) => self.clone(),
@@ -3069,7 +3173,7 @@ impl Type {
     pub fn subtract(&self, rhs: &Self) -> Result<Self, LatticeError> {
         let _active = ActivePairGuard::enter(Operation::Subtract, self, rhs)?;
         use Repr::*;
-        Ok(match (&self.0, &rhs.0) {
+        Ok(match (&self.repr, &rhs.repr) {
             (_, Any) => Self::none(),
             (_, Var(_)) => self.clone(),
             (Any, _) => Self::any(),
@@ -3118,7 +3222,7 @@ impl Type {
             if depth <= 0 {
                 return Ok(Self::any());
             }
-            match &self.0 {
+            match &self.repr {
                 Repr::Nominal(n) => Self::raw_nominal(n.name.clone(), n.inner.limit_aux(depth)?),
                 Repr::NominalSet(ns) => Self::normalized_nominals(
                     ns.nominals
@@ -3133,7 +3237,7 @@ impl Type {
                         if s.is_raw_of(&limited) {
                             self.clone()
                         } else {
-                            Self(Repr::Families(FamilyStore::raw(limited)))
+                            Self::new(Repr::Families(FamilyStore::raw(limited)))
                         }
                     } else {
                         Self::families_sharing(limited, self, self)
@@ -3267,7 +3371,7 @@ impl Type {
                     .map(Self::from_value)
                     .collect::<Result<Vec<_>, _>>()?,
             ),
-            "var" => Self(Repr::Var(VariableId::parse(&value["id"])?)),
+            "var" => Self::new(Repr::Var(VariableId::parse(&value["id"])?)),
             "opaque" => Self::opaque_sentinel(),
             "identifier" => Self::identifier(None)?,
             "identifiers" => Self::identifier(Some(
@@ -3317,7 +3421,7 @@ impl Type {
     }
 
     pub fn to_value(&self) -> Value {
-        match &self.0 {
+        match &self.repr {
             Repr::Nominal(n) => {
                 json!({"kind":if n.inner.is_impossible(){"nominal_raw"}else{"nominal"},"name":n.name.value(),"inner":n.inner.to_value()})
             }
@@ -3526,7 +3630,7 @@ impl Bound {
 }
 impl Type {
     pub fn view(&self) -> TypeView<'_> {
-        match &self.0 {
+        match &self.repr {
             Repr::Nominal(n) => TypeView::Nominal(NominalView {
                 name: &n.name,
                 inner: &n.inner,
@@ -3548,25 +3652,25 @@ impl Type {
         }
     }
     pub fn is_any(&self) -> bool {
-        matches!(self.0, Repr::Any)
+        matches!(self.repr, Repr::Any)
     }
     pub fn is_none(&self) -> bool {
-        matches!(self.0, Repr::None)
+        matches!(self.repr, Repr::None)
     }
     pub fn is_unit(&self) -> bool {
-        matches!(self.0, Repr::Unit)
+        matches!(self.repr, Repr::Unit)
     }
     pub fn is_impossible(&self) -> bool {
         self.is_none() || self.is_unit()
     }
     pub fn variable_atom(name: impl Into<String>) -> Self {
-        Self(Repr::Var(VariableId::Atom(name.into())))
+        Self::new(Repr::Var(VariableId::Atom(name.into())))
     }
     pub fn variable_id(id: VariableId) -> Self {
-        Self(Repr::Var(id))
+        Self::new(Repr::Var(id))
     }
     pub(crate) fn variable_ref(&self) -> Option<&VariableId> {
-        match &self.0 {
+        match &self.repr {
             Repr::Var(id) => Some(id),
             _ => None,
         }
@@ -3608,7 +3712,7 @@ impl FamilyStore {
                 base: &b.base,
             }),
             functions: s.functions().map(|f| FunctionView {
-                domain: match &f.domain.0 {
+                domain: match &f.domain.repr {
                     Repr::Any => None,
                     Repr::Product(es) => Some(es),
                     _ => unreachable!("function domain invariant"),
@@ -3659,7 +3763,7 @@ pub enum OpacityConflict {
 }
 impl Type {
     pub fn structural(&self) -> Result<Self, LatticeError> {
-        match &self.0 {
+        match &self.repr {
             Repr::Nominal(n) => n.inner.structural(),
             Repr::NominalSet(_) => self.shallow_structural()?.structural(),
             _ => self.transform_children(&|t| t.structural()),
@@ -3668,9 +3772,16 @@ impl Type {
     /// Whether any nominal (named, possibly opaque) type or the opaque
     /// sentinel occurs in this type. Allocation-free.
     pub fn contains_nominal(&self) -> bool {
+        let fast = self.info.flags & NOMINAL != 0;
+        if verify_fast_paths() {
+            assert_eq!(fast, self.contains_nominal_walk(), "contains_nominal: {self:?}");
+        }
+        fast
+    }
+    fn contains_nominal_walk(&self) -> bool {
         let mut pending = vec![self];
         while let Some(t) = pending.pop() {
-            match &t.0 {
+            match &t.repr {
                 Repr::Nominal(_) | Repr::NominalSet(_) | Repr::Opaque => return true,
                 Repr::Product(p) => pending.extend(p.iter()),
                 Repr::Families(slots) => {
@@ -3701,7 +3812,7 @@ impl Type {
         false
     }
     fn blind(&self, direction: &Self, module: &str) -> Result<Self, LatticeError> {
-        match &self.0 {
+        match &self.repr {
             Repr::Nominal(n) => match &n.name {
                 NominalName::Defined {
                     module: m, opacity, ..
@@ -3729,7 +3840,7 @@ impl Type {
     where
         F: Fn(&Self) -> Result<Self, LatticeError>,
     {
-        Ok(match &self.0 {
+        Ok(match &self.repr {
             Repr::Product(p) => Self::raw_product(p.iter().map(f).collect::<Result<Vec<_>, _>>()?),
             Repr::Families(slots) => {
                 if slots.functions().is_none()
@@ -3847,7 +3958,7 @@ impl Type {
 impl Type {
     pub fn elements(&self) -> Result<Vec<Self>, LatticeError> {
         use Repr::*;
-        Ok(match &self.0 {
+        Ok(match &self.repr {
             None | Unit => vec![],
             Any | Product(_) | Nominal(_) => vec![self.clone()],
             Var(_) => vec![Self::any()],
@@ -3961,7 +4072,7 @@ impl Type {
             if t.is_none() {
                 continue;
             }
-            let Repr::Families(s) = t.0 else {
+            let Repr::Families(s) = t.repr else {
                 return Err("native union slot must be a family or none".into());
             };
             if s.union_record() || s.count() != 1 {
@@ -3984,13 +4095,13 @@ impl Type {
             }
         }
         slots.union_record = true;
-        Ok(Self(Repr::Families(FamilyStore::raw(slots))))
+        Ok(Self::new(Repr::Families(FamilyStore::raw(slots))))
     }
 }
 
 impl Type {
     fn append_children<'a>(&'a self, pending: &mut Vec<&'a Type>) {
-        match &self.0 {
+        match &self.repr {
             Repr::Nominal(n) => pending.push(&n.inner),
             Repr::NominalSet(n) => {
                 pending.extend(n.nominals.iter().map(|v| v.inner.as_ref()));
@@ -4017,45 +4128,52 @@ impl Type {
         }
     }
     pub fn is_limited(&self, depth: i64) -> bool {
+        let fast = depth >= i64::from(self.info.limited_from);
+        if verify_fast_paths() {
+            assert_eq!(fast, self.is_limited_walk(depth), "is_limited({depth}): {self:?}");
+        }
+        fast
+    }
+    fn is_limited_walk(&self, depth: i64) -> bool {
         if self.is_any() {
             return true;
         }
         if depth <= 0 {
             return false;
         }
-        match &self.0 {
-            Repr::Nominal(n) => n.inner.is_limited(depth),
+        match &self.repr {
+            Repr::Nominal(n) => n.inner.is_limited_walk(depth),
             Repr::NominalSet(n) => {
-                n.structural.is_limited(depth)
-                    && n.nominals.iter().all(|n| n.inner.is_limited(depth))
+                n.structural.is_limited_walk(depth)
+                    && n.nominals.iter().all(|n| n.inner.is_limited_walk(depth))
             }
-            Repr::Product(p) => p.iter().all(|t| t.is_limited(depth - 1)),
+            Repr::Product(p) => p.iter().all(|t| t.is_limited_walk(depth - 1)),
             Repr::Families(s) => {
                 let functions = s
                     .functions()
                     .as_deref()
-                    .is_none_or(|f| f.domain.is_limited(depth) && f.range.is_limited(depth - 1));
+                    .is_none_or(|f| f.domain.is_limited_walk(depth) && f.range.is_limited_walk(depth - 1));
                 let list = s.list().is_none_or(|l| match l {
                     Lists::Nil => true,
                     Lists::List { elements, tail, .. } => {
-                        elements.is_limited(depth - 1)
+                        elements.is_limited_walk(depth - 1)
                             && (matches!(tail.singleton_key(), Some(SingletonKey::Nil))
-                                || tail.is_limited((depth - 1).max(1)))
+                                || tail.is_limited_walk((depth - 1).max(1)))
                     }
                 });
                 let tuple = s.tuple().is_none_or(|t| match t {
                     Tuples::Any => true,
                     Tuples::Set(g) => g.values().flatten().all(|v| {
                         (depth != 1 || v.tag.is_none())
-                            && v.elements.iter().all(|t| t.is_limited(depth - 1))
+                            && v.elements.iter().all(|t| t.is_limited_walk(depth - 1))
                     }),
                 });
                 let map = s.maps().is_none_or(|m| {
                     m.entries
                         .iter()
-                        .all(|e| depth > 1 && e.value.is_limited(depth - 1))
-                        && m.default_key.is_limited(depth - 1)
-                        && m.default_value.is_limited(depth - 1)
+                        .all(|e| depth > 1 && e.value.is_limited_walk(depth - 1))
+                        && m.default_key.is_limited_walk(depth - 1)
+                        && m.default_value.is_limited_walk(depth - 1)
                 });
                 functions && list && tuple && map
             }
@@ -4079,7 +4197,7 @@ impl Type {
         &self,
         lookup: &impl Fn(&VariableId) -> Option<&'a Type>,
     ) -> Result<Self, LatticeError> {
-        Ok(match &self.0 {
+        Ok(match &self.repr {
             Repr::Var(id) => lookup(id).cloned().unwrap_or_else(Self::any),
             Repr::Nominal(n) => Self::raw_nominal(n.name.clone(), n.inner.substitute_aux(lookup)?),
             Repr::NominalSet(n) => Self::normalized_nominals(
@@ -4121,7 +4239,7 @@ impl Type {
                             }));
                         } else {
                             let cons = Self::cons(head, end)?;
-                            let Repr::Families(c) = &cons.0 else {
+                            let Repr::Families(c) = &cons.repr else {
                                 return Err(LatticeError::BadMatch(Box::new(cons)));
                             };
                             let Some(Lists::List { elements, tail, .. }) = c.list() else {
@@ -4147,7 +4265,7 @@ impl Type {
                         )?;
                         combined = combined.join(&t)?;
                     }
-                    s.tuple = match combined.0 {
+                    s.tuple = match combined.repr {
                         Repr::Families(t) => t.into_slots().tuple,
                         _ => None,
                     };
@@ -4170,7 +4288,7 @@ impl Type {
                     .map(Arc::new);
                 }
                 if slots.union_record() {
-                    Self(Repr::Families(FamilyStore::raw(s)))
+                    Self::new(Repr::Families(FamilyStore::raw(s)))
                 } else {
                     Self::families(s)
                 }
@@ -4179,40 +4297,68 @@ impl Type {
         })
     }
     pub fn has_var(&self) -> bool {
-        match &self.0 {
+        let fast = self.info.flags & HAS_VAR != 0;
+        if verify_fast_paths() {
+            assert_eq!(fast, self.has_var_walk(), "has_var: {self:?}");
+        }
+        fast
+    }
+    fn has_var_walk(&self) -> bool {
+        match &self.repr {
             Repr::Var(_) => true,
-            Repr::Nominal(n) => n.inner.has_var(),
+            Repr::Nominal(n) => n.inner.has_var_walk(),
             Repr::NominalSet(n) => {
-                n.structural.has_var() && n.nominals.iter().any(|n| n.inner.has_var())
+                n.structural.has_var_walk() && n.nominals.iter().any(|n| n.inner.has_var_walk())
             }
-            Repr::Product(p) => p.iter().any(Type::has_var),
+            Repr::Product(p) => p.iter().any(Type::has_var_walk),
             Repr::Families(s) => {
                 s.functions()
                     .as_deref()
-                    .is_some_and(|f| f.domain.has_var() || f.range.has_var())
+                    .is_some_and(|f| f.domain.has_var_walk() || f.range.has_var_walk())
                     || s.list().is_some_and(|list| match list {
                         Lists::Nil => false,
-                        Lists::List { elements, tail, .. } => elements.has_var() || tail.has_var(),
+                        Lists::List { elements, tail, .. } => elements.has_var_walk() || tail.has_var_walk(),
                     })
                     || s.tuple().is_some_and(|tuple| match tuple {
                         Tuples::Any => false,
                         Tuples::Set(groups) => groups
                             .values()
                             .flatten()
-                            .any(|variant| variant.elements.iter().any(Type::has_var)),
+                            .any(|variant| variant.elements.iter().any(Type::has_var_walk)),
                     })
                     || s.maps()
                         .as_deref()
-                        .is_some_and(|map| map.default_key.has_var() || map.default_value.has_var())
+                        .is_some_and(|map| map.default_key.has_var_walk() || map.default_value.has_var_walk())
             }
             _ => false,
         }
     }
     pub fn collect_var_names(&self) -> BTreeSet<VariableId> {
+        let found = self.collect_var_names_skipping();
+        if verify_fast_paths() {
+            let mut all = BTreeSet::new();
+            let mut pending = vec![self];
+            while let Some(t) = pending.pop() {
+                if let Repr::Var(id) = &t.repr {
+                    all.insert(id.clone());
+                }
+                t.append_children(&mut pending);
+            }
+            assert_eq!(found, all, "collect_var_names: {self:?}");
+        }
+        found
+    }
+    fn collect_var_names_skipping(&self) -> BTreeSet<VariableId> {
         let mut found = BTreeSet::new();
         let mut pending = vec![self];
+        if self.info.flags & ANY_VAR == 0 {
+            pending.clear();
+        }
         while let Some(t) = pending.pop() {
-            if let Repr::Var(id) = &t.0 {
+            if t.info.flags & ANY_VAR == 0 {
+                continue;
+            }
+            if let Repr::Var(id) = &t.repr {
                 found.insert(id.clone());
             }
             t.append_children(&mut pending);
@@ -4223,7 +4369,7 @@ impl Type {
 
 impl Type {
     fn bitstring_ref(&self) -> Result<&Bitstrings, LatticeError> {
-        if let Repr::Families(s) = &self.0 {
+        if let Repr::Families(s) = &self.repr {
             if !s.union_record()
                 && s.count() == usize::from(s.bitstrings().is_some())
                 && let Some(b) = s.bitstrings()
@@ -4321,7 +4467,7 @@ impl UnificationValue {
     fn is_nominal_set(&self) -> bool {
         matches!(
             self,
-            Self::MalformedNominalSet { .. } | Self::Type(Type(Repr::NominalSet(_)))
+            Self::MalformedNominalSet { .. } | Self::Type(Type { repr: Repr::NominalSet(_), .. })
         )
     }
 }
@@ -4394,7 +4540,7 @@ impl<'a> Val<'a> {
     }
     fn is_nominal_set(self) -> bool {
         match self {
-            Self::Type(t) => matches!(t.0, Repr::NominalSet(_)),
+            Self::Type(t) => matches!(t.repr, Repr::NominalSet(_)),
             Self::Other(v) => v.is_nominal_set(),
         }
     }
@@ -4420,7 +4566,7 @@ impl Type {
         Ok(u.bindings)
     }
     fn direct_slots(&self) -> Option<&FamilyStore> {
-        match &self.0 {
+        match &self.repr {
             Repr::Families(s) if !s.union_record() => Some(s),
             _ => None,
         }
@@ -4460,14 +4606,14 @@ impl Unifier {
         let ta = a.type_ref();
         let tb = b.type_ref();
         let va = ta.and_then(|t| {
-            if let Repr::Var(v) = &t.0 {
+            if let Repr::Var(v) = &t.repr {
                 Some(v)
             } else {
                 None
             }
         });
         let vb = tb.and_then(|t| {
-            if let Repr::Var(v) = &t.0 {
+            if let Repr::Var(v) = &t.repr {
                 Some(v)
             } else {
                 None
@@ -4514,14 +4660,14 @@ impl Unifier {
                 self.types(&fa.domain, &fb.domain, up)?;
                 return self.types(&fa.range, &fb.range, up);
             }
-            if let (Repr::Nominal(na), Repr::Nominal(nb)) = (&ta.0, &tb.0) {
+            if let (Repr::Nominal(na), Repr::Nominal(nb)) = (&ta.repr, &tb.repr) {
                 return if na.name == nb.name {
                     self.types(&na.inner, &nb.inner, up)
                 } else {
                     Err(Self::mismatch(a, b))
                 };
             }
-            if let (Repr::NominalSet(na), Repr::NominalSet(nb)) = (&ta.0, &tb.0)
+            if let (Repr::NominalSet(na), Repr::NominalSet(nb)) = (&ta.repr, &tb.repr)
                 && let (Some(ha), Some(hb)) = (na.nominals.first(), nb.nominals.first())
             {
                 self.types(&ha.as_type(), &hb.as_type(), up)?;
@@ -4535,11 +4681,11 @@ impl Unifier {
                 );
             }
         }
-        if ta.is_some_and(|t| matches!(t.0, Repr::Nominal(_))) && b.is_nominal_set() {
+        if ta.is_some_and(|t| matches!(t.repr, Repr::Nominal(_))) && b.is_nominal_set() {
             return self.pair(b, a, Some(up));
         }
         if a.is_nominal_set()
-            && let Some(Type(Repr::Nominal(_))) = tb
+            && let Some(Type { repr: Repr::Nominal(_), .. }) = tb
         {
             let malformed = UnificationValue::MalformedNominalSet {
                 nominal: tb.unwrap().clone(),
@@ -4547,7 +4693,7 @@ impl Unifier {
             };
             return self.pair(a, Val::Other(&malformed), Some(up));
         }
-        if let Some(Type(Repr::NominalSet(n))) = ta
+        if let Some(Type { repr: Repr::NominalSet(n), .. }) = ta
             && let Some(head) = n.nominals.first()
         {
             self.pair(
@@ -4564,10 +4710,10 @@ impl Unifier {
         if b.is_nominal_set() {
             return self.pair(b, a, Some(up));
         }
-        if let Some(Type(Repr::Nominal(n))) = ta {
+        if let Some(Type { repr: Repr::Nominal(n), .. }) = ta {
             return self.pair(Val::Type(&n.inner), b, Some(up));
         }
-        if tb.is_some_and(|t| matches!(t.0, Repr::Nominal(_))) {
+        if tb.is_some_and(|t| matches!(t.repr, Repr::Nominal(_))) {
             return self.pair(b, a, Some(up));
         }
         if let (Some(ta), Some(tb)) = (ta, tb) {
@@ -4590,7 +4736,7 @@ impl Unifier {
                 self.types(ea, eb, up)?;
                 return self.types(xa, xb, up);
             }
-            if let (Repr::Product(pa), Repr::Product(pb)) = (&ta.0, &tb.0) {
+            if let (Repr::Product(pa), Repr::Product(pb)) = (&ta.repr, &tb.repr) {
                 return self.lists(pa, pb, up);
             }
             if let (Some(Tuples::Set(ga)), Some(Tuples::Set(gb))) =
@@ -5390,7 +5536,7 @@ mod family_sharing_tests {
     use super::*;
 
     fn slots(value: &Type) -> &FamilyStore {
-        let Repr::Families(slots) = &value.0 else {
+        let Repr::Families(slots) = &value.repr else {
             panic!("expected family")
         };
         slots
@@ -5512,7 +5658,7 @@ mod borrowed_presence_proof_tests {
             .into_iter()
             .try_fold(Type::none(), |a, b| a.join(&b))
             .unwrap();
-        let Repr::Families(prototype) = all.0 else {
+        let Repr::Families(prototype) = all.repr else {
             panic!("family prototype")
         };
         for mask in 0..256 {
@@ -5570,7 +5716,7 @@ mod borrowed_presence_proof_tests {
                         "mask={mask} union={union_record} domain={domain}"
                     );
                 }
-                let t = Type(Repr::Families(FamilyStore::raw(s.clone())));
+                let t = Type::new(Repr::Families(FamilyStore::raw(s.clone())));
                 let mut rest = s.clone();
                 rest.maps = None;
                 let expected = if !union_record && rest.empty() {
@@ -5607,24 +5753,24 @@ mod immutable_transform_tests {
             Type::all_atoms().join(&Type::number()).unwrap(),
         ];
         for t in scalar {
-            let Repr::Families(s) = &t.0 else { panic!() };
+            let Repr::Families(s) = &t.repr else { panic!() };
             let transformed = t
                 .transform_children(&|_| panic!("scalar leaf called callback"))
                 .unwrap();
-            let Repr::Families(shared) = &transformed.0 else {
+            let Repr::Families(shared) = &transformed.repr else {
                 panic!()
             };
             assert!(s.shares_storage(shared));
             let mut raw = s.to_slots();
             raw.union_record = !raw.union_record;
-            let raw = Type(Repr::Families(FamilyStore::raw(raw)));
+            let raw = Type::new(Repr::Families(FamilyStore::raw(raw)));
             assert_eq!(
                 raw.transform_children(&|_| panic!("raw leaf called callback"))
                     .unwrap(),
                 t
             );
         }
-        let empty = Type(Repr::Families(FamilyStore::raw(Slots::default())));
+        let empty = Type::new(Repr::Families(FamilyStore::raw(Slots::default())));
         assert_eq!(empty.structural().unwrap(), Type::none());
     }
     #[test]
@@ -5645,7 +5791,7 @@ mod immutable_transform_tests {
             LatticeError::BadArg
         );
         assert_eq!(count.get(), 2);
-        let malformed = Type(Repr::Families(FamilyStore::raw(Slots {
+        let malformed = Type::new(Repr::Families(FamilyStore::raw(Slots {
             maps: Some(Arc::new(Maps {
                 entries: vec![
                     MapEntry {
@@ -5743,14 +5889,14 @@ mod singleton_key_tests {
     #[test]
     fn raw_union_mixed_and_non_singleton_shapes_keep_original_fallback() {
         let atom = Type::atom("a");
-        let Repr::Families(s) = &atom.0 else { panic!() };
+        let Repr::Families(s) = &atom.repr else { panic!() };
         let mut union = s.to_slots();
         union.union_record = true;
-        let union = Type(Repr::Families(FamilyStore::raw(union)));
+        let union = Type::new(Repr::Families(FamilyStore::raw(union)));
         let mut mixed = s.to_slots();
         mixed.number = Some(Arc::new(Numeric::Integer(Integers::Set([1.into()].into()))));
-        let mixed = Type(Repr::Families(FamilyStore::raw(mixed)));
-        let range = Type(Repr::Families(FamilyStore::raw(Slots {
+        let mixed = Type::new(Repr::Families(FamilyStore::raw(mixed)));
+        let range = Type::new(Repr::Families(FamilyStore::raw(Slots {
             number: Some(Arc::new(Numeric::Integer(Integers::Range(
                 Bound::Finite(1.into()),
                 Bound::Finite(1.into()),
@@ -5796,19 +5942,19 @@ mod depth_query_tests {
     fn nil_tail_recognition_preserves_raw_union_and_mixed_family_flags() {
         let nil = Type::nil();
         assert!(matches!(nil.singleton_key(), Some(SingletonKey::Nil)));
-        let Repr::Families(original) = &nil.0 else {
+        let Repr::Families(original) = &nil.repr else {
             unreachable!()
         };
         let mut raw = original.to_slots();
         raw.union_record = true;
         assert!(!matches!(
-            Type(Repr::Families(FamilyStore::raw(raw))).singleton_key(),
+            Type::new(Repr::Families(FamilyStore::raw(raw))).singleton_key(),
             Some(SingletonKey::Nil)
         ));
         let mut mixed = original.to_slots();
         mixed.atoms = Some(Arc::new(Atoms::Set(BTreeSet::new())));
         assert!(!matches!(
-            Type(Repr::Families(FamilyStore::raw(mixed))).singleton_key(),
+            Type::new(Repr::Families(FamilyStore::raw(mixed))).singleton_key(),
             Some(SingletonKey::Nil)
         ));
         assert!(Type::proper_list(Type::any(), false).is_limited(1));
@@ -5847,13 +5993,13 @@ mod immutable_nominal_payload_tests {
     fn cloned_nominal_payloads_share_immutable_storage_and_owned_extraction_preserves_values() {
         let source = Type::nominal(NominalName::Symbol("identity".into()), Type::atom("a"));
         let alias = source.clone();
-        let (Repr::Nominal(original), Repr::Nominal(shared)) = (&source.0, &alias.0) else {
+        let (Repr::Nominal(original), Repr::Nominal(shared)) = (&source.repr, &alias.repr) else {
             unreachable!()
         };
         assert!(Arc::ptr_eq(original, shared));
         let set = Type::from_nominal_types(vec![source.clone()], Type::integer(7.into())).unwrap();
         let set_alias = set.clone();
-        let (Repr::NominalSet(original_set), Repr::NominalSet(shared_set)) = (&set.0, &set_alias.0)
+        let (Repr::NominalSet(original_set), Repr::NominalSet(shared_set)) = (&set.repr, &set_alias.repr)
         else {
             unreachable!()
         };
@@ -5877,7 +6023,7 @@ mod immutable_nominal_payload_tests {
     fn nominal_absorption_mutates_only_the_owned_result() {
         let source = Type::nominal(NominalName::Symbol("identity".into()), Type::atom("a"));
         let alias = source.clone();
-        let Repr::Nominal(original) = &source.0 else {
+        let Repr::Nominal(original) = &source.repr else {
             unreachable!()
         };
         let sup = Nominal {
@@ -5885,7 +6031,7 @@ mod immutable_nominal_payload_tests {
             inner: Box::new(Type::atom("b")),
         };
         let output = Type::nominal_absorb(&[original.as_ref().clone()], &sup).unwrap();
-        let Repr::NominalSet(result) = &output.0 else {
+        let Repr::NominalSet(result) = &output.repr else {
             unreachable!()
         };
         assert_eq!(
@@ -6004,7 +6150,7 @@ mod rebuild_base_tests {
     }
     #[test]
     fn substitution_still_skips_tail_lookup_after_impossible_head() {
-        let t = Type(Repr::Families(FamilyStore::raw(Slots {
+        let t = Type::new(Repr::Families(FamilyStore::raw(Slots {
             list: Some(Arc::new(Lists::List {
                 elements: Box::new(Type::variable_atom("head")),
                 tail: Box::new(Type::variable_atom("tail")),
@@ -6051,7 +6197,7 @@ mod family_store_roundtrip_tests {
         ];
         let mut template = Slots::default();
         for typ in fixtures {
-            let Repr::Families(store) = typ.0 else {
+            let Repr::Families(store) = typ.repr else {
                 panic!("fixture is not a family")
             };
             let fields = store.into_slots();
@@ -6144,8 +6290,8 @@ mod canonical_constructor_tests {
             assert_eq!(shared,raw);
             assert_eq!(format!("{shared:?}"),format!("{raw:?}"));
             assert_eq!(shared.to_value(),raw.to_value());
-            let Repr::Families(a)=&shared.0 else {panic!()};
-            let Repr::Families(b)=&Type::canonical(key).0 else {panic!()};
+            let Repr::Families(a)=&shared.repr else {panic!()};
+            let Repr::Families(b)=&Type::canonical(key).repr else {panic!()};
             assert!(same_owner(a,b));
         }
     }
@@ -6168,9 +6314,9 @@ mod canonical_constructor_tests {
         assert_eq!(Type::identifier(Some(vec![])).unwrap(),Type::none());
         assert_ne!(Type::tuple_any(),Type::tuple_arity(0));
         assert_ne!(Type::function(None,Type::any()),Type::function(Some(vec![]),Type::any()));
-        let raw_nil=Type(Repr::Families(FamilyStore::raw(Slots{union_record:true,list:Some(Arc::new(Lists::Nil)),..Slots::default()})));
+        let raw_nil=Type::new(Repr::Families(FamilyStore::raw(Slots{union_record:true,list:Some(Arc::new(Lists::Nil)),..Slots::default()})));
         let list=Type::list(Type::any(),raw_nil.clone(),false);
-        let Repr::Families(slots)=&list.0 else {panic!()};
+        let Repr::Families(slots)=&list.repr else {panic!()};
         let Some(Lists::List{tail,..})=slots.list() else {panic!()};
         assert_eq!(**tail,raw_nil);
         assert_ne!(list,Type::proper_list(Type::any(),false));
@@ -6179,19 +6325,19 @@ mod canonical_constructor_tests {
     #[test]
     fn owned_extraction_mutation_cannot_change_cached_owner() {
         let original=Type::nil();
-        let Repr::Families(s)=original.clone().0 else {panic!()};
+        let Repr::Families(s)=original.clone().repr else {panic!()};
         let mut owned=s.into_slots();
         owned.list=None;
         owned.atoms=Some(Arc::new(Atoms::All));
         assert_eq!(Type::nil(),original);
-        assert_ne!(Type(Repr::Families(FamilyStore::raw(owned))),original);
+        assert_ne!(Type::new(Repr::Families(FamilyStore::raw(owned))),original);
     }
     #[test]
     fn per_thread_owners_remain_equal_and_outlive_thread_cache() {
         let here=Type::nil();
         let there=std::thread::spawn(Type::nil).join().unwrap();
         assert_eq!(here,there);
-        let (Repr::Families(a),Repr::Families(b))=(&here.0,&there.0)else{panic!()};
+        let (Repr::Families(a),Repr::Families(b))=(&here.repr,&there.repr)else{panic!()};
         assert!(!same_owner(a,b));
         assert_eq!(there.to_value(),here.to_value());
     }
@@ -6202,4 +6348,43 @@ mod canonical_constructor_tests {
 pub(crate) fn verify_fast_paths() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("RUST_DIALYZER_VERIFY_FASTPATH").is_some_and(|v| v == "1"))
+}
+
+#[cfg(test)]
+mod cached_info_tests {
+    use super::*;
+    #[test]
+    fn cached_facts_agree_with_walks() {
+        let v = Type::variable_integer(1.into());
+        let nominal = Type::nominal(NominalName::Symbol("n".into()), Type::tuple(vec![v.clone()]).unwrap());
+        let map = Type::map_types(
+            vec![MapTypeEntry { key: Type::atom("k"), presence: Presence::Mandatory, value: v.clone() }],
+            Type::all_atoms(),
+            Type::list(Type::any(), Type::any(), false),
+        )
+        .unwrap();
+        let tagged = Type::tuple(vec![Type::atoms(["a", "b"]), Type::integer(3.into())]).unwrap();
+        let deep = Type::list(Type::list(tagged.clone(), Type::atom("end"), true), Type::nil(), false);
+        let types = [
+            Type::any(),
+            Type::none(),
+            v.clone(),
+            Type::opaque_sentinel(),
+            nominal.clone(),
+            Type::from_nominal_types(vec![nominal.clone()], v.clone()).unwrap(),
+            map,
+            tagged,
+            deep,
+            Type::product(vec![Type::any(), v.clone()]),
+            Type::function(Some(vec![v.clone()]), Type::tuple_arity(3)),
+            Type::list(Type::any(), Type::list(Type::atom("x"), Type::nil(), false), true),
+        ];
+        for t in &types {
+            assert_eq!(t.has_var(), t.has_var_walk(), "{t:?}");
+            assert_eq!(t.contains_nominal(), t.contains_nominal_walk(), "{t:?}");
+            for depth in -2..8 {
+                assert_eq!(t.is_limited(depth), t.is_limited_walk(depth), "{depth} {t:?}");
+            }
+        }
+    }
 }

@@ -238,7 +238,7 @@ impl Type {
                 matches!(number, Some(Numeric::Integer(_)))
                     && t.is_subtype(&Self::builtin(BuiltinType::NonNegativeInteger)?)?
             }
-            Variable => matches!(t.0, Repr::Var(_)),
+            Variable => matches!(t.repr, Repr::Var(_)),
             Singleton => {
                 matches!(list, Some(Lists::Nil))
                     || matches!(s.and_then(|s|s.atoms()),Some(Atoms::Set(v))if v.len()==1)
@@ -246,7 +246,7 @@ impl Type {
                     || matches!(number,Some(Numeric::Integer(Integers::Range(a,b)))if a==b)
             }
             Opaque => matches!(
-                &t.0,
+                &t.repr,
                 Repr::Nominal(n) if matches!(&n.name, NominalName::Defined {opacity: Opacity::Opaque, ..})
             ),
         })
@@ -258,7 +258,7 @@ impl Type {
         )
     }
     pub fn same_opaque(&self, rhs: &Self) -> Result<bool, LatticeError> {
-        match (&self.0, &rhs.0) {
+        match (&self.repr, &rhs.repr) {
             (Repr::Nominal(a), Repr::Nominal(b))
                 if matches!(
                     &a.name,
@@ -456,7 +456,7 @@ impl Type {
                 if matches!(getter, FunctionRange) {
                     TypeValue::Type(*f.range.clone())
                 } else {
-                    match (&f.domain.0, getter) {
+                    match (&f.domain.repr, getter) {
                         (Repr::Any, FunctionArgs) => TypeValue::Types(Known::Unknown),
                         (Repr::Any, FunctionArity) => TypeValue::Arity(Known::Unknown),
                         (Repr::Product(p), FunctionArgs) => {
@@ -540,13 +540,13 @@ impl Type {
                 }
             }
             VariableName => {
-                let Repr::Var(id) = &t.0 else {
+                let Repr::Var(id) = &t.repr else {
                     return Err(bad());
                 };
                 TypeValue::Variable(id.clone())
             }
             NominalModule => {
-                let Repr::Nominal(n) = &t.0 else {
+                let Repr::Nominal(n) = &t.repr else {
                     return Err(bad());
                 };
                 let NominalName::Defined { module, .. } = &n.name else {
@@ -554,7 +554,7 @@ impl Type {
                 };
                 TypeValue::Module(module.clone())
             }
-            ToTypeList => TypeValue::Types(Known::Known(match &t.0 {
+            ToTypeList => TypeValue::Types(Known::Known(match &t.repr {
                 Repr::Product(p) => p.as_ref().clone(),
                 _ => vec![t.clone()],
             })),
@@ -643,13 +643,13 @@ impl Type {
         types.iter().any(Self::is_impossible)
     }
     pub fn is_native_type(&self) -> bool {
-        !matches!(self.0, Repr::Opaque)
+        !matches!(self.repr, Repr::Opaque)
     }
 }
 
 impl Type {
     pub fn widen_to_number(&self) -> Result<Self, LatticeError> {
-        Ok(match &self.0 {
+        Ok(match &self.repr {
             Repr::Opaque => return Err(LatticeError::FunctionClause),
             Repr::Nominal(n) => Self::raw_nominal(n.name.clone(), n.inner.widen_to_number()?),
             Repr::NominalSet(n) => Self::normalized_nominals(
@@ -718,7 +718,7 @@ impl Type {
                             .join(&tuples)?;
                         }
                     }
-                    s.tuple = match tuples.0 {
+                    s.tuple = match tuples.repr {
                         Repr::Families(t) => t.into_slots().tuple,
                         _ => None,
                     };
@@ -741,7 +741,7 @@ impl Type {
                     .map(Arc::new);
                 }
                 if slots.union_record() {
-                    Self(Repr::Families(FamilyStore::raw(s)))
+                    Self::new(Repr::Families(FamilyStore::raw(s)))
                 } else {
                     Self::families(s)
                 }
