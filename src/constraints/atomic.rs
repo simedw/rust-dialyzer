@@ -45,6 +45,16 @@ impl AtomicConstraint {
         arena: &DerivedArena,
         provider: &dyn BifResultProvider,
     ) -> Result<AtomicOutcome, SolveError> {
+        self.solve_logged(bindings, arena, provider, None)
+    }
+    /// Solves, pushing `(key, previous value)` onto `log` before each write.
+    pub(crate) fn solve_logged(
+        &self,
+        bindings: BindingMap,
+        arena: &DerivedArena,
+        provider: &dyn BifResultProvider,
+        mut log: Option<&mut WriteLog>,
+    ) -> Result<AtomicOutcome, SolveError> {
         let lookup = |id: &crate::lattice::VariableId| bindings.get(&BindingKey::Label(id.clone()));
         let left = self.left.substitute_with(&lookup)?;
         let right = match &self.right {
@@ -59,32 +69,52 @@ impl AtomicConstraint {
         if intersection.predicate(TypePredicate::None)? {
             return Ok(AtomicOutcome::Failed);
         }
-        let first = refine(&self.left, &intersection, bindings, BTreeSet::new())?;
+        let first = refine_logged(
+            &self.left,
+            &intersection,
+            bindings,
+            BTreeSet::new(),
+            log.as_deref_mut(),
+        )?;
         match (self.relation, first) {
             (_, AtomicOutcome::Failed) => Ok(AtomicOutcome::Failed),
             (Relation::Subtype, solved) => Ok(solved),
             (Relation::Equal, AtomicOutcome::Solved { bindings, updated }) => match &self.right {
-                ConstraintValue::Type(ty) => refine(ty, &intersection, bindings, updated),
+                ConstraintValue::Type(ty) => {
+                    refine_logged(ty, &intersection, bindings, updated, log)
+                }
                 ConstraintValue::Derived(_) => Ok(AtomicOutcome::Failed),
             },
         }
     }
 }
+/// Each written binding with its value just before the write, in write order.
+pub(crate) type WriteLog = Vec<(BindingKey, Option<Type>)>;
 pub(crate) fn refine(
     original: &Type,
     intersection: &Type,
     bindings: BindingMap,
     updated: BTreeSet<BindingKey>,
 ) -> Result<AtomicOutcome, SolveError> {
+    refine_logged(original, intersection, bindings, updated, None)
+}
+fn refine_logged(
+    original: &Type,
+    intersection: &Type,
+    bindings: BindingMap,
+    updated: BTreeSet<BindingKey>,
+    log: Option<&mut WriteLog>,
+) -> Result<AtomicOutcome, SolveError> {
     if let Some(variable) = original.variable_ref() {
         if intersection.variable_ref().is_none() {
-            return refine_values(
+            return refine_values_logged(
                 std::iter::once((
                     BindingKey::Label(variable.clone()),
                     UnificationValue::Type(intersection.clone()),
                 )),
                 bindings,
                 updated,
+                log,
             );
         }
     }
@@ -96,23 +126,35 @@ pub(crate) fn refine(
             return Err(SolveError::NonTerminatingUnification);
         }
     };
-    refine_values(
+    refine_values_logged(
         unified
             .into_iter()
             .map(|(variable, value)| (BindingKey::Label(variable), value)),
         bindings,
         updated,
+        log,
     )
 }
 pub(crate) fn refine_values(
     values: impl IntoIterator<Item = (BindingKey, UnificationValue)>,
+    bindings: BindingMap,
+    updated: BTreeSet<BindingKey>,
+) -> Result<AtomicOutcome, SolveError> {
+    refine_values_logged(values, bindings, updated, None)
+}
+fn refine_values_logged(
+    values: impl IntoIterator<Item = (BindingKey, UnificationValue)>,
     mut bindings: BindingMap,
     mut updated: BTreeSet<BindingKey>,
+    mut log: Option<&mut WriteLog>,
 ) -> Result<AtomicOutcome, SolveError> {
     for (variable, value) in values {
         if matches!(&value,UnificationValue::Type(t) if *t==Type::any()) {
             if bindings.contains_key(&variable) {
-                bindings.remove(&variable);
+                let old = bindings.remove(&variable);
+                if let Some(log) = log.as_deref_mut() {
+                    log.push((variable, old));
+                }
             }
             continue;
         }
@@ -124,10 +166,21 @@ pub(crate) fn refine_values(
             }
             if *old != narrowed {
                 updated.insert(variable.clone());
-                bindings.insert(variable, narrowed);
+                match log.as_deref_mut() {
+                    Some(log) => {
+                        let old = bindings.insert(variable.clone(), narrowed);
+                        log.push((variable, old));
+                    }
+                    None => {
+                        bindings.insert(variable, narrowed);
+                    }
+                }
             }
         } else {
             updated.insert(variable.clone());
+            if let Some(log) = log.as_deref_mut() {
+                log.push((variable.clone(), None));
+            }
             bindings.insert(variable, limited);
         }
     }

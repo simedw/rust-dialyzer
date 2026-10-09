@@ -1,5 +1,5 @@
 use crate::constraints::atomic::{
-    AtomicConstraint, AtomicOutcome, BindingKey, BindingMap, ConstraintValue, SolveError,
+    AtomicConstraint, AtomicOutcome, BindingKey, BindingMap, ConstraintValue, SolveError, WriteLog,
 };
 use crate::constraints::derived::{BifResultProvider, DerivedArena, DerivedId, DerivedOp};
 use crate::lattice::{Type, TypePredicate, UnificationValue, VariableId};
@@ -308,7 +308,7 @@ impl ConstraintTree {
                         frames.push(Frame::Conj(
                             Conj {
                                 id,
-                                last_map: map.clone(),
+                                snapshot: Snapshot::new(flat, &map),
                                 last_flags: pending.identity,
                                 flags: pending.indices,
                                 restart: BTreeSet::new(),
@@ -445,14 +445,25 @@ impl ConstraintTree {
                     let children = children(&self.nodes[c.id.0].constraint);
                     if let Some(index) = c.flags.pop_first() {
                         let child = children[index];
-                        frames.push(Frame::ConjReturn(c, index));
-                        frames.push(Frame::Enter(child, map));
+                        if let Some(log) = &mut c.snapshot.log {
+                            let Constraint::Atomic(a) = &self.nodes[child.0].constraint else {
+                                unreachable!("flat conjunction holds atoms")
+                            };
+                            result =
+                                Some(a.solve_logged(map, &self.derived, provider, Some(log))?);
+                            frames.push(Frame::ConjReturn(c, index));
+                        } else {
+                            frames.push(Frame::ConjReturn(c, index));
+                            frames.push(Frame::Enter(child, map));
+                        }
                     } else if c.restart.is_empty() {
                         result = Some(AtomicOutcome::Solved {
                             bindings: map,
                             updated: c.updated,
                         });
-                    } else if Some(&c.restart) == c.last_flags.as_ref() && map == c.last_map {
+                    } else if Some(&c.restart) == c.last_flags.as_ref()
+                        && c.snapshot.unchanged(&map)
+                    {
                         state.detected_loops.push(c.id);
                         result = Some(AtomicOutcome::Solved {
                             bindings: map,
@@ -460,7 +471,7 @@ impl ConstraintTree {
                         });
                     } else {
                         c.last_flags = Some(c.restart.clone());
-                        c.last_map = map.clone();
+                        c.snapshot.reset(&map);
                         c.flags = std::mem::take(&mut c.restart);
                         frames.push(Frame::Conj(c, map));
                     }
@@ -471,10 +482,9 @@ impl ConstraintTree {
                         result = Some(AtomicOutcome::Failed);
                     }
                     AtomicOutcome::Solved { bindings, updated } => {
-                        c.updated.extend(updated.iter().cloned());
                         let masks = &self.nodes[c.id.0].masks;
                         if c.flat {
-                            for var in updated {
+                            for var in &updated {
                                 if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
                                     for &i in indices {
                                         if i < index {
@@ -488,7 +498,7 @@ impl ConstraintTree {
                         } else {
                             let mut affected: BTreeMap<usize, BTreeSet<BindingKey>> =
                                 BTreeMap::new();
-                            for var in updated {
+                            for var in &updated {
                                 if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
                                     for &i in indices {
                                         if i != index {
@@ -506,6 +516,11 @@ impl ConstraintTree {
                                     c.flags.insert(i);
                                 }
                             }
+                        }
+                        if c.updated.is_empty() {
+                            c.updated = updated;
+                        } else {
+                            c.updated.extend(updated);
                         }
                         frames.push(Frame::Conj(c, bindings));
                     }
@@ -736,12 +751,49 @@ impl State<'_> {
 }
 struct Conj {
     id: ConstraintId,
-    last_map: BindingMap,
+    snapshot: Snapshot,
     last_flags: Option<BTreeSet<usize>>,
     flags: BTreeSet<usize>,
     restart: BTreeSet<usize>,
     updated: BTreeSet<BindingKey>,
     flat: bool,
+}
+/// The map a conjunction last (re)started from, compared to detect a loop.
+/// Atom lists log the old value of each binding they write instead of holding
+/// a copy, so their writes don't have to copy nodes shared with the copy.
+struct Snapshot {
+    map: Option<BindingMap>,
+    log: Option<WriteLog>,
+}
+impl Snapshot {
+    fn new(flat: bool, map: &BindingMap) -> Self {
+        let verify = crate::lattice::verify_fast_paths();
+        Self {
+            map: (!flat || verify).then(|| map.clone()),
+            log: flat.then(Vec::new),
+        }
+    }
+    fn reset(&mut self, map: &BindingMap) {
+        if let Some(log) = &mut self.log {
+            log.clear();
+        }
+        if let Some(old) = &mut self.map {
+            *old = map.clone();
+        }
+    }
+    fn unchanged(&self, map: &BindingMap) -> bool {
+        let Some(log) = &self.log else {
+            return self.map.as_ref() == Some(map);
+        };
+        let mut seen = BTreeSet::new();
+        let unchanged = log
+            .iter()
+            .all(|(key, old)| !seen.insert(key) || map.get(key) == old.as_ref());
+        if let Some(old) = &self.map {
+            assert_eq!(unchanged, old == map, "conjunction write log fast path");
+        }
+        unchanged
+    }
 }
 struct Disj {
     id: ConstraintId,
