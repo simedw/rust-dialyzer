@@ -287,7 +287,7 @@ impl ConstraintTree {
                 return Err("reference function is undefined".into());
             }
         }
-        let mut visited = BTreeSet::new();
+        let mut visited = vec![false; self.nodes.len()];
         let mut tasks = vec![root];
         tasks.extend(self.functions.values().map(|f| f.body));
         while let Some(id) = tasks.pop() {
@@ -295,7 +295,7 @@ impl ConstraintTree {
                 self.nodes[id.0].constraint,
                 Constraint::Conjunction(_) | Constraint::Disjunction(_)
             ) {
-                if !visited.insert(id) {
+                if std::mem::replace(&mut visited[id.0], true) {
                     return Err("constraint scope has multiple owners; native enumeration requires distinct scope identities".into());
                 }
                 tasks.extend(children(&self.nodes[id.0].constraint));
