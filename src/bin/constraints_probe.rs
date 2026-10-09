@@ -493,7 +493,7 @@ fn run(v: &Value) -> Result<Value, String> {
                     return Ok(match result {
                         AtomicOutcome::Failed => json!({"status":"failed"}),
                         AtomicOutcome::Solved { bindings, updated } => {
-                            json!({"status":"solved","bindings":bindings.iter().map(|(v,t)|json!({"id":id(v),"type":t.to_value()})).collect::<Vec<_>>(),"updated":updated.iter().map(id).collect::<Vec<_>>()})
+                            json!({"status":"solved","bindings":bindings.iter().map(|(v,t)|json!({"id":id(&v),"type":t.to_value()})).collect::<Vec<_>>(),"updated":updated.iter().map(id).collect::<Vec<_>>()})
                         }
                     });
                 }
@@ -670,7 +670,7 @@ fn run(v: &Value) -> Result<Value, String> {
     Ok(match solved {
         Ok(AtomicOutcome::Failed) => json!({"status":"failed"}),
         Ok(AtomicOutcome::Solved { bindings, updated }) => {
-            json!({"status":"solved","bindings":bindings.iter().map(|(v,t)|json!({"id":id(v),"type":t.to_value()})).collect::<Vec<_>>(),"updated":updated.iter().map(id).collect::<Vec<_>>()})
+            json!({"status":"solved","bindings":bindings.iter().map(|(v,t)|json!({"id":id(&v),"type":t.to_value()})).collect::<Vec<_>>(),"updated":updated.iter().map(id).collect::<Vec<_>>()})
         }
         Err(SolveError::Native(e)) => native(e),
         Err(SolveError::Evaluation(EvalError::Native(e))) => native(e),

@@ -15,6 +15,12 @@ impl VariableInteger {
             Repr::Large(n) => (**n).clone(),
         }
     }
+    pub fn small(&self) -> Option<i64> {
+        match &self.0 {
+            Repr::Small(n) => Some(*n),
+            Repr::Large(_) => None,
+        }
+    }
     pub fn to_u64(&self) -> Option<u64> {
         match &self.0 {
             Repr::Small(n) => (*n).try_into().ok(),

@@ -564,7 +564,7 @@ impl ConstraintTree {
                                 .filter(|k| maps.iter().all(|map| map.contains_key(k)))
                                 .collect();
                             if crate::lattice::verify_fast_paths() {
-                                let mut old: BTreeSet<_> = maps[0].keys().cloned().collect();
+                                let mut old: BTreeSet<_> = maps[0].keys().collect();
                                 for map in &maps[1..] {
                                     old.retain(|k| map.contains_key(k));
                                 }
@@ -613,6 +613,7 @@ impl ConstraintTree {
                                 updated.insert(key);
                             }
                         }
+                        map.verify_shadow();
                         result = Some(AtomicOutcome::Solved {
                             bindings: map,
                             updated,
@@ -634,6 +635,9 @@ impl ConstraintTree {
                     frames.push(Frame::Disj(d));
                 }
             }
+        }
+        if let Some(AtomicOutcome::Solved { bindings, .. }) = &result {
+            bindings.verify_shadow();
         }
         Ok(TreeOutcome {
             outcome: result.expect("root result"),
@@ -726,9 +730,9 @@ impl State<'_> {
     fn restore(&self, id: ConstraintId, map: &BindingMap) -> BindingMap {
         let mut out = map.clone();
         if let Some(Cache::Active { local, dirty }) = self.cache.get(&id) {
-            for (key, value) in local {
-                if !dirty.contains(key) && out.get(key) != Some(value) {
-                    out.insert(key.clone(), value.clone());
+            for (key, value) in local.iter() {
+                if !dirty.contains(&key) && out.get(&key) != Some(value) {
+                    out.insert(key, value.clone());
                 }
             }
         }
@@ -847,9 +851,9 @@ fn empty_cache() -> Cache {
 fn restore_entry(entry: Option<&Cache>, map: &BindingMap) -> BindingMap {
     let mut out = map.clone();
     if let Some(Cache::Active { local, dirty }) = entry {
-        for (key, value) in local {
-            if !dirty.contains(key) && out.get(key) != Some(value) {
-                out.insert(key.clone(), value.clone());
+        for (key, value) in local.iter() {
+            if !dirty.contains(&key) && out.get(&key) != Some(value) {
+                out.insert(key, value.clone());
             }
         }
     }
@@ -1057,6 +1061,7 @@ impl PreparedScc {
                     tried_unit = true;
                     to_solve = self.functions.clone();
                 } else {
+                    map.verify_shadow();
                     return Ok(SccOutcome {
                         bindings: map,
                         iterations,

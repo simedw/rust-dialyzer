@@ -365,7 +365,7 @@ fn run(v: &Value) -> Result<Value, String> {
             .bindings
             .iter()
             .map(|(key, typ)| match key {
-                BindingKey::Label(label) => Ok(json!({"id":identifier(label),"type":typ})),
+                BindingKey::Label(label) => Ok(json!({"id":identifier(&label),"type":typ})),
                 _ => Err("unexpected SCC ordinary binding key".to_owned()),
             })
             .collect::<Result<Vec<_>, _>>()?;
