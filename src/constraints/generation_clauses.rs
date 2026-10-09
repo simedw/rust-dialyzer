@@ -57,9 +57,9 @@ impl Generator<'_> {
             let mut ordered = previous
                 .iter()
                 .cloned()
-                .map(|ty| (ty.to_native_value(), ty))
+                .map(|ty| (ty.native_order_key(), ty))
                 .collect::<BTreeMap<_, _>>();
-            ordered.insert(approximation.to_native_value(), approximation);
+            ordered.insert(approximation.native_order_key(), approximation);
             Some(ordered.into_values().collect())
         } else {
             None

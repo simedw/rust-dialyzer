@@ -320,7 +320,9 @@ impl PreparedConstruction {
                         dependencies: arena
                             .dependencies(source)
                             .map_err(|e| format!("{e:?}"))?
-                            .clone(),
+                            .iter()
+                            .cloned()
+                            .collect(),
                         masks: None,
                         list_id: None,
                     });
@@ -499,12 +501,14 @@ impl PreparedConstruction {
             let dependencies = arena
                 .dependencies(source)
                 .map_err(|e| format!("{e:?}"))?
-                .clone();
+                .iter()
+                .cloned()
+                .collect();
             return Ok((source, dependencies));
         }
         let mut all = Vec::new();
         for id in &sources {
-            all.extend(arena.dependencies(*id).map_err(|e| format!("{e:?}"))?);
+            all.extend(arena.dependencies(*id).map_err(|e| format!("{e:?}"))?.iter());
         }
         all.sort();
         all.dedup();
@@ -587,7 +591,7 @@ mod tests {
     #[test]
     fn lexical_reference_cycle_is_rejected_before_execution() {
         let mut a = NativeConstraintArena::default();
-        let r = a.reference(f(100), BTreeSet::from([VariableId::Integer(1.into())]));
+        let r = a.reference(f(100), [VariableId::Integer(1.into())].into());
         let body = a.group(GroupKind::Conjunction, vec![r]).unwrap();
         assert!(
             PreparedConstruction::build(

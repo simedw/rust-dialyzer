@@ -340,3 +340,442 @@ impl FamilyStore {
         ]
     }
 }
+
+/// A term's place in the order of `NativeValue`, encoded once as bytes so
+/// that comparing two terms is a `memcmp`. The encoding is prefix-free, so
+/// encodings concatenate without separators and still compare element by
+/// element. Class tags leave room for the classes Erlang orders between
+/// them (reference, fun, port, pid; map; bitstring), which no `NativeValue`
+/// takes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NativeOrderKey(Box<[u8]>);
+
+const KEY_INTEGER: u8 = 0x10;
+const KEY_ATOM: u8 = 0x20;
+const KEY_TUPLE: u8 = 0x60;
+const KEY_NIL: u8 = 0x80;
+const KEY_LIST: u8 = 0x90;
+const KEY_NEGATIVE: u8 = 0x01;
+const KEY_ZERO: u8 = 0x02;
+const KEY_POSITIVE: u8 = 0x03;
+const KEY_MORE: u8 = 0x01;
+const KEY_END: u8 = 0x00;
+
+#[derive(Default)]
+struct KeyWriter(Vec<u8>);
+impl KeyWriter {
+    /// An order-preserving, prefix-free length: one byte below 255, else
+    /// 255 then four big-endian bytes. `invert` reverses its order.
+    fn length(&mut self, n: usize, invert: bool) {
+        let mask = if invert { 0xff } else { 0 };
+        if n < 255 {
+            self.0.push(n as u8 ^ mask);
+        } else {
+            let n = u32::try_from(n).expect("order key length fits in 32 bits");
+            self.0.push(0xff ^ mask);
+            self.0.extend(n.to_be_bytes().map(|b| b ^ mask));
+        }
+    }
+    /// Sign, then the magnitude's length and big-endian bytes (no leading
+    /// zeros), all inverted for negative numbers.
+    fn magnitude(&mut self, negative: bool, magnitude: &[u8]) {
+        self.0.push(KEY_INTEGER);
+        if magnitude.is_empty() {
+            self.0.push(KEY_ZERO);
+            return;
+        }
+        self.0.push(if negative { KEY_NEGATIVE } else { KEY_POSITIVE });
+        self.length(magnitude.len(), negative);
+        let mask = if negative { 0xff } else { 0 };
+        self.0.extend(magnitude.iter().map(|b| b ^ mask));
+    }
+    fn small(&mut self, n: i64) {
+        let bytes = n.unsigned_abs().to_be_bytes();
+        let skip = bytes.iter().take_while(|b| **b == 0).count();
+        self.magnitude(n < 0, &bytes[skip..]);
+    }
+    fn integer(&mut self, n: &BigInt) {
+        use num_traits::ToPrimitive;
+        match n.to_i64() {
+            Some(n) => self.small(n),
+            None => {
+                let (sign, bytes) = n.to_bytes_be();
+                self.magnitude(sign == num_bigint::Sign::Minus, &bytes);
+            }
+        }
+    }
+    /// Text bytes with 0 escaped as 0,255 and ended by 0,0, so a proper
+    /// prefix orders first, as in byte-wise string order.
+    fn atom(&mut self, s: &str) {
+        self.0.push(KEY_ATOM);
+        for &b in s.as_bytes() {
+            self.0.push(b);
+            if b == 0 {
+                self.0.push(0xff);
+            }
+        }
+        self.0.extend([0, 0]);
+    }
+    /// Tuples order by size first, then element-wise.
+    fn tuple(&mut self, size: usize) {
+        self.0.push(KEY_TUPLE);
+        self.length(size, false);
+    }
+    fn nil(&mut self) {
+        self.0.push(KEY_NIL);
+    }
+    /// `NativeValue::list`: an empty list is nil. Each element follows a
+    /// continuation byte and the list ends with a smaller one, so a proper
+    /// prefix orders first.
+    fn list<I: IntoIterator>(&mut self, items: I, mut item: impl FnMut(&mut Self, I::Item)) {
+        let mut items = items.into_iter().peekable();
+        if items.peek().is_none() {
+            return self.nil();
+        }
+        self.0.push(KEY_LIST);
+        for value in items {
+            self.0.push(KEY_MORE);
+            item(self, value);
+        }
+        self.0.push(KEY_END);
+    }
+    /// `NativeValue::c(tag, e, q)`: `{c, Tag, E, Q}`.
+    fn c(&mut self, tag: &str, e: impl FnOnce(&mut Self), q: impl FnOnce(&mut Self)) {
+        self.tuple(4);
+        self.atom("c");
+        self.atom(tag);
+        e(self);
+        q(self);
+    }
+    fn unknown(&mut self, tag: &str, e: impl FnOnce(&mut Self)) {
+        self.c(tag, e, |w| w.atom("unknown"))
+    }
+    fn finish(self) -> NativeOrderKey {
+        NativeOrderKey(self.0.into_boxed_slice())
+    }
+}
+impl NativeValue {
+    pub fn order_key(&self) -> NativeOrderKey {
+        let mut w = KeyWriter::default();
+        self.write_key(&mut w);
+        w.finish()
+    }
+    fn write_key(&self, w: &mut KeyWriter) {
+        match self {
+            Self::Integer(n) => w.integer(n),
+            Self::Atom(a) => w.atom(a),
+            Self::Tuple(t) => {
+                w.tuple(t.len());
+                t.iter().for_each(|v| v.write_key(w));
+            }
+            Self::Nil => w.nil(),
+            // Unlike `list`, the constructor keeps an empty `List` apart from nil.
+            Self::List(t) => {
+                w.0.push(KEY_LIST);
+                for v in t {
+                    w.0.push(KEY_MORE);
+                    v.write_key(w);
+                }
+                w.0.push(KEY_END);
+            }
+        }
+    }
+}
+impl Bound {
+    fn write_key(&self, w: &mut KeyWriter) {
+        match self {
+            Self::NegativeInfinity => w.atom("neg_inf"),
+            Self::PositiveInfinity => w.atom("pos_inf"),
+            Self::Finite(n) => w.integer(n),
+        }
+    }
+}
+impl NominalName {
+    fn write_key(&self, w: &mut KeyWriter) {
+        match self {
+            Self::Symbol(s) => w.atom(s),
+            Self::Defined {
+                module,
+                name,
+                arity,
+                opacity,
+            } => {
+                w.tuple(4);
+                w.atom(module);
+                w.atom(name);
+                w.integer(&(*arity).into());
+                w.atom(match opacity {
+                    Opacity::Opaque => "opaque",
+                    Opacity::Transparent => "transparent",
+                });
+            }
+        }
+    }
+}
+impl Nominal {
+    fn write_key(&self, w: &mut KeyWriter) {
+        w.unknown("nominal", |w| {
+            w.tuple(2);
+            self.name.write_key(w);
+            self.inner.write_key(w);
+        })
+    }
+}
+impl Type {
+    /// The bytes of `to_native_value`'s order, written without building the tree.
+    pub fn native_order_key(&self) -> NativeOrderKey {
+        let mut w = KeyWriter::default();
+        self.write_key(&mut w);
+        let key = w.finish();
+        if verify_fast_paths() {
+            assert_eq!(key, self.native_value().order_key(), "order key diverged: {self:?}");
+        }
+        key
+    }
+    fn write_key(&self, w: &mut KeyWriter) {
+        match &self.repr {
+            Repr::Any => w.atom("any"),
+            Repr::None => w.atom("none"),
+            Repr::Unit => w.atom("unit"),
+            Repr::Opaque => w.atom("opaque"),
+            Repr::Var(id) => w.unknown("var", |w| match id {
+                VariableId::Atom(a) => w.atom(a),
+                VariableId::Integer(n) => match n.small() {
+                    Some(n) => w.small(n),
+                    None => w.integer(&n.to_bigint()),
+                },
+            }),
+            Repr::Product(p) => w.unknown("product", |w| w.list(p.iter(), |w, t| t.write_key(w))),
+            Repr::Nominal(n) => n.write_key(w),
+            Repr::NominalSet(n) => w.unknown("nominal_set", |w| {
+                w.tuple(2);
+                w.list(n.nominals.iter(), |w, n| n.write_key(w));
+                n.structural.write_key(w);
+            }),
+            Repr::Families(s) => {
+                if s.union_record() {
+                    return w.unknown("union", |w| {
+                        w.list(s.components_with_none(), |w, t| t.write_key(w))
+                    });
+                }
+                if let Some(a) = s.atoms() {
+                    return w.unknown("atom", |w| match a {
+                        Atoms::All => w.atom("any"),
+                        Atoms::Set(v) => w.list(v.iter(), |w, a| w.atom(a.as_str())),
+                    });
+                }
+                if let Some(b) = s.bitstrings() {
+                    return w.unknown("binary", |w| {
+                        w.tuple(2);
+                        w.integer(&b.unit);
+                        w.integer(&b.base);
+                    });
+                }
+                if let Some(f) = s.functions() {
+                    return w.unknown("function", |w| {
+                        w.tuple(2);
+                        f.domain.write_key(w);
+                        f.range.write_key(w);
+                    });
+                }
+                if let Some(i) = s.identifiers() {
+                    return w.unknown("identifier", |w| match i {
+                        Identifiers::All => w.atom("any"),
+                        Identifiers::Set(v) => w.list(v.iter(), |w, a| w.atom(a)),
+                    });
+                }
+                if let Some(l) = s.list() {
+                    return match l {
+                        Lists::Nil => w.unknown("nil", KeyWriter::nil),
+                        Lists::List {
+                            elements,
+                            tail,
+                            nonempty,
+                        } => w.c(
+                            "list",
+                            |w| {
+                                w.tuple(2);
+                                elements.write_key(w);
+                                tail.write_key(w);
+                            },
+                            |w| w.atom(if *nonempty { "nonempty" } else { "unknown" }),
+                        ),
+                    };
+                }
+                if let Some(n) = s.number() {
+                    let q = match n {
+                        Numeric::Float => "float",
+                        Numeric::Number => "unknown",
+                        Numeric::Integer(_) => "integer",
+                    };
+                    return w.c(
+                        "number",
+                        |w| match n {
+                            Numeric::Float | Numeric::Number | Numeric::Integer(Integers::All) => {
+                                w.atom("any")
+                            }
+                            Numeric::Integer(Integers::Set(v)) => {
+                                w.tuple(2);
+                                w.atom("int_set");
+                                w.list(v.iter(), KeyWriter::integer);
+                            }
+                            Numeric::Integer(Integers::Range(a, b)) => {
+                                w.tuple(3);
+                                w.atom("int_rng");
+                                a.write_key(w);
+                                b.write_key(w);
+                            }
+                        },
+                        |w| w.atom(q),
+                    );
+                }
+                if let Some(t) = s.tuple() {
+                    return match t {
+                        Tuples::Any => w.c(
+                            "tuple",
+                            |w| w.atom("any"),
+                            |w| {
+                                w.tuple(2);
+                                w.atom("any");
+                                w.atom("any");
+                            },
+                        ),
+                        Tuples::Set(g) => {
+                            let variant = |w: &mut KeyWriter, arity: usize, v: &TupleVariant| {
+                                w.c(
+                                    "tuple",
+                                    |w| w.list(v.elements.iter(), |w, t| t.write_key(w)),
+                                    |w| {
+                                        w.tuple(2);
+                                        w.integer(&arity.into());
+                                        match &v.tag {
+                                            Some(tag) => Self::atom(tag.as_str()).write_key(w),
+                                            None => w.atom("any"),
+                                        }
+                                    },
+                                )
+                            };
+                            if g.len() == 1 && g.values().next().unwrap().len() == 1 {
+                                variant(w, *g.keys().next().unwrap(), &g.values().next().unwrap()[0])
+                            } else {
+                                w.unknown("tuple_set", |w| {
+                                    w.list(g.iter(), |w, (arity, vs)| {
+                                        w.tuple(2);
+                                        w.integer(&(*arity).into());
+                                        w.list(vs.iter(), |w, v| variant(w, *arity, v));
+                                    })
+                                })
+                            }
+                        }
+                    };
+                }
+                if let Some(m) = s.maps() {
+                    return w.unknown("map", |w| {
+                        w.tuple(3);
+                        w.list(m.entries.iter(), |w, e| {
+                            w.tuple(3);
+                            e.key.as_type().write_key(w);
+                            w.atom(match e.presence {
+                                Presence::Mandatory => "mandatory",
+                                Presence::Optional => "optional",
+                            });
+                            e.value.write_key(w);
+                        });
+                        m.default_key.write_key(w);
+                        m.default_value.write_key(w);
+                    });
+                }
+                unreachable!("direct canonical family is nonempty")
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod order_key_tests {
+    use super::*;
+    use NativeValue as N;
+
+    fn ints() -> Vec<BigInt> {
+        let mut v: Vec<BigInt> = [
+            0i64, 1, -1, 2, -2, 127, 128, -128, 255, 256, -255, -256, 65535, 65536,
+            i64::MAX, i64::MIN, i64::MAX - 1, i64::MIN + 1,
+        ]
+        .into_iter()
+        .map(BigInt::from)
+        .collect();
+        let big: BigInt = BigInt::from(1) << 70usize;
+        let huge: BigInt = BigInt::from(1) << 2100usize;
+        for b in [big, huge] {
+            let one = BigInt::from(1);
+            v.extend([b.clone(), -b.clone(), &b + &one, -(&b + &one), &b - &one]);
+        }
+        v.push(BigInt::from(i64::MAX) + 1);
+        v.push(BigInt::from(i64::MIN) - 1);
+        v
+    }
+
+    fn shapes() -> Vec<NativeValue> {
+        let atoms = ["", "a", "ab", "b", "a\0", "a\0b", "\0", "\u{e9}", "z", "any"];
+        let mut base: Vec<NativeValue> = ints().into_iter().map(N::Integer).collect();
+        base.extend(atoms.iter().map(|a| N::Atom((*a).into())));
+        base.extend([N::Nil, N::List(vec![]), N::Tuple(vec![])]);
+        let mut all = base.clone();
+        let small: Vec<_> = base.iter().step_by(3).cloned().collect();
+        for a in &small {
+            all.push(N::List(vec![a.clone()]));
+            all.push(N::Tuple(vec![a.clone()]));
+            for b in &small {
+                all.push(N::List(vec![a.clone(), b.clone()]));
+                all.push(N::Tuple(vec![a.clone(), b.clone()]));
+                all.push(N::Tuple(vec![N::List(vec![a.clone()]), b.clone()]));
+                all.push(N::List(vec![N::Tuple(vec![a.clone(), b.clone()]), N::Nil]));
+            }
+        }
+        all.push(N::Tuple((0..300).map(|i| N::Integer(i.into())).collect()));
+        all.push(N::Tuple((0..254).map(|i| N::Integer(i.into())).collect()));
+        all.push(N::Tuple((0..255).map(|i| N::Integer(i.into())).collect()));
+        all.push(N::List((0..300).map(|i| N::Atom(format!("x{i}"))).collect()));
+        all
+    }
+
+    #[test]
+    fn byte_keys_order_like_native_values() {
+        let all = shapes();
+        let keys: Vec<_> = all.iter().map(NativeValue::order_key).collect();
+        for (a, ka) in all.iter().zip(&keys) {
+            for (b, kb) in all.iter().zip(&keys) {
+                assert_eq!(ka.cmp(kb), a.cmp(b), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn type_keys_match_native_value_keys() {
+        let mut types = vec![
+            Type::any(),
+            Type::nil(),
+            Type::atom("ok"),
+            Type::atoms(["a", "b", "c"]),
+            Type::integer((-5).into()),
+            Type::integer(BigInt::from(1) << 80usize),
+            Type::integer(-(BigInt::from(1) << 80usize)),
+            Type::variable_integer(7.into()),
+            Type::variable_integer(-(BigInt::from(1) << 90usize)),
+            Type::variable_atom("X"),
+        ];
+        let tuples: Vec<_> = types
+            .iter()
+            .flat_map(|a| types.iter().map(move |b| Type::tuple(vec![a.clone(), b.clone()]).unwrap()))
+            .collect();
+        types.extend(tuples);
+        types.push(Type::function(Some(vec![Type::atom("x")]), Type::nil()));
+        let all: Vec<_> = types.iter().map(|t| (t.native_order_key(), t.native_value())).collect();
+        for (ka, a) in &all {
+            assert_eq!(*ka, a.order_key());
+            for (kb, b) in &all {
+                assert_eq!(ka.cmp(kb), a.cmp(b));
+            }
+        }
+    }
+}

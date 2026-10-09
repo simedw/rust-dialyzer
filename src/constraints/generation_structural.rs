@@ -1,7 +1,7 @@
 use super::*;
 impl Generator<'_> {
     pub(super) fn product_constraints(&mut self, args: Vec<Type>) -> Result<Type> {
-        let mut unique = args.iter().map(Type::to_native_value).collect::<Vec<_>>();
+        let mut unique = args.iter().map(Type::native_order_key).collect::<Vec<_>>();
         unique.sort();
         unique.dedup();
         if unique.len() == args.len() {

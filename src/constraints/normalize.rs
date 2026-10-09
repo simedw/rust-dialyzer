@@ -4,10 +4,59 @@ use crate::constraints::atomic::{
 use crate::constraints::closure_order::ClosureOrderKey;
 use crate::constraints::derived::{BifResultProvider, DerivedArena, DerivedId, DerivedOp};
 use crate::constraints::tree::FunctionVariable;
-use crate::lattice::{LatticeError, NativeValue, Type, TypePredicate, VariableId};
+use crate::lattice::{LatticeError, NativeOrderKey, Type, TypePredicate, VariableId};
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+
+/// A sorted set of variables without duplicates, shared between nodes.
+pub type Dependencies = Arc<[VariableId]>;
+
+/// The union of sorted, duplicate-free runs.
+fn union<'a>(runs: impl IntoIterator<Item = &'a Dependencies>) -> Dependencies {
+    let mut runs = runs.into_iter().filter(|run| !run.is_empty());
+    let Some(first) = runs.next() else {
+        return Dependencies::default();
+    };
+    let Some(second) = runs.next() else {
+        return first.clone();
+    };
+    let Some(third) = runs.next() else {
+        return merge(first, second).into();
+    };
+    // Many runs: the stable sort finds and merges them.
+    let mut all: Vec<_> = [first, second, third]
+        .into_iter()
+        .chain(runs)
+        .flat_map(|run| run.iter())
+        .collect();
+    all.sort();
+    all.dedup();
+    all.into_iter().cloned().collect()
+}
+fn merge(a: &[VariableId], b: &[VariableId]) -> Vec<VariableId> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            Ordering::Less => {
+                out.push(a[i].clone());
+                i += 1;
+            }
+            Ordering::Greater => {
+                out.push(b[j].clone());
+                j += 1;
+            }
+            Ordering::Equal => {
+                out.push(a[i].clone());
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out.extend_from_slice(&a[i..]);
+    out.extend_from_slice(&b[j..]);
+    out
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeConstraintId(pub usize);
@@ -33,7 +82,7 @@ struct OrderedDerived {
     semantic: DerivedId,
     key: ClosureOrderKey,
     origin: ClosureOrigin,
-    deps: BTreeSet<VariableId>,
+    deps: Dependencies,
 }
 #[derive(Clone, Debug)]
 pub enum NativeConstraint {
@@ -41,16 +90,16 @@ pub enum NativeConstraint {
         left: Type,
         relation: Relation,
         right: NativeOperand,
-        deps: BTreeSet<VariableId>,
+        deps: Dependencies,
     },
     Group {
         kind: GroupKind,
         children: Vec<NativeConstraintId>,
-        deps: BTreeSet<VariableId>,
+        deps: Dependencies,
     },
     Reference {
         function: FunctionVariable,
-        deps: BTreeSet<VariableId>,
+        deps: Dependencies,
     },
 }
 #[derive(Clone, Debug)]
@@ -74,8 +123,8 @@ impl From<SolveError> for NormalizationError {
 }
 #[derive(Default)]
 struct AtomicOrderKeys {
-    left: OnceLock<NativeValue>,
-    right: OnceLock<NativeValue>,
+    left: OnceLock<NativeOrderKey>,
+    right: OnceLock<NativeOrderKey>,
 }
 
 #[derive(Default)]
@@ -93,7 +142,7 @@ impl NativeConstraintArena {
         origin: ClosureOrigin,
     ) -> NativeDerivedId {
         let semantic = self.semantics.push(op);
-        let deps = self.semantics.dependencies(semantic).unwrap().clone();
+        let deps = self.semantics.dependencies(semantic).unwrap().iter().cloned().collect();
         let id = NativeDerivedId(self.derived.len());
         self.derived.push(OrderedDerived {
             semantic,
@@ -109,7 +158,7 @@ impl NativeConstraintArena {
     pub fn derived_capture(
         &self,
         id: NativeDerivedId,
-    ) -> Option<(&ClosureOrderKey, ClosureOrigin, &BTreeSet<VariableId>)> {
+    ) -> Option<(&ClosureOrderKey, ClosureOrigin, &Dependencies)> {
         self.derived
             .get(id.0)
             .map(|value| (&value.key, value.origin, &value.deps))
@@ -124,9 +173,12 @@ impl NativeConstraintArena {
         self.nodes.get(id.0)
     }
     fn push(&mut self, node: NativeConstraint) -> NativeConstraintId {
+        self.push_keyed(node, AtomicOrderKeys::default())
+    }
+    fn push_keyed(&mut self, node: NativeConstraint, keys: AtomicOrderKeys) -> NativeConstraintId {
         let id = NativeConstraintId(self.nodes.len());
         self.nodes.push(node);
-        self.order_keys.push(AtomicOrderKeys::default());
+        self.order_keys.push(keys);
         id
     }
     pub(crate) fn operand(
@@ -166,19 +218,37 @@ impl NativeConstraintArena {
             return Ok(self.any(relation));
         }
         let mut deps = left.collect_var_names();
-        match &right {
-            NativeOperand::Type(t) => deps.extend(t.collect_var_names()),
-            NativeOperand::Derived(id) => deps.extend(self.derived[id.0].deps.clone()),
-        }
-        let (left, right) = if matches!(relation, Relation::Equal) {
-            match right {
-                NativeOperand::Type(t) if left.to_native_value() >= t.to_native_value() => {
-                    (t, NativeOperand::Type(left))
-                }
-                right => (left, right),
+        let deps: Dependencies = match &right {
+            NativeOperand::Type(t) => {
+                deps.extend(t.collect_var_names());
+                deps.into_iter().collect()
             }
-        } else {
-            (left, right)
+            NativeOperand::Derived(id) if deps.is_empty() => self.derived[id.0].deps.clone(),
+            NativeOperand::Derived(id) => {
+                let left: Dependencies = deps.into_iter().collect();
+                union([&left, &self.derived[id.0].deps])
+            }
+        };
+        // An equality puts its smaller operand on the left; the keys that
+        // decide this are kept for sorting.
+        let keys = AtomicOrderKeys::default();
+        let (left, right) = match right {
+            NativeOperand::Type(t) if matches!(relation, Relation::Equal) => {
+                let (l, r) = (left.native_order_key(), t.native_order_key());
+                let swap = l >= r;
+                if crate::lattice::verify_fast_paths() {
+                    assert_eq!(
+                        swap,
+                        left.to_native_value() >= t.to_native_value(),
+                        "equality orientation diverged"
+                    );
+                }
+                let (left, right, l, r) = if swap { (t, left, r, l) } else { (left, t, l, r) };
+                let _ = keys.left.set(l);
+                let _ = keys.right.set(r);
+                (left, NativeOperand::Type(right))
+            }
+            right => (left, right),
         };
         if deps.is_empty() {
             let c = AtomicConstraint {
@@ -193,33 +263,40 @@ impl NativeConstraintArena {
                 return Err(NormalizationError::Unsatisfiable);
             }
         }
-        Ok(self.push(NativeConstraint::Atomic {
-            left,
-            relation,
-            right,
-            deps,
-        }))
+        Ok(self.push_keyed(
+            NativeConstraint::Atomic {
+                left,
+                relation,
+                right,
+                deps,
+            },
+            keys,
+        ))
     }
     fn any(&mut self, relation: Relation) -> NativeConstraintId {
         self.push(NativeConstraint::Atomic {
             left: Type::any(),
             relation,
             right: NativeOperand::Type(Type::any()),
-            deps: BTreeSet::new(),
+            deps: Dependencies::default(),
         })
     }
     pub fn reference(
         &mut self,
         function: FunctionVariable,
-        mut deps: BTreeSet<VariableId>,
+        deps: Dependencies,
     ) -> NativeConstraintId {
-        deps.remove(function.variable());
+        let deps = if deps.binary_search(function.variable()).is_ok() {
+            deps.iter().filter(|v| *v != function.variable()).cloned().collect()
+        } else {
+            deps
+        };
         self.push(NativeConstraint::Reference { function, deps })
     }
     pub fn dependencies(
         &self,
         id: NativeConstraintId,
-    ) -> Result<&BTreeSet<VariableId>, NormalizationError> {
+    ) -> Result<&Dependencies, NormalizationError> {
         match self
             .nodes
             .get(id.0)
@@ -273,19 +350,11 @@ impl NativeConstraintArena {
         {
             list = vec![self.any(Relation::Equal)];
         }
-        let deps = match list.as_slice() {
-            [only] => self.dependencies(*only)?.clone(),
-            _ => {
-                // The children's sets are sorted runs; merge them and build the set in bulk.
-                let mut all = Vec::new();
-                for id in &list {
-                    all.extend(self.dependencies(*id)?);
-                }
-                all.sort();
-                all.dedup();
-                all.into_iter().cloned().collect::<BTreeSet<_>>()
-            }
-        };
+        let deps = union(
+            list.iter()
+                .map(|id| self.dependencies(*id))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
         if deps.is_empty() {
             let tautology = self.any(Relation::Equal);
             return Ok(self.push(NativeConstraint::Group {
@@ -420,7 +489,7 @@ impl NativeConstraintArena {
         let mut work = vec![Action::Enter(root)];
         let mut nodes = Vec::new();
         let mut built = Vec::new();
-        let vars = |deps: &BTreeSet<VariableId>| {
+        let vars = |deps: &Dependencies| {
             deps.iter()
                 .map(|v| match v {
                     VariableId::Integer(n) => json!({"integer":n.to_string()}),
@@ -483,7 +552,7 @@ impl NativeConstraintArena {
         let key = |id: NativeConstraintId, t: &Type| {
             self.order_keys[id.0]
                 .left
-                .get_or_init(|| t.to_native_value())
+                .get_or_init(|| t.native_order_key())
         };
         // Variables are `{c, var, Id, unknown}`, so two of them are ordered by
         // their identities: integers before atoms, each in its own order.
@@ -494,7 +563,11 @@ impl NativeConstraintArena {
             }
             return order;
         }
-        key(ai, a).cmp(key(bi, b))
+        let order = key(ai, a).cmp(key(bi, b));
+        if crate::lattice::verify_fast_paths() {
+            assert_eq!(order, a.to_native_value().cmp(&b.to_native_value()), "left order diverged");
+        }
+        order
     }
     fn compare_operand(
         &self,
@@ -505,9 +578,17 @@ impl NativeConstraintArena {
     ) -> Result<Ordering, NormalizationError> {
         Ok(match (a, b) {
             (NativeOperand::Type(a), NativeOperand::Type(b)) => {
-                let a = self.order_keys[ai.0].right.get_or_init(|| a.to_native_value());
-                let b = self.order_keys[bi.0].right.get_or_init(|| b.to_native_value());
-                a.cmp(b)
+                let ka = self.order_keys[ai.0].right.get_or_init(|| a.native_order_key());
+                let kb = self.order_keys[bi.0].right.get_or_init(|| b.native_order_key());
+                let order = ka.cmp(kb);
+                if crate::lattice::verify_fast_paths() {
+                    assert_eq!(
+                        order,
+                        a.to_native_value().cmp(&b.to_native_value()),
+                        "right order diverged"
+                    );
+                }
+                order
             }
             (NativeOperand::Type(_), NativeOperand::Derived(_)) => Ordering::Less,
             (NativeOperand::Derived(_), NativeOperand::Type(_)) => Ordering::Greater,
@@ -814,11 +895,11 @@ mod tests {
         assert!(arena.order_keys[second.0].left.get().is_some());
         assert!(arena.order_keys[first.0].right.get().is_none());
         assert!(arena.order_keys[second.0].right.get().is_none());
-        let left = arena.order_keys[first.0].left.get().unwrap() as *const NativeValue;
+        let left = arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey;
         assert_eq!(arena.compare(first, second).unwrap(), Ordering::Less);
         assert_eq!(
             left,
-            arena.order_keys[first.0].left.get().unwrap() as *const NativeValue
+            arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey
         );
     }
 
@@ -867,6 +948,12 @@ mod tests {
     fn foreign_constraint_error_precedes_order_key_initialization() {
         let mut arena = NativeConstraintArena::default();
         let valid = leaf(&mut arena, 1, "a");
+        // Equalities key their operands when built, to orient them.
+        let keys = |arena: &NativeConstraintArena| {
+            let keys = &arena.order_keys[valid.0];
+            (keys.left.get().cloned(), keys.right.get().cloned())
+        };
+        let before = keys(&arena);
         for (a, b) in [
             (NativeConstraintId(usize::MAX), valid),
             (valid, NativeConstraintId(usize::MAX)),
@@ -875,8 +962,7 @@ mod tests {
                 matches!(arena.compare(a, b), Err(NormalizationError::Boundary(error)) if error == "foreign constraint identity")
             );
         }
-        assert!(arena.order_keys[valid.0].left.get().is_none());
-        assert!(arena.order_keys[valid.0].right.get().is_none());
+        assert_eq!(keys(&arena), before);
     }
 
     #[test]
@@ -976,7 +1062,7 @@ mod tests {
                 left: Type::variable_integer(n.into()),
                 relation: Relation::Equal,
                 right: NativeOperand::Derived(NativeDerivedId(usize::MAX)),
-                deps: BTreeSet::new(),
+                deps: Dependencies::default(),
             })
         };
         let l = raw(1);
@@ -990,13 +1076,13 @@ mod tests {
         let mut root = a.push(NativeConstraint::Group {
             kind: GroupKind::Conjunction,
             children: vec![],
-            deps: BTreeSet::new(),
+            deps: Dependencies::default(),
         });
         for _ in 0..4096 {
             root = a.push(NativeConstraint::Group {
                 kind: GroupKind::Conjunction,
                 children: vec![root],
-                deps: BTreeSet::new(),
+                deps: Dependencies::default(),
             });
         }
         assert_eq!(a.compare(root, root).unwrap(), Ordering::Equal);

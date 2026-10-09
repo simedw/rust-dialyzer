@@ -5032,7 +5032,7 @@ pub use type_api::{BuiltinType, Known, TypeGetter, TypePredicate, TypeValue};
 
 #[path = "native_order.rs"]
 mod native_order;
-pub use native_order::NativeValue;
+pub use native_order::{NativeOrderKey, NativeValue};
 
 #[cfg(test)]
 mod tests {
