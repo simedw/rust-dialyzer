@@ -90,22 +90,31 @@ pub fn analyze(
         row["report_modules"].as_array().map(|names| {
             names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect()
         });
-    let signatures =
-        output
-            .analysis
-            .state
-            .signatures
-            .iter()
-            .filter_map(|(label, signature)| {
-                output.graph.function_name(*label)
-                    .filter(|name| report_modules.as_ref().is_none_or(|r| r.contains(name.module.as_str())))
-                    .map(|name| json!({
+    let signature_rows = output
+        .analysis
+        .state
+        .signatures
+        .iter()
+        .filter_map(|(label, signature)| {
+            output.graph.function_name(*label)
+                .filter(|name| report_modules.as_ref().is_none_or(|r| r.contains(name.module.as_str())))
+                .map(|name| (name, signature))
+        })
+        .collect::<Vec<_>>();
+    let signatures = crate::ordered_parallel::setup_map(&signature_rows, |(name, signature)| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| json!({
             "module":name.module,"function":name.function,"arity":name.arity,
             "arguments":signature.arguments.iter().map(Type::to_value).collect::<Vec<_>>(),
             "result":signature.result.to_value(),
-        }))
-            })
-            .collect::<Vec<_>>();
+        })))
+    })
+    .into_iter()
+    .map(|completed| match completed {
+        Ok(row) => row,
+        Err(payload) => std::panic::resume_unwind(payload),
+    })
+    .collect::<Vec<_>>();
+    drop(signature_rows);
     let result = json!({"id":row["id"],"warnings":crate::type_exports::arena_to_value(&raw.arena().terms,raw.id()),
         "public_warning_count":output.warnings.raw.len(), "signatures":signatures,
         "cleanup_warning_count":output.cleanup.missing_calls.len(),
