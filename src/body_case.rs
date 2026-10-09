@@ -527,6 +527,25 @@ impl BodyFlow<'_, '_, '_> {
         successes: &[(NodeRef, Type)],
         state: &BinderState<W>,
     ) -> Result<Vec<Pending>> {
+        // Without any nominal (or the opaque sentinel) among the clause
+        // results, no element can be opaque and `elements` cannot fail, so
+        // the answer is empty; skip building native values.
+        if successes.iter().all(|(_, typ)| !typ.contains_nominal()) {
+            if crate::lattice::verify_fast_paths() {
+                assert!(
+                    self.opaque_case_warnings_full(successes, state)?.is_empty(),
+                    "opaque_case_warnings fast path"
+                );
+            }
+            return Ok(vec![]);
+        }
+        self.opaque_case_warnings_full(successes, state)
+    }
+    fn opaque_case_warnings_full<W>(
+        &self,
+        successes: &[(NodeRef, Type)],
+        state: &BinderState<W>,
+    ) -> Result<Vec<Pending>> {
         if !has_distinct_native_returns(successes.iter().map(|(_, typ)| typ)) {
             return Ok(vec![]);
         }
