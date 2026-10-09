@@ -145,7 +145,7 @@ fn run(r: &Value) -> Result<Value, String> {
         })
         .collect::<BTreeMap<_, _>>();
     let state = BinderState::<Warning> {
-        module: core.modules[0].name.clone(),
+        module: core.modules[0].name.as_str().into(),
         current_fun: WarningFunction::Named(FunctionName {
             module: core.modules[0].name.clone(),
             name: "entry".into(),

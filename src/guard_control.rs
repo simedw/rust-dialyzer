@@ -172,7 +172,7 @@ impl GuardControl<'_, '_, '_> {
         state: &BinderState<W>,
     ) -> Result<GuardBound<W>, GuardError> {
         let _trace = guard_trace_enabled().then(|| {
-            guard_trace_record(serde_json::json!({"event":"start","module":state.module,"function":format!("{:?}",state.current_fun),"module_id":node.module.0,"node":node.node,"mode":format!("{eval:?}"),"bindings":map.types().len(),"environment":env.len(),"warning_mode":state.warnings.warning_mode}));
+            guard_trace_record(serde_json::json!({"event":"start","module":&*state.module,"function":format!("{:?}",state.current_fun),"module_id":node.module.0,"node":node.node,"mode":format!("{eval:?}"),"bindings":map.types().len(),"environment":env.len(),"warning_mode":state.warnings.warning_mode}));
             GuardTrace { node, started:Instant::now(), visits:GUARD_VISITS.with(Cell::get) }
         });
         self.visit(node, map, env, eval, state, 0)
