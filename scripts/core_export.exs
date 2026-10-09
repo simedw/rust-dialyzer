@@ -56,7 +56,49 @@ defmodule CoreExport do
     end
   end
 
-  defp intern(value) do
+  defp intern(value) when is_tuple(value), do: intern_memoized(value)
+  defp intern([_ | _] = value), do: intern_memoized(value)
+  defp intern(value), do: intern_uncached(value)
+
+  defp intern_memoized(value) do
+    case Process.get(:core_value_memo) do
+      nil -> intern_uncached(value)
+      memo ->
+        case Map.fetch(memo, value) do
+          {:ok, id} -> id
+          :error ->
+            id = intern_uncached(value)
+            unless MapSet.member?(Process.get(:core_value_unsafe), id) do
+              Process.put(:core_value_memo, Map.put(Process.get(:core_value_memo), value, id))
+            end
+            id
+        end
+    end
+  end
+
+  # Raw Erlang equality does not encode float bits or map iterator provenance.
+  defp mark_unsafe_term({:float, _}, id), do: mark_unsafe_id(id)
+  defp mark_unsafe_term({:map, _, _}, id), do: mark_unsafe_id(id)
+  defp mark_unsafe_term({:tuple, children}, id), do: inherit_unsafe(children, id)
+  defp mark_unsafe_term({:list, children, tail}, id), do: inherit_unsafe([tail | children], id)
+  defp mark_unsafe_term(_key, _id), do: :ok
+
+  defp inherit_unsafe(children, id) do
+    case Process.get(:core_value_unsafe) do
+      nil -> :ok
+      unsafe ->
+        if Enum.any?(children, &MapSet.member?(unsafe, &1)), do: mark_unsafe_id(id)
+    end
+  end
+
+  defp mark_unsafe_id(id) do
+    case Process.get(:core_value_unsafe) do
+      nil -> :ok
+      unsafe -> Process.put(:core_value_unsafe, MapSet.put(unsafe, id))
+    end
+  end
+
+  defp intern_uncached(value) do
     key = cond do
       is_tuple(value) -> {:tuple, value |> Tuple.to_list() |> Enum.map(&intern/1)}
       match?([_ | _], value) ->
@@ -75,7 +117,7 @@ defmodule CoreExport do
       value == [] -> :nil
       true -> term(value)
     end
-    case Map.fetch(Process.get(:core_terms_cache), key) do
+    id = case Map.fetch(Process.get(:core_terms_cache), key) do
       {:ok, id} -> id
       :error ->
         id = Process.get(:core_terms_count)
@@ -85,6 +127,8 @@ defmodule CoreExport do
         Process.put(:core_terms_cache, Map.put(Process.get(:core_terms_cache), key, id))
         id
     end
+    mark_unsafe_term(key, id)
+    id
   end
 
   # Mirror intern's atom visit order without retaining the source AST.
@@ -274,6 +318,13 @@ defmodule CoreExport do
   # `:etf` returns the compact cache tuple read by src/core/etf.rs instead.
   def build_module(name, forms, core, format \\ :json) do
     Process.put(:core_export_format, format)
+    if format == :etf do
+      Process.put(:core_value_memo, %{})
+      Process.put(:core_value_unsafe, MapSet.new())
+    else
+      Process.delete(:core_value_memo)
+      Process.delete(:core_value_unsafe)
+    end
     Process.put(:core_terms_cache, %{})
     Process.put(:core_terms_count, 0)
     Process.put(:core_terms, [])
@@ -296,7 +347,7 @@ defmodule CoreExport do
       :etf -> {:core_module_v1, Atom.to_string(name), source_forms, root,
                ids(List.flatten(variable_maps)), terms, nodes}
     end
-    Enum.each([:core_terms_cache, :core_terms_count, :core_terms, :core_nodes_count, :core_nodes, :core_export_format], &Process.delete/1)
+    Enum.each([:core_terms_cache, :core_terms_count, :core_terms, :core_nodes_count, :core_nodes, :core_export_format, :core_value_memo, :core_value_unsafe], &Process.delete/1)
     exported
   end
 
