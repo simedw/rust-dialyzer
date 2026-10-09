@@ -235,16 +235,14 @@ mod interner {
 
     /// Open addressing with slots that are only ever filled, as in
     /// `crate::atom`: lookups are atomic loads and threads never wait.
-    struct Table<const SLOTS: usize> {
+    /// Slots must be a power of two.
+    pub(super) struct Table<const SLOTS: usize> {
         slots: [AtomicPtr<Node>; SLOTS],
         overflow: Mutex<Option<HashMap<u64, Vec<&'static Node>>>>,
     }
     const PROBES: usize = 32;
     pub(super) static NODES: AtomicUsize = AtomicUsize::new(0);
-    static TABLE: Table<{ 1 << 24 }> = Table {
-        slots: [const { AtomicPtr::new(std::ptr::null_mut()) }; 1 << 24],
-        overflow: Mutex::new(None),
-    };
+    static TABLE: Table<{ 1 << 24 }> = Table::new();
 
     pub(super) fn hash(repr: &Repr) -> u64 {
         let mut h = crate::fast_hash::FxHasher::default();
@@ -254,60 +252,68 @@ mod interner {
         x ^ (x >> 29) ^ (x >> 47)
     }
     pub(super) fn intern(repr: Repr) -> &'static Node {
-        let hash = hash(&repr);
-        let start = hash as usize;
-        let mut fresh: Option<*mut Node> = None;
-        let mut candidate = Some(repr);
-        let slots = &TABLE.slots;
-        for probe in 0..PROBES {
-            let slot = &slots[(start.wrapping_add(probe)) & (slots.len() - 1)];
-            let mut current = slot.load(Ordering::Acquire);
-            if current.is_null() {
-                let entry = *fresh.get_or_insert_with(|| {
+        TABLE.intern(repr)
+    }
+    impl<const SLOTS: usize> Table<SLOTS> {
+        pub(super) const fn new() -> Self {
+            Table { slots: [const { AtomicPtr::new(std::ptr::null_mut()) }; SLOTS], overflow: Mutex::new(None) }
+        }
+        pub(super) fn intern(&self, repr: Repr) -> &'static Node {
+            let hash = hash(&repr);
+            let start = hash as usize;
+            let mut fresh: Option<*mut Node> = None;
+            let mut candidate = Some(repr);
+            let slots = &self.slots;
+            for probe in 0..PROBES {
+                let slot = &slots[(start.wrapping_add(probe)) & (slots.len() - 1)];
+                let mut current = slot.load(Ordering::Acquire);
+                if current.is_null() {
+                    let entry = *fresh.get_or_insert_with(|| {
+                        let repr = candidate.take().unwrap();
+                        let info = Info::of(&repr);
+                        Box::into_raw(Box::new(Node { hash, info, repr }))
+                    });
+                    match slot.compare_exchange(std::ptr::null_mut(), entry, Ordering::AcqRel, Ordering::Acquire) {
+                        Ok(_) => {
+                            NODES.fetch_add(1, Ordering::Relaxed);
+                            return unsafe { &*entry };
+                        }
+                        Err(winner) => current = winner,
+                    }
+                }
+                // Published nodes are leaked, so they stay valid forever.
+                let existing: &'static Node = unsafe { &*current };
+                if existing.hash == hash {
+                    let same = match (&candidate, fresh) {
+                        (Some(r), _) => existing.repr == *r,
+                        (None, Some(entry)) => existing.repr == unsafe { &*entry }.repr,
+                        (None, None) => unreachable!(),
+                    };
+                    if same {
+                        if let Some(entry) = fresh {
+                            drop(unsafe { Box::from_raw(entry) });
+                        }
+                        return existing;
+                    }
+                }
+            }
+            let node = match fresh {
+                Some(entry) => unsafe { *Box::from_raw(entry) },
+                None => {
                     let repr = candidate.take().unwrap();
-                    let info = Info::of(&repr);
-                    Box::into_raw(Box::new(Node { hash, info, repr }))
-                });
-                match slot.compare_exchange(std::ptr::null_mut(), entry, Ordering::AcqRel, Ordering::Acquire) {
-                    Ok(_) => {
-                        NODES.fetch_add(1, Ordering::Relaxed);
-                        return unsafe { &*entry };
-                    }
-                    Err(winner) => current = winner,
+                    Node { hash, info: Info::of(&repr), repr }
                 }
+            };
+            let mut overflow = self.overflow.lock().expect("type overflow table");
+            let chain = overflow.get_or_insert_with(HashMap::new).entry(hash).or_default();
+            if let Some(existing) = chain.iter().find(|n| n.repr == node.repr) {
+                return existing;
             }
-            // Published nodes are leaked, so they stay valid forever.
-            let existing: &'static Node = unsafe { &*current };
-            if existing.hash == hash {
-                let same = match (&candidate, fresh) {
-                    (Some(r), _) => existing.repr == *r,
-                    (None, Some(entry)) => existing.repr == unsafe { &*entry }.repr,
-                    (None, None) => unreachable!(),
-                };
-                if same {
-                    if let Some(entry) = fresh {
-                        drop(unsafe { Box::from_raw(entry) });
-                    }
-                    return existing;
-                }
-            }
+            let leaked: &'static Node = Box::leak(Box::new(node));
+            NODES.fetch_add(1, Ordering::Relaxed);
+            chain.push(leaked);
+            leaked
         }
-        let node = match fresh {
-            Some(entry) => unsafe { *Box::from_raw(entry) },
-            None => {
-                let repr = candidate.take().unwrap();
-                Node { hash, info: Info::of(&repr), repr }
-            }
-        };
-        let mut overflow = TABLE.overflow.lock().expect("type overflow table");
-        let chain = overflow.get_or_insert_with(HashMap::new).entry(hash).or_default();
-        if let Some(existing) = chain.iter().find(|n| n.repr == node.repr) {
-            return existing;
-        }
-        let leaked: &'static Node = Box::leak(Box::new(node));
-        NODES.fetch_add(1, Ordering::Relaxed);
-        chain.push(leaked);
-        leaked
     }
 }
 /// Per-thread caches of lattice results keyed by the operands' node
@@ -5037,6 +5043,93 @@ pub use native_order::{NativeOrderKey, NativeValue};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A type built from `i` by several interning steps, so racing threads
+    /// that build the same `i` create the same nodes at the same time.
+    fn stress_type(i: usize) -> Type {
+        let leaf = |j: usize| match j % 4 {
+            0 => Type::atom(format!("stress{}", j % 101)),
+            1 => Type::integer(BigInt::from(j % 37 + 2)),
+            2 => Type::atoms([format!("s{}", j % 7), format!("s{}", j % 11)]),
+            _ => Type::range_strings("0", &format!("{}", j % 53 + 2)).unwrap(),
+        };
+        let (a, b, c) = (leaf(i), leaf(i / 3 + 1), leaf(i / 7 + 2));
+        match i % 5 {
+            0 => Type::tuple(vec![a, b]).unwrap(),
+            1 => Type::list(Type::tuple(vec![a, c]).unwrap(), Type::nil(), i % 2 == 0),
+            2 => a.join(&b).unwrap().join(&c).unwrap(),
+            3 => Type::tuple(vec![
+                Type::list(a, Type::nil(), false),
+                b.join(&c).unwrap(),
+                Type::integer(BigInt::from(i)),
+            ])
+            .unwrap(),
+            _ => Type::function(Some(vec![a, b]), c),
+        }
+    }
+    /// Runs `work(index)` for every index on every thread, round by round
+    /// behind a barrier and in a different order per thread, and returns each
+    /// thread's results by index.
+    fn race<T: Send>(threads: usize, count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<Vec<T>> {
+        const ROUND: usize = 64;
+        let barrier = std::sync::Barrier::new(threads);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|t| {
+                    let (barrier, work) = (&barrier, &work);
+                    scope.spawn(move || {
+                        let mut out: Vec<Option<T>> = (0..count).map(|_| None).collect();
+                        for base in (0..count).step_by(ROUND) {
+                            let len = ROUND.min(count - base);
+                            barrier.wait();
+                            for k in 0..len {
+                                // Odd threads walk backwards, the rest rotate.
+                                let k = if t % 2 == 1 { len - 1 - k } else { (k + t * 7) % len };
+                                out[base + k] = Some(work(base + k));
+                            }
+                        }
+                        out.into_iter().map(Option::unwrap).collect()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    }
+    fn assert_canonical(runs: &[Vec<&'static Node>]) {
+        for run in runs {
+            for (x, y) in run.iter().zip(&runs[0]) {
+                assert!(std::ptr::eq(*x, *y), "threads disagree on {:?}", x.repr);
+            }
+        }
+        let run = &runs[0];
+        for (i, x) in run.iter().enumerate() {
+            for y in &run[i + 1..] {
+                assert_eq!(std::ptr::eq(*x, *y), x.repr == y.repr, "{:?} vs {:?}", x.repr, y.repr);
+                assert!(x.repr != y.repr || x.hash == y.hash);
+            }
+        }
+    }
+    #[test]
+    fn concurrent_interning_is_canonical() {
+        let count = if cfg!(debug_assertions) { 512 } else { 2048 };
+        let runs = race(12, count, |i| stress_type(i).0);
+        assert_canonical(&runs);
+        for (i, node) in runs[0].iter().enumerate() {
+            assert!(std::ptr::eq(stress_type(i).0, *node));
+        }
+    }
+    #[test]
+    fn concurrent_interning_in_a_small_table_shares_slots_and_overflow() {
+        // 64 slots fill at once, so most inserts race on the probe chain and
+        // then on the overflow map.
+        static SMALL: interner::Table<64> = interner::Table::new();
+        let reprs: Vec<Repr> = (0..512).map(|i| stress_type(i).0.repr.clone()).collect();
+        let runs = race(12, reprs.len(), |i| SMALL.intern(reprs[i].clone()));
+        assert_canonical(&runs);
+        for (repr, node) in reprs.iter().zip(&runs[0]) {
+            assert!(std::ptr::eq(SMALL.intern(repr.clone()), *node));
+        }
+    }
     fn corpus() -> Vec<Type> {
         let mut values = vec![
             Type::none(),
