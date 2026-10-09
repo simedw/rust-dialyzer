@@ -292,6 +292,17 @@ pub struct CompilerProfile {
     pub core_options: Vec<String>,
     pub term_map_order: TermMapOrder,
 }
+/// Moves a vector with much unused capacity into an exact allocation.
+/// `shrink_to_fit` is not enough: mimalloc keeps a block in place when the
+/// new size is at least half the old one, as after one doubling.
+pub fn exact_capacity<T>(items: Vec<T>) -> Vec<T> {
+    if items.capacity() - items.len() <= items.len() / 8 {
+        return items;
+    }
+    let mut exact = Vec::with_capacity(items.len());
+    exact.extend(items);
+    exact
+}
 #[derive(Clone, Debug)]
 pub struct CoreModule {
     pub name: String,

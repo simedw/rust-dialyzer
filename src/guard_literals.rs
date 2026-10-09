@@ -28,7 +28,10 @@ impl<'a> GuardLiterals<'a> {
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
         let raw_literals = crate::ordered_parallel::setup_map(&folded.program.modules, |module| {
-            let mut terms = module.terms.clone();
+            // Sized up front: a cloned arena doubles on its first push.
+            let literals = module.nodes.iter().filter(|node| matches!(node.expr, CoreExpr::Literal(_))).count();
+            let mut terms = Vec::with_capacity(module.terms.len() + 1 + literals);
+            terms.extend_from_slice(&module.terms);
             let tag = TermId(terms.len());
             terms.push(ErlangTerm::Atom("c_literal".into()));
             let roots = module

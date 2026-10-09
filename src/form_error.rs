@@ -214,11 +214,11 @@ impl ReasonBuilder {
         values.pop().expect("native value traversal emits one root")
     }
     pub fn finish(self, root: TermId) -> RawFormTerm {
+        // Builders seeded with a copied module arena doubled its capacity on
+        // the first push; the arena is kept for the whole run.
+        let terms = crate::core::exact_capacity(self.terms);
         RawFormTerm {
-            arena: Arc::new(ErlangTerms {
-                root,
-                terms: self.terms,
-            }),
+            arena: Arc::new(ErlangTerms { root, terms }),
             id: root,
         }
     }
