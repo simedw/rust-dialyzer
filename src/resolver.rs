@@ -38,10 +38,20 @@ struct ExpansionBudget {
 struct State {
     variables: BTreeMap<VariableId, Type>,
     stack: Vec<Unfold>,
-    massage: BTreeSet<TypeName>,
+    massage: Option<Massage>,
     remote_policy: RemotePolicy,
     check_mode: bool,
     native_site: Option<crate::native_form_environment::NativeFormSite>,
+}
+/// The set dialyzer_utils:massage_type rewrites: aliases of `module` declared
+/// before position `below`. Tested against `Forms::declarations` on demand;
+/// declarations loaded later carry `usize::MAX` metadata, so they never join.
+#[derive(Clone)]
+struct Massage {
+    module: String,
+    below: usize,
+    /// The materialized set, kept only under `verify_fast_paths`.
+    eager: Option<std::sync::Arc<BTreeSet<TypeName>>>,
 }
 #[derive(Clone)]
 struct Cached {
@@ -704,7 +714,7 @@ impl<'a> Resolver<'a> {
         let state = State {
             variables,
             stack,
-            massage: BTreeSet::new(),
+            massage: None,
             remote_policy: RemotePolicy::Resolve,
             check_mode: false,
             native_site: self.native_site.clone(),
@@ -726,7 +736,7 @@ impl<'a> Resolver<'a> {
             State {
                 variables: BTreeMap::new(),
                 stack,
-                massage: BTreeSet::new(),
+                massage: None,
                 remote_policy: RemotePolicy::ReplaceByNone,
                 check_mode: false,
                 native_site: self.native_site.clone(),
@@ -757,20 +767,7 @@ impl<'a> Resolver<'a> {
         // OTP rewrites redefined built-in type names everywhere except module
         // `erlang`, which redefines them all for documentation
         // (dialyzer_utils:core_to_attr_tuples/1).
-        let massage = if massage && module != "erlang" {
-            self.forms
-                .declarations
-                .values()
-                .filter(|d| {
-                    d.name.module == module
-                        && d.kind == DeclarationKind::Alias
-                        && d.metadata < metadata
-                })
-                .map(|d| d.name.clone())
-                .collect()
-        } else {
-            BTreeSet::new()
-        };
+        let massage = (massage && module != "erlang").then(|| self.massage(module, metadata));
         self.resolve_state(
             id,
             State {
@@ -782,6 +779,36 @@ impl<'a> Resolver<'a> {
                 native_site: self.native_site.clone(),
             },
         )
+    }
+    fn massage(&self, module: String, below: usize) -> Massage {
+        let eager = crate::lattice::verify_fast_paths().then(|| {
+            std::sync::Arc::new(
+                self.forms
+                    .declarations
+                    .values()
+                    .filter(|d| {
+                        d.name.module == module
+                            && d.kind == DeclarationKind::Alias
+                            && d.metadata < below
+                    })
+                    .map(|d| d.name.clone())
+                    .collect(),
+            )
+        });
+        Massage { module, below, eager }
+    }
+    fn massaged(&self, massage: &Option<Massage>, target: &TypeName) -> bool {
+        let Some(m) = massage else {
+            return false;
+        };
+        let lazy = target.module == m.module
+            && self.forms.declarations.get(target).is_some_and(|d| {
+                d.kind == DeclarationKind::Alias && d.metadata < m.below
+            });
+        if let Some(eager) = &m.eager {
+            assert_eq!(eager.contains(target), lazy, "massage membership for {target:?}");
+        }
+        lazy
     }
     fn resolve_state(&mut self, id: FormId, state: State) -> Result<Type> {
         self.resolve_state_with_budget(id, state, 16, 10000)
@@ -1018,19 +1045,8 @@ impl<'a> Resolver<'a> {
             .into_iter()
             .zip(arguments.iter().cloned())
             .collect();
-        state.massage = self
-            .forms
-            .declarations
-            .values()
-            .filter(|other| {
-                decl.kind == DeclarationKind::Alias
-                    && name.module != "erlang"
-                    && other.name.module == name.module
-                    && other.kind == DeclarationKind::Alias
-                    && other.metadata < decl.metadata
-            })
-            .map(|decl| decl.name.clone())
-            .collect();
+        state.massage = (decl.kind == DeclarationKind::Alias && name.module != "erlang")
+            .then(|| self.massage(name.module.clone(), decl.metadata));
         let recursive = s.stack.contains(&unfold);
         let limited = recursive && !(left <= 2 && d <= 10);
         let (value, body_left) = self.form(
@@ -1143,9 +1159,9 @@ impl<'a> Resolver<'a> {
             name: name.name().into(),
             arity: ids.len(),
         };
-        if s.massage.contains(&target) && args.is_some() {
+        if args.is_some() && self.massaged(&s.massage, &target) {
             let mut state = s.clone();
-            state.massage.clear();
+            state.massage = Option::None;
             return self.named(
                 &target,
                 false,
@@ -1519,7 +1535,7 @@ impl<'a> Resolver<'a> {
             let id = match entry {
                 Entry::Modified(entry) => entry.form,
                 Entry::Raw(id) => {
-                    field_state.massage.clear();
+                    field_state.massage = None;
                     let Some(v) = tuple(id).filter(|v| v.len() == 3) else {
                         return Err(FormError::Native(NativeTransferError::FunctionClause));
                     };
@@ -1625,7 +1641,7 @@ impl<'a> Resolver<'a> {
                 if let Some(id) = id {
                     let mut field_state = state.clone();
                     if modified.is_none() {
-                        field_state.massage.clear();
+                        field_state.massage = None;
                     }
                     let (v, r) = self.form(id, &field_state, depth, left)?;
                     values.push(v);
