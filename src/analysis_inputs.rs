@@ -58,17 +58,16 @@ impl LibraryTypes for CallWorld<'_> {
     }
     fn active_contract(&self, name: &Mfa) -> Result<Option<generation::ActiveContract>, String> {
         CallWorld::active_contract(self, name)?
-            .map(|contract| {
-                generation::ActiveContract::new(
-                    contract.summary.clone(),
-                    CaptureEnvironment::literal_roots(
-                        contract.capture.arena(),
-                        &[contract.capture.id()],
-                    )?,
-                )
-            })
+            .map(|contract| generation_contract(&contract))
             .transpose()
     }
+}
+/// Generation's view of an active contract.
+pub fn generation_contract(contract: &ActiveContract) -> Result<generation::ActiveContract, String> {
+    generation::ActiveContract::new(
+        contract.summary.clone(),
+        CaptureEnvironment::literal_roots(contract.capture.arena(), &[contract.capture.id()])?,
+    )
 }
 
 pub struct PreparedRecords {

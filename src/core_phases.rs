@@ -18,7 +18,7 @@ use crate::{
             GenerationCaptureInputs, GenerationOutput, GenerationPhase, LibraryTypes, PropagatedTypes,
         },
     },
-    core_analysis::{AnalysisPhases, ModuleRequest, SccRequest},
+    core_analysis::{AnalysisPhases, ModuleRequest, Published, SccGraph, SccRequest},
     dataflow_nodes::DataflowNodes,
     dependencies::Store,
     folded_core::FoldedCore,
@@ -369,6 +369,66 @@ impl AnalysisPhases for CorePhases<'_> {
         let this = &*self;
         crate::ordered_parallel::parallel_map(&requests, |request| this.analyze_scc_shared(request))
     }
+    /// `RUST_DIALYZER_SCC_WAVES=1` keeps the wave-by-wave schedule.
+    fn dependency_scheduled(&self) -> bool {
+        std::env::var_os("RUST_DIALYZER_SCC_WAVES").is_none_or(|v| v != "1")
+    }
+    fn analyze_scc_graph<C>(
+        &mut self,
+        graph: SccGraph<'_>,
+        failed: Option<(u64, C)>,
+        mut commit: impl FnMut(usize, Result<FunctionTypes, Self::Error>) -> Result<Published, C>,
+    ) -> Result<(), C> {
+        let mut timings = crate::phase_timings::PhaseTimings::new("scc_graph_phase");
+        let overlay = PhaseOverlay::new(&graph, &self.function_names);
+        let retries = std::sync::atomic::AtomicUsize::new(0);
+        let this = &*self;
+        let result = crate::ordered_parallel::dependency_map(
+            graph.schedule,
+            failed,
+            |i| {
+                let job = &graph.jobs[i];
+                let library = RecordingWorld {
+                    world: &this.world,
+                    contracts: &this.generation_contracts,
+                    reads: Default::default(),
+                    overlay: Some((&overlay, graph.levels[i])),
+                    early: Default::default(),
+                };
+                let request = SccInput {
+                    runtime: graph.runtime,
+                    ordered_mfas: job.ordered_mfas,
+                    next_core_label: graph.next_core_label,
+                    previous: job.previous,
+                };
+                let result = this.analyze_scc_in(&request, &library);
+                let early = library.early.into_inner();
+                if early.is_empty() {
+                    crate::ordered_parallel::Attempt::Done(result)
+                } else {
+                    retries.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    crate::ordered_parallel::Attempt::Retry(early.into_iter().collect())
+                }
+            },
+            |i, result| {
+                let published = commit(i, result)?;
+                let _ = overlay.slots[i].set(this.overlay_entry(published));
+                Ok(())
+            },
+        );
+        timings.mark("schedule");
+        timings.label(|| format!("retries {}", retries.load(std::sync::atomic::Ordering::Relaxed)));
+        for slot in overlay.slots {
+            if let Some(entry) = slot.into_inner() {
+                self.publish_state(
+                    entry.published.signatures.iter().map(|(label, signature)| (*label, signature)),
+                    entry.published.contracts.iter(),
+                );
+            }
+        }
+        timings.mark("publish");
+        result
+    }
     fn refine_module_batch(
         &mut self,
         requests: Vec<ModuleRequest<'_>>,
@@ -431,31 +491,68 @@ impl CorePhases<'_> {
     /// types are embedded in the constraints and steer their normalization,
     /// so constraints cannot be reused once any of these inputs changes.
     fn analyze_scc_shared(&self, request: &SccRequest<'_>) -> Result<FunctionTypes, CorePhaseError> {
+        let library = RecordingWorld {
+            world: &self.world,
+            contracts: &self.generation_contracts,
+            reads: Default::default(),
+            overlay: None,
+            early: Default::default(),
+        };
+        let request = SccInput {
+            runtime: request.runtime,
+            ordered_mfas: request.ordered_mfas,
+            next_core_label: request.next_core_label,
+            previous: request.previous,
+        };
+        self.analyze_scc_in(&request, &library)
+    }
+    fn analyze_scc_in(&self, request: &SccInput<'_>, library: &RecordingWorld<'_, '_>) -> Result<FunctionTypes, CorePhaseError> {
         let memo = self.scc_memo.lock().unwrap().get(request.ordered_mfas).cloned();
         if let Some(memo) = memo
             && memo.next_core_label == request.next_core_label
             && memo.previous == *request.previous
-            && memo.reads.still_valid(&self.world)
+            && memo.reads.still_valid(library)
         {
             if crate::lattice::verify_fast_paths() {
-                let (fresh, _) = self.analyze_scc_uncached(request)?;
+                let fresh = self.analyze_scc_uncached(request, library)?;
                 assert_eq!(fresh, memo.result, "memoized SCC result differs: {:?}", request.ordered_mfas);
             }
             return Ok(memo.result.clone());
         }
-        let (result, reads) = self.analyze_scc_uncached(request)?;
+        let result = self.analyze_scc_uncached(request, library)?;
         self.scc_memo.lock().unwrap().insert(
             request.ordered_mfas.to_vec(),
             std::sync::Arc::new(SccMemo {
                 next_core_label: request.next_core_label,
                 previous: request.previous.clone(),
-                reads,
+                reads: library.reads.take(),
                 result: result.clone(),
             }),
         );
         Ok(result)
     }
-    fn analyze_scc_uncached(&self, request: &SccRequest<'_>) -> Result<(FunctionTypes, LibraryReads), CorePhaseError> {
+    fn overlay_entry(&self, published: Published) -> OverlayEntry {
+        let mut signatures = BTreeMap::new();
+        for (label, signature) in &published.signatures {
+            if let Some(name) = self.function_names.get(label) {
+                signatures.insert(name.clone(), signature.clone());
+            }
+        }
+        let mut contracts = BTreeMap::new();
+        for name in &published.contracts {
+            if let Some(prepared) = self.definitions.contracts.get_callable(name)
+                && !self.world.active_contracts.contains_key(name)
+            {
+                let contract = ActiveContract {
+                    summary: prepared.summary.clone(),
+                    capture: prepared.capture.clone(),
+                };
+                contracts.insert(name.clone(), crate::analysis_inputs::generation_contract(&contract));
+            }
+        }
+        OverlayEntry { published, signatures, contracts }
+    }
+    fn analyze_scc_uncached(&self, request: &SccInput<'_>, library: &RecordingWorld<'_, '_>) -> Result<FunctionTypes, CorePhaseError> {
         let mut timings = crate::phase_timings::PhaseTimings::detail("scc_analysis");
         let propagated = PropagatedTypes(
             request
@@ -477,11 +574,6 @@ impl CorePhases<'_> {
             initial_record_cache: &[],
             solvers: &solvers,
         };
-        let library = RecordingWorld {
-            world: &self.world,
-            contracts: &self.generation_contracts,
-            reads: Default::default(),
-        };
         timings.mark("prepare_scc");
         let analysis = SccAnalyzer {
             nodes: self.nodes,
@@ -495,7 +587,7 @@ impl CorePhases<'_> {
                     dependencies: self.dependencies,
                 },
                 propagated: &propagated,
-                library: &library,
+                library,
                 records: &self.records.prototypes,
                 self_recursive: None,
             },
@@ -517,7 +609,46 @@ impl CorePhases<'_> {
                     .then(|| signature(typ).map(|signature| (label, signature)))
             })
             .collect::<Result<_, _>>()?;
-        Ok((result, library.reads.into_inner()))
+        Ok(result)
+    }
+}
+
+struct SccInput<'a> {
+    runtime: &'a crate::constraints::generation_capture_headers::GenerationRuntimeCaptures,
+    ordered_mfas: &'a [Mfa],
+    next_core_label: CoreLabel,
+    previous: &'a FunctionTypes,
+}
+/// SCC results committed during a dependency-scheduled phase, before they
+/// are published into the call world. An SCC reads one only if the SCC
+/// that wrote it is in a lower wave, so it sees what wave-by-wave analysis
+/// would show it.
+struct PhaseOverlay<'g> {
+    /// The SCC whose commit may write each name's signature and contract.
+    owner: BTreeMap<Mfa, usize>,
+    levels: &'g [usize],
+    slots: Vec<std::sync::OnceLock<OverlayEntry>>,
+}
+struct OverlayEntry {
+    published: Published,
+    signatures: BTreeMap<Mfa, Signature>,
+    contracts: BTreeMap<Mfa, Result<GenerationActiveContract, String>>,
+}
+impl<'g> PhaseOverlay<'g> {
+    fn new(graph: &SccGraph<'g>, function_names: &BTreeMap<CoreLabel, Mfa>) -> Self {
+        let mut owner = BTreeMap::new();
+        for (i, job) in graph.jobs.iter().enumerate() {
+            for label in job.previous.keys() {
+                if let Some(name) = function_names.get(label) {
+                    owner.insert(name.clone(), i);
+                }
+            }
+        }
+        Self {
+            owner,
+            levels: graph.levels,
+            slots: (0..graph.jobs.len()).map(|_| Default::default()).collect(),
+        }
     }
 }
 
@@ -543,10 +674,10 @@ struct LibraryReads {
     contracts: BTreeMap<Mfa, ContractSource>,
 }
 impl LibraryReads {
-    fn still_valid(&self, world: &CallWorld<'_>) -> bool {
+    fn still_valid(&self, library: &RecordingWorld<'_, '_>) -> bool {
         self.signatures.iter().all(|(mfa, value)| {
-            LibraryTypes::signature(world, mfa).is_ok_and(|current| call_signature_value(current) == *value)
-        }) && self.contracts.iter().all(|(mfa, source)| contract_source(world, mfa) == *source)
+            library.current_signature(mfa).is_ok_and(|current| call_signature_value(current) == *value)
+        }) && self.contracts.iter().all(|(mfa, source)| library.current_contract_source(mfa) == *source)
     }
 }
 fn call_signature_value(signature: Option<CallSignature>) -> CallSignatureValue {
@@ -566,21 +697,58 @@ struct RecordingWorld<'w, 'l> {
     world: &'w CallWorld<'l>,
     contracts: &'w BTreeMap<Mfa, Result<GenerationActiveContract, String>>,
     reads: std::cell::RefCell<LibraryReads>,
+    /// Unpublished results of the current phase and the reader's wave.
+    overlay: Option<(&'w PhaseOverlay<'w>, usize)>,
+    /// Lower-wave SCCs read before they committed; the reading SCC must
+    /// run again after them.
+    early: std::cell::RefCell<std::collections::BTreeSet<usize>>,
+}
+impl RecordingWorld<'_, '_> {
+    /// The committed overlay entry owning `mfa`, if the reader may see it.
+    fn visible(&self, mfa: &Mfa) -> Option<&OverlayEntry> {
+        let (overlay, level) = self.overlay?;
+        let &owner = overlay.owner.get(mfa)?;
+        if overlay.levels[owner] >= level {
+            return None;
+        }
+        let entry = overlay.slots[owner].get();
+        if entry.is_none() {
+            self.early.borrow_mut().insert(owner);
+        }
+        entry
+    }
+    fn current_signature(&self, mfa: &Mfa) -> Result<Option<CallSignature>, String> {
+        if let Some(signature) = self.visible(mfa).and_then(|entry| entry.signatures.get(mfa)) {
+            return Ok(Some(CallSignature {
+                arguments: signature.arguments.clone(),
+                returns: signature.result.clone(),
+            }));
+        }
+        LibraryTypes::signature(self.world, mfa)
+    }
+    fn current_contract_source(&self, mfa: &Mfa) -> ContractSource {
+        if self.visible(mfa).is_some_and(|entry| entry.contracts.contains_key(mfa)) {
+            ContractSource::Active
+        } else {
+            contract_source(self.world, mfa)
+        }
+    }
 }
 impl LibraryTypes for RecordingWorld<'_, '_> {
     fn signature(&self, mfa: &Mfa) -> Result<Option<CallSignature>, String> {
-        let signature = LibraryTypes::signature(self.world, mfa)?;
+        let signature = self.current_signature(mfa)?;
         self.reads.borrow_mut().signatures.entry(mfa.clone()).or_insert_with(|| {
             signature.as_ref().map(|signature| (signature.arguments.clone(), signature.returns.clone()))
         });
         Ok(signature)
     }
     fn active_contract(&self, mfa: &Mfa) -> Result<Option<GenerationActiveContract>, String> {
-        let contract = match self.contracts.get(mfa) {
+        let overlay = self.visible(mfa).and_then(|entry| entry.contracts.get(mfa));
+        let contract = match overlay.or_else(|| self.contracts.get(mfa)) {
             Some(contract) => Some(contract.clone()?),
             None => LibraryTypes::active_contract(self.world, mfa)?,
         };
-        self.reads.borrow_mut().contracts.entry(mfa.clone()).or_insert_with(|| contract_source(self.world, mfa));
+        self.reads.borrow_mut().contracts.entry(mfa.clone()).or_insert_with(|| self.current_contract_source(mfa));
         Ok(contract)
     }
 }

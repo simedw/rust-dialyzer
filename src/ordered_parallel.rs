@@ -147,6 +147,180 @@ pub fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -
     results.into_iter().map(|r| r.expect("every item analyzed")).collect()
 }
 
+/// What a dependency-scheduled job produced.
+pub enum Attempt<R> {
+    Done(R),
+    /// The job observed state of these earlier jobs before they committed;
+    /// run it again once they have.
+    Retry(Vec<usize>),
+}
+
+/// Jobs with dependency edges, for `dependency_map`.
+pub struct JobGraph<'a> {
+    /// Jobs that wait for each job; every caller has a larger index.
+    pub callers: &'a [Vec<usize>],
+    /// Ready jobs with higher priority start first.
+    pub priority: &'a [u64],
+    /// Failure order: the reported error is the one with the lowest rank.
+    pub rank: &'a [u64],
+}
+
+enum Message<R> {
+    Finished(usize, std::thread::Result<Attempt<R>>),
+    Skipped,
+}
+
+struct Ready {
+    heap: std::collections::BinaryHeap<(u64, std::cmp::Reverse<usize>)>,
+    cutoff: u64,
+    shutdown: bool,
+}
+
+/// Runs `run` on every job once all jobs it depends on (the jobs that list
+/// it as a caller) have committed, on all cores. `commit` runs on the calling
+/// thread, one job at a time, in completion order. Once a job fails, jobs of
+/// higher rank are no longer started and the failure of lowest rank among the
+/// jobs below it is returned, as if jobs had run one rank at a time.
+/// `failed` is a failure known before any job runs.
+pub fn dependency_map<R: Send, C>(
+    graph: JobGraph<'_>,
+    failed: Option<(u64, C)>,
+    run: impl Fn(usize) -> Attempt<R> + Sync,
+    mut commit: impl FnMut(usize, R) -> Result<(), C>,
+) -> Result<(), C> {
+    let count = graph.callers.len();
+    let mut remaining = vec![0usize; count];
+    for callers in graph.callers {
+        for &caller in callers {
+            remaining[caller] += 1;
+        }
+    }
+    let mut first_error = failed;
+    let cutoff = |first_error: &Option<(u64, C)>| first_error.as_ref().map_or(u64::MAX, |(rank, _)| *rank);
+    let ready = Mutex::new(Ready {
+        heap: Default::default(),
+        cutoff: cutoff(&first_error),
+        shutdown: false,
+    });
+    let changed = Condvar::new();
+    let workers = std::thread::available_parallelism().map_or(1, usize::from).min(count).max(1);
+    let (send, receive) = std::sync::mpsc::channel::<Message<R>>();
+    let mut panic = None;
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (ready, changed, run, send) = (&ready, &changed, &run, send.clone());
+            std::thread::Builder::new()
+                .stack_size(WORKER_STACK_BYTES)
+                .spawn_scoped(scope, move || loop {
+                    let job = {
+                        let mut state = ready.lock().unwrap();
+                        loop {
+                            if state.shutdown {
+                                return;
+                            }
+                            if let Some((_, std::cmp::Reverse(job))) = state.heap.pop() {
+                                break (graph.rank[job] < state.cutoff).then_some(job);
+                            }
+                            state = changed.wait(state).unwrap();
+                        }
+                    };
+                    let message = match job {
+                        Some(job) => Message::Finished(job, catch_unwind(AssertUnwindSafe(|| run(job)))),
+                        None => Message::Skipped,
+                    };
+                    if send.send(message).is_err() {
+                        return;
+                    }
+                })
+                .expect("spawn analysis worker");
+        }
+        let coordinate = || {
+            let mut committed = vec![false; count];
+            let mut waiting: Vec<Vec<usize>> = vec![Vec::new(); count];
+            let mut blockers = vec![0usize; count];
+            let push = |jobs: &mut dyn Iterator<Item = usize>| {
+                let mut state = ready.lock().unwrap();
+                let before = state.heap.len();
+                for job in jobs {
+                    state.heap.push((graph.priority[job], std::cmp::Reverse(job)));
+                }
+                let pushed = state.heap.len() - before;
+                changed.notify_all();
+                pushed
+            };
+            let mut in_flight = push(&mut (0..count).filter(|&job| remaining[job] == 0));
+            while in_flight > 0 {
+                let message = receive.recv().expect("analysis workers alive");
+                in_flight -= 1;
+                let (job, attempt) = match message {
+                    Message::Skipped => continue,
+                    Message::Finished(_, Err(payload)) => {
+                        panic.get_or_insert(payload);
+                        ready.lock().unwrap().cutoff = 0;
+                        continue;
+                    }
+                    Message::Finished(job, Ok(attempt)) => (job, attempt),
+                };
+                let result = match attempt {
+                    Attempt::Retry(after) => {
+                        let pending: Vec<usize> = after.into_iter().filter(|&o| !committed[o]).collect();
+                        if pending.is_empty() {
+                            in_flight += push(&mut std::iter::once(job));
+                        } else {
+                            blockers[job] = pending.len();
+                            for o in pending {
+                                waiting[o].push(job);
+                            }
+                        }
+                        continue;
+                    }
+                    Attempt::Done(result) => result,
+                };
+                if let Err(error) = commit(job, result) {
+                    if graph.rank[job] < cutoff(&first_error) {
+                        first_error = Some((graph.rank[job], error));
+                        ready.lock().unwrap().cutoff = graph.rank[job];
+                    }
+                    continue;
+                }
+                committed[job] = true;
+                let mut unblocked = Vec::new();
+                for &caller in &graph.callers[job] {
+                    remaining[caller] -= 1;
+                    if remaining[caller] == 0 {
+                        unblocked.push(caller);
+                    }
+                }
+                for waiter in std::mem::take(&mut waiting[job]) {
+                    blockers[waiter] -= 1;
+                    if blockers[waiter] == 0 {
+                        unblocked.push(waiter);
+                    }
+                }
+                let limit = cutoff(&first_error);
+                in_flight += push(&mut unblocked.into_iter().filter(|&job| graph.rank[job] < limit));
+            }
+            assert!(
+                panic.is_some() || first_error.is_some() || committed.iter().all(|&done| done),
+                "dependency schedule stalled"
+            );
+        };
+        let coordinated = catch_unwind(AssertUnwindSafe(coordinate));
+        ready.lock().unwrap().shutdown = true;
+        changed.notify_all();
+        if let Err(payload) = coordinated {
+            panic.get_or_insert(payload);
+        }
+    });
+    if let Some(payload) = panic {
+        resume_unwind(payload);
+    }
+    match first_error {
+        Some((_, error)) => Err(error),
+        None => Ok(()),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -208,6 +382,50 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dependency_map_runs_after_callees_retries_and_reports_lowest_rank() {
+        // 0 and 1 are leaves, 2 calls both, 3 calls 2; 4 is independent.
+        let callers = vec![vec![2], vec![2], vec![3], vec![], vec![]];
+        let priority = [1, 5, 3, 2, 0];
+        let rank = [0, 1, 5, 6, 2];
+        let graph = || JobGraph { callers: &callers, priority: &priority, rank: &rank };
+        let committed: Vec<std::sync::atomic::AtomicBool> = (0..5).map(|_| Default::default()).collect();
+        let retried = std::sync::atomic::AtomicBool::new(false);
+        let mut order = vec![];
+        dependency_map(
+            graph(),
+            None,
+            |job| {
+                let seen = |j: usize| committed[j].load(Ordering::SeqCst);
+                match job {
+                    2 => assert!(seen(0) && seen(1)),
+                    3 => assert!(seen(2)),
+                    _ => {}
+                }
+                if job == 3 && !seen(4) && !retried.swap(true, Ordering::SeqCst) {
+                    return Attempt::Retry(vec![4]);
+                }
+                Attempt::Done(job)
+            },
+            |job, value| -> Result<(), String> {
+                assert_eq!(job, value);
+                committed[job].store(true, Ordering::SeqCst);
+                order.push(job);
+                Ok(())
+            },
+        )
+        .unwrap();
+        order.sort();
+        assert_eq!(order, [0, 1, 2, 3, 4]);
+        // Failures at ranks 6 and 1: rank 1 wins and job 3 never starts after it.
+        let result = dependency_map(
+            graph(),
+            Some((6, "prepared".to_string())),
+            |job| Attempt::Done(job),
+            |job, _| if job == 1 { Err(format!("job {job}")) } else { Ok(()) },
+        );
+        assert_eq!(result, Err("job 1".into()));
+    }
     #[test]
     fn empty_and_duplicate_inputs_keep_order() {
         assert_eq!(ordered_prefetch(0, 4, |_| Ok::<usize, String>(1), |_, x| Ok(x)), Ok(vec![]));

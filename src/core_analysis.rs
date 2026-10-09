@@ -40,6 +40,23 @@ pub struct SccRequest<'a> {
     pub previous: &'a FunctionTypes,
     pub state: &'a AnalysisState,
 }
+pub struct SccJob<'a> {
+    pub ordered_mfas: &'a [Mfa],
+    pub previous: &'a FunctionTypes,
+}
+pub struct SccGraph<'a> {
+    pub runtime: &'a GenerationRuntimeCaptures,
+    pub next_core_label: CoreLabel,
+    pub jobs: Vec<SccJob<'a>>,
+    /// Wave of each SCC: one more than the highest wave among its callees.
+    pub levels: &'a [usize],
+    pub schedule: crate::ordered_parallel::JobGraph<'a>,
+}
+/// Signatures stored by one SCC commit and the contracts it activated.
+pub struct Published {
+    pub signatures: Vec<(CoreLabel, Signature)>,
+    pub contracts: Vec<Mfa>,
+}
 pub struct ModuleRequest<'a> {
     pub runtime: &'a GenerationRuntimeCaptures,
     pub module: ModuleId,
@@ -67,6 +84,24 @@ pub trait AnalysisPhases {
         requests: Vec<SccRequest<'_>>,
     ) -> Vec<Result<FunctionTypes, Self::Error>> {
         requests.into_iter().map(|r| self.analyze_scc(r)).collect()
+    }
+    /// Whether `analyze_scc_graph` may replace wave-by-wave batches.
+    fn dependency_scheduled(&self) -> bool {
+        false
+    }
+    /// Analyzes every SCC of `graph`, starting each once its callees have
+    /// committed. Each SCC must see exactly the state it would see if the
+    /// SCCs ran in waves of `graph.levels`: everything committed by lower
+    /// levels and nothing from its own or higher levels. `commit` stores a
+    /// result and returns what to publish; publication into the shared state
+    /// happens here, after the last SCC.
+    fn analyze_scc_graph<C>(
+        &mut self,
+        _graph: SccGraph<'_>,
+        _failed: Option<(u64, C)>,
+        _commit: impl FnMut(usize, Result<FunctionTypes, Self::Error>) -> Result<Published, C>,
+    ) -> Result<(), C> {
+        unreachable!("analyze_scc_graph without dependency_scheduled")
     }
     /// Refines modules against the same state. Results are in input order.
     fn refine_module_batch(
@@ -97,10 +132,15 @@ struct FunctionInfo {
 }
 impl CoreAnalyzer<'_> {
     fn collect(&self, root: NodeRef) -> Result<Vec<FunctionInfo>, String> {
+        self.collect_counted(root, &mut 0)
+    }
+    /// `collect`, adding the number of nodes visited to `nodes`.
+    fn collect_counted(&self, root: NodeRef, nodes: &mut u64) -> Result<Vec<FunctionInfo>, String> {
         let mut pending = vec![(root, false)];
         let mut functions = Vec::new();
         while let Some((node, finish)) = pending.pop() {
             if !finish {
+                *nodes += 1;
                 pending.push((node, true));
                 pending.extend(
                     self.nodes
@@ -120,6 +160,9 @@ impl CoreAnalyzer<'_> {
         Ok(functions)
     }
     fn scc_functions(&self, names: &[Mfa]) -> Result<Vec<FunctionInfo>, String> {
+        self.scc_functions_counted(names, &mut 0)
+    }
+    fn scc_functions_counted(&self, names: &[Mfa], nodes: &mut u64) -> Result<Vec<FunctionInfo>, String> {
         let mut functions = Vec::new();
         for mfa in names {
             let name = FunctionName {
@@ -133,10 +176,13 @@ impl CoreAnalyzer<'_> {
                 .get(&name)
                 .ok_or("SCC named function absent")?;
             let function = &self.program.functions[id.0];
-            functions.extend(self.collect(NodeRef {
-                module: function.module,
-                node: function.node.0,
-            })?);
+            functions.extend(self.collect_counted(
+                NodeRef {
+                    module: function.module,
+                    node: function.node.0,
+                },
+                nodes,
+            )?);
         }
         Ok(functions)
     }
@@ -245,25 +291,9 @@ impl CoreAnalyzer<'_> {
     /// left by earlier waves. Falls back to one SCC per wave if the order is
     /// not callees-first.
     fn waves(&self, sccs: &[OrderedScc]) -> Vec<Vec<usize>> {
-        let sequential = || (0..sccs.len()).map(|i| vec![i]).collect();
-        let mut index = BTreeMap::new();
-        for (i, scc) in sccs.iter().enumerate() {
-            for member in &scc.members {
-                index.insert(member, i);
-            }
-        }
-        let mut level = vec![0usize; sccs.len()];
-        for (i, scc) in sccs.iter().enumerate() {
-            for member in &scc.members {
-                for caller in self.graph.in_neighbours(member).unwrap_or(&[]) {
-                    match index.get(caller) {
-                        Some(&j) if j > i => level[j] = level[j].max(level[i] + 1),
-                        Some(&j) if j < i => return sequential(),
-                        _ => {}
-                    }
-                }
-            }
-        }
+        let Some((level, _)) = self.levels(sccs) else {
+            return (0..sccs.len()).map(|i| vec![i]).collect();
+        };
         let mut waves: Vec<Vec<usize>> = Vec::new();
         for (i, l) in level.into_iter().enumerate() {
             if waves.len() <= l {
@@ -272,6 +302,197 @@ impl CoreAnalyzer<'_> {
             waves[l].push(i);
         }
         waves
+    }
+    /// The wave of each SCC and the SCCs calling it, or None if the order is
+    /// not callees-first.
+    fn levels(&self, sccs: &[OrderedScc]) -> Option<(Vec<usize>, Vec<Vec<usize>>)> {
+        let mut index = BTreeMap::new();
+        for (i, scc) in sccs.iter().enumerate() {
+            for member in &scc.members {
+                index.insert(member, i);
+            }
+        }
+        let mut level = vec![0usize; sccs.len()];
+        let mut callers = vec![Vec::new(); sccs.len()];
+        for (i, scc) in sccs.iter().enumerate() {
+            for member in &scc.members {
+                for caller in self.graph.in_neighbours(member).unwrap_or(&[]) {
+                    match index.get(caller) {
+                        Some(&j) if j > i => {
+                            level[j] = level[j].max(level[i] + 1);
+                            callers[i].push(j);
+                        }
+                        Some(&j) if j < i => return None,
+                        _ => {}
+                    }
+                }
+            }
+            callers[i].sort_unstable();
+            callers[i].dedup();
+        }
+        Some((level, callers))
+    }
+    fn analyze_wave<P: AnalysisPhases, S: PhaseSchedule>(
+        &self,
+        iteration: usize,
+        sccs: &[OrderedScc],
+        wave: &[usize],
+        state: &mut AnalysisState,
+        phases: &mut P,
+        schedule: &S,
+        scc_changed: &mut Vec<CoreLabel>,
+    ) -> Result<(), AnalysisError<P::Error, S::Error>> {
+        let mut timings = crate::phase_timings::PhaseTimings::new("scc_wave");
+        timings.label(|| format!("iter{iteration} wave of {}", wave.len()));
+        let mut prepared = Vec::with_capacity(wave.len());
+        for &i in wave {
+            let mfas = Self::scc_mfas(&sccs[i]).map_err(AnalysisError::Boundary)?;
+            let all = self.scc_functions(&mfas).map_err(AnalysisError::Boundary)?;
+            let previous = self.previous(&all, state);
+            prepared.push((mfas, all, previous));
+        }
+        timings.mark("function_info_and_previous");
+        let requests = prepared
+            .iter()
+            .map(|(mfas, _, previous)| SccRequest {
+                runtime: schedule.runtime(),
+                ordered_mfas: mfas,
+                next_core_label: self.next_core_label,
+                previous,
+                state,
+            })
+            .collect();
+        let results = phases.analyze_scc_batch(requests);
+        timings.mark("scc_phase");
+        for ((_, all, previous), generated) in prepared.into_iter().zip(results) {
+            let generated = generated.map_err(AnalysisError::Phase)?;
+            let (published, changed) = self.commit_scc(state, &previous, generated)?;
+            phases.publish(
+                published.signatures.iter().map(|(label, signature)| (*label, signature)),
+                published.contracts.iter(),
+            );
+            if changed {
+                scc_changed.extend(all.into_iter().map(|function| function.label));
+            }
+        }
+        timings.mark("commit_and_publish");
+        Ok(())
+    }
+    /// Analyzes one iteration's SCCs with `AnalysisPhases::analyze_scc_graph`.
+    /// Like `analyze_wave` over all waves; fails with the error the waves
+    /// would reach first.
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_graph<P: AnalysisPhases, S: PhaseSchedule>(
+        &self,
+        iteration: usize,
+        sccs: &[OrderedScc],
+        levels: Vec<usize>,
+        callers: Vec<Vec<usize>>,
+        state: &mut AnalysisState,
+        phases: &mut P,
+        schedule: &S,
+        scc_changed: &mut Vec<CoreLabel>,
+    ) -> Result<(), AnalysisError<P::Error, S::Error>> {
+        let mut timings = crate::phase_timings::PhaseTimings::new("scc_graph");
+        timings.label(|| format!("iter{iteration} sccs {} waves {}", sccs.len(), levels.iter().max().map_or(0, |l| l + 1)));
+        let prepared = {
+            let state = &*state;
+            let indices: Vec<usize> = (0..sccs.len()).collect();
+            crate::ordered_parallel::parallel_map(&indices, |&i| {
+                let mfas = Self::scc_mfas(&sccs[i])?;
+                let mut nodes = 0;
+                let all = self.scc_functions_counted(&mfas, &mut nodes)?;
+                let previous = self.previous(&all, state);
+                Ok::<_, String>((mfas, all, previous, nodes))
+            })
+        };
+        // A wave stops at its first preparation error before analyzing.
+        let rank = |i: usize| (levels[i] * sccs.len() + i) as u64;
+        let failed = prepared
+            .iter()
+            .enumerate()
+            .filter_map(|(i, prepared)| prepared.as_ref().err().map(|error| (levels[i], i, error)))
+            .min_by_key(|(level, i, _)| (*level, *i))
+            .map(|(level, _, error)| ((level * sccs.len()) as u64, AnalysisError::Boundary(error.clone())));
+        // Longest remaining chain of callers, weighted by Core size.
+        let mut priority = vec![0u64; sccs.len()];
+        for i in (0..sccs.len()).rev() {
+            let own = prepared[i].as_ref().map_or(0, |(_, _, _, nodes)| *nodes);
+            priority[i] = own + callers[i].iter().map(|&j| priority[j]).max().unwrap_or(0);
+        }
+        let ranks: Vec<u64> = (0..sccs.len()).map(rank).collect();
+        timings.mark("prepare");
+        let empty = FunctionTypes::new();
+        let jobs = prepared
+            .iter()
+            .map(|prepared| match prepared {
+                Ok((mfas, _, previous, _)) => SccJob { ordered_mfas: mfas, previous },
+                Err(_) => SccJob { ordered_mfas: &[], previous: &empty },
+            })
+            .collect();
+        let graph = SccGraph {
+            runtime: schedule.runtime(),
+            next_core_label: self.next_core_label,
+            jobs,
+            levels: &levels,
+            schedule: crate::ordered_parallel::JobGraph { callers: &callers, priority: &priority, rank: &ranks },
+        };
+        let mut changed_by_scc = vec![false; sccs.len()];
+        phases.analyze_scc_graph(graph, failed, |i, generated| {
+            let generated = generated.map_err(AnalysisError::Phase)?;
+            let Ok((_, _, previous, _)) = &prepared[i] else {
+                unreachable!("SCCs failing preparation are not analyzed")
+            };
+            let (published, changed) = self.commit_scc(state, previous, generated)?;
+            changed_by_scc[i] = changed;
+            Ok(published)
+        })?;
+        timings.mark("scc_phase");
+        for (prepared, changed) in prepared.into_iter().zip(changed_by_scc) {
+            if changed && let Ok((_, all, _, _)) = prepared {
+                scc_changed.extend(all.into_iter().map(|function| function.label));
+            }
+        }
+        Ok(())
+    }
+    fn commit_scc<PE, SE>(
+        &self,
+        state: &mut AnalysisState,
+        previous: &FunctionTypes,
+        generated: FunctionTypes,
+    ) -> Result<(Published, bool), AnalysisError<PE, SE>> {
+        let filtered: FunctionTypes = generated
+            .into_iter()
+            .filter(|(label, _)| previous.contains_key(label))
+            .collect();
+        let named = filtered
+            .iter()
+            .filter_map(|(label, signature)| {
+                self.graph.function_name(*label).map(|name| {
+                    (
+                        name,
+                        Type::function(
+                            Some(signature.arguments.clone()),
+                            signature.result.clone(),
+                        ),
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        let validated = state
+            .contracts
+            .validate(&named, self.bifs)
+            .map_err(AnalysisError::Lattice)?;
+        let mut signatures = Vec::with_capacity(filtered.len());
+        for (label, signature) in &filtered {
+            let persisted = persisted_signature(signature).map_err(AnalysisError::Lattice)?;
+            state.signatures.insert(*label, persisted.clone());
+            signatures.push((*label, persisted));
+        }
+        let contracts = state.contracts.commit(validated);
+        let changed = !contracts.is_empty()
+            || !reached_fixpoint_strict(previous, &filtered).map_err(AnalysisError::Lattice)?;
+        Ok((Published { signatures, contracts }, changed))
     }
     pub fn run<P: AnalysisPhases, S: PhaseSchedule>(
         &self,
@@ -297,77 +518,22 @@ impl CoreAnalyzer<'_> {
         loop {
             iteration += 1;
             let mut scc_changed = Vec::new();
-            let waves = if phases.parallel() {
-                self.waves(&sccs)
+            let graph = if phases.parallel() && phases.dependency_scheduled() {
+                self.levels(&sccs)
             } else {
-                (0..sccs.len()).map(|i| vec![i]).collect()
+                None
             };
-            for wave in waves {
-                let mut timings = crate::phase_timings::PhaseTimings::new("scc_wave");
-                timings.label(|| format!("iter{iteration} wave of {}", wave.len()));
-                let mut prepared = Vec::with_capacity(wave.len());
-                for &i in &wave {
-                    let mfas = Self::scc_mfas(&sccs[i]).map_err(AnalysisError::Boundary)?;
-                    let all = self.scc_functions(&mfas).map_err(AnalysisError::Boundary)?;
-                    let previous = self.previous(&all, &state);
-                    prepared.push((mfas, all, previous));
+            if let Some((levels, callers)) = graph {
+                self.analyze_graph(iteration, &sccs, levels, callers, &mut state, phases, schedule, &mut scc_changed)?;
+            } else {
+                let waves = if phases.parallel() {
+                    self.waves(&sccs)
+                } else {
+                    (0..sccs.len()).map(|i| vec![i]).collect()
+                };
+                for wave in waves {
+                    self.analyze_wave(iteration, &sccs, &wave, &mut state, phases, schedule, &mut scc_changed)?;
                 }
-                timings.mark("function_info_and_previous");
-                let requests = prepared
-                    .iter()
-                    .map(|(mfas, _, previous)| SccRequest {
-                        runtime: schedule.runtime(),
-                        ordered_mfas: mfas,
-                        next_core_label: self.next_core_label,
-                        previous,
-                        state: &state,
-                    })
-                    .collect();
-                let results = phases.analyze_scc_batch(requests);
-                timings.mark("scc_phase");
-                for ((_, all, previous), generated) in prepared.into_iter().zip(results) {
-                    let generated = generated.map_err(AnalysisError::Phase)?;
-                    let filtered: FunctionTypes = generated
-                        .into_iter()
-                        .filter(|(label, _)| previous.contains_key(label))
-                        .collect();
-                    let named = filtered
-                        .iter()
-                        .filter_map(|(label, signature)| {
-                            self.graph.function_name(*label).map(|name| {
-                                (
-                                    name,
-                                    Type::function(
-                                        Some(signature.arguments.clone()),
-                                        signature.result.clone(),
-                                    ),
-                                )
-                            })
-                        })
-                        .collect::<BTreeMap<_, _>>();
-                    let validated = state
-                        .contracts
-                        .validate(&named, self.bifs)
-                        .map_err(AnalysisError::Lattice)?;
-                    for (label, signature) in &filtered {
-                        state.signatures.insert(
-                            *label,
-                            persisted_signature(signature).map_err(AnalysisError::Lattice)?,
-                        );
-                    }
-                    let newly_activated = state.contracts.commit(validated);
-                    phases.publish(
-                        filtered.keys().map(|label| (*label, &state.signatures[label])),
-                        newly_activated.iter(),
-                    );
-                    let changed = !newly_activated.is_empty()
-                        || !reached_fixpoint_strict(&previous, &filtered)
-                            .map_err(AnalysisError::Lattice)?;
-                    if changed {
-                        scc_changed.extend(all.into_iter().map(|function| function.label));
-                    }
-                }
-                timings.mark("commit_and_publish");
             }
             if scc_changed.is_empty() {
                 return Ok(state);
