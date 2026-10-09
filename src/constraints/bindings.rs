@@ -209,6 +209,100 @@ impl IntoIterator for BindingMap {
     }
 }
 
+/// A set of binding keys, kept sorted and without duplicates in one vector:
+/// the sets the solver passes around are mostly a handful of keys.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeySet(Vec<BindingKey>);
+impl KeySet {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+    /// The set of the keys in `keys`, in any order and with repeats.
+    pub fn from_unsorted(mut keys: Vec<BindingKey>) -> Self {
+        keys.sort_unstable();
+        keys.dedup();
+        Self(keys)
+    }
+    pub fn insert(&mut self, key: BindingKey) -> bool {
+        match self.0.binary_search(&key) {
+            Ok(_) => false,
+            Err(at) => {
+                self.0.insert(at, key);
+                true
+            }
+        }
+    }
+    pub fn contains(&self, key: &BindingKey) -> bool {
+        self.0.binary_search(key).is_ok()
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn iter(&self) -> std::slice::Iter<'_, BindingKey> {
+        self.0.iter()
+    }
+    /// Adds every key of `other`.
+    pub fn union(&mut self, other: Self) {
+        if self.0.is_empty() {
+            *self = other;
+        } else if !other.0.is_empty() {
+            let a = std::mem::take(&mut self.0);
+            let mut out = Vec::with_capacity(a.len() + other.0.len());
+            let mut a = a.into_iter().peekable();
+            let mut b = other.0.into_iter().peekable();
+            loop {
+                let next = match (a.peek(), b.peek()) {
+                    (Some(x), Some(y)) => match x.cmp(y) {
+                        Ordering::Less => a.next(),
+                        Ordering::Greater => b.next(),
+                        Ordering::Equal => {
+                            b.next();
+                            a.next()
+                        }
+                    },
+                    (Some(_), None) => a.next(),
+                    (None, _) => b.next(),
+                };
+                match next {
+                    Some(key) => out.push(key),
+                    None => break,
+                }
+            }
+            self.0 = out;
+        }
+    }
+    pub fn into_vec(self) -> Vec<BindingKey> {
+        self.0
+    }
+}
+impl IntoIterator for KeySet {
+    type Item = BindingKey;
+    type IntoIter = std::vec::IntoIter<BindingKey>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+impl<'a> IntoIterator for &'a KeySet {
+    type Item = &'a BindingKey;
+    type IntoIter = std::slice::Iter<'a, BindingKey>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+impl FromIterator<BindingKey> for KeySet {
+    fn from_iter<I: IntoIterator<Item = BindingKey>>(keys: I) -> Self {
+        Self::from_unsorted(keys.into_iter().collect())
+    }
+}
+impl<const N: usize> From<[BindingKey; N]> for KeySet {
+    fn from(keys: [BindingKey; N]) -> Self {
+        keys.into_iter().collect()
+    }
+}
+
 const BITS: u32 = 4;
 const WIDTH: usize = 1 << BITS;
 const MASK: u64 = WIDTH as u64 - 1;

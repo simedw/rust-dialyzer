@@ -1,5 +1,6 @@
 use crate::constraints::atomic::{
-    AtomicConstraint, AtomicOutcome, BindingKey, BindingMap, ConstraintValue, SolveError, WriteLog,
+    AtomicConstraint, AtomicOutcome, BindingKey, BindingMap, ConstraintValue, KeySet, SolveError,
+    WriteLog,
 };
 use crate::constraints::derived::{BifResultProvider, DerivedArena, DerivedId, DerivedOp};
 use crate::constraints::normalize::Dependencies;
@@ -464,7 +465,7 @@ impl ConstraintTree {
                                 last_flags: pending.identity,
                                 flags: pending.indices,
                                 restart: Bits::default(),
-                                updated: BTreeSet::new(),
+                                updated: Vec::new(),
                                 flat,
                             }),
                             map,
@@ -482,7 +483,7 @@ impl ConstraintTree {
                             index: 0,
                             evaluated_maps: Vec::new(),
                             unevaluated_maps: Vec::new(),
-                            updated: BTreeSet::new(),
+                            updated: Vec::new(),
                             survived: Vec::new(),
                             newly_failed: false,
                         })));
@@ -550,7 +551,7 @@ impl ConstraintTree {
                         rec.approximation.limit(4)?,
                         rec.initial_map.clone(),
                     )?;
-                    state.invalidate(definition.body, updated);
+                    state.invalidate(definition.body, updated.into_vec());
                     frames.push(Frame::RecursiveReturn(rec));
                     frames.push(Frame::Enter(definition.body, map));
                 }
@@ -584,7 +585,7 @@ impl ConstraintTree {
                                     inferred,
                                     bindings,
                                 )?;
-                                updated.extend(changed);
+                                updated.union(changed);
                                 result = Some(AtomicOutcome::Solved { bindings, updated });
                             } else {
                                 rec.approximation = inferred;
@@ -611,7 +612,7 @@ impl ConstraintTree {
                     } else if c.restart.is_empty() {
                         result = Some(AtomicOutcome::Solved {
                             bindings: map,
-                            updated: c.updated,
+                            updated: KeySet::from_unsorted(c.updated),
                         });
                     } else if Some(&c.restart) == c.last_flags.as_ref()
                         && c.snapshot.unchanged(&map)
@@ -619,7 +620,7 @@ impl ConstraintTree {
                         state.detected_loops.push(c.id);
                         result = Some(AtomicOutcome::Solved {
                             bindings: map,
-                            updated: c.updated,
+                            updated: KeySet::from_unsorted(c.updated),
                         });
                     } else {
                         c.last_flags = Some(c.restart.clone());
@@ -649,14 +650,14 @@ impl ConstraintTree {
                                 }
                             }
                         } else {
-                            let mut affected: BTreeMap<usize, BTreeSet<BindingKey>> =
-                                BTreeMap::new();
+                            // `updated` is ascending, so each list is too.
+                            let mut affected: BTreeMap<usize, Vec<BindingKey>> = BTreeMap::new();
                             for var in &updated {
                                 if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
                                     for &i in indices {
                                         let i = i as usize;
                                         if i != index {
-                                            affected.entry(i).or_default().insert(var.clone());
+                                            affected.entry(i).or_default().push(var.clone());
                                         }
                                     }
                                 }
@@ -672,7 +673,7 @@ impl ConstraintTree {
                             }
                         }
                         if c.updated.is_empty() {
-                            c.updated = updated;
+                            c.updated = updated.into_vec();
                         } else {
                             c.updated.extend(updated);
                         }
@@ -734,7 +735,7 @@ impl ConstraintTree {
                             }
                             keys
                         } else {
-                            d.updated
+                            KeySet::from_unsorted(d.updated)
                                 .into_iter()
                                 .filter(|v| {
                                     v.label()
@@ -744,7 +745,7 @@ impl ConstraintTree {
                                 .collect()
                         };
                         let mut map = d.map.clone();
-                        let mut updated = BTreeSet::new();
+                        let mut updated = KeySet::new();
                         for key in keys {
                             let mut joined = lookup(maps[0], &key);
                             for branch in &maps[1..] {
@@ -840,14 +841,15 @@ impl State<'_> {
             Some(Cache::Active { dirty, .. }) => {
                 let u = std::mem::take(dirty);
                 let masks = &self.tree.nodes[id.0].masks;
-                let mut affected: BTreeMap<usize, BTreeSet<BindingKey>> = BTreeMap::new();
+                // `u` is ascending, so each list is too.
+                let mut affected: BTreeMap<usize, Vec<BindingKey>> = BTreeMap::new();
                 for variable in u {
                     if let Some(indices) = variable.label().and_then(|v| masks.get(v)) {
                         for &index in indices {
                             affected
                                 .entry(index as usize)
                                 .or_default()
-                                .insert(variable.clone());
+                                .push(variable.clone());
                         }
                     }
                 }
@@ -879,7 +881,7 @@ impl State<'_> {
             }
         }
     }
-    fn invalidate(&mut self, mut id: ConstraintId, updated: BTreeSet<BindingKey>) {
+    fn invalidate(&mut self, mut id: ConstraintId, updated: Vec<BindingKey>) {
         if let Constraint::Reference { function, .. } = &self.tree.nodes[id.0].constraint {
             id = self.tree.functions[function].body;
         }
@@ -898,7 +900,7 @@ impl State<'_> {
         }
         out
     }
-    fn save(&mut self, id: ConstraintId, updated: &BTreeSet<BindingKey>, map: &BindingMap) {
+    fn save(&mut self, id: ConstraintId, updated: &KeySet, map: &BindingMap) {
         let entry = self.cache.entry(id).or_insert_with(|| Cache::Active {
             local: BindingMap::new(),
             dirty: BTreeSet::new(),
@@ -919,7 +921,8 @@ struct Conj {
     last_flags: Option<Bits>,
     flags: Bits,
     restart: Bits,
-    updated: BTreeSet<BindingKey>,
+    /// Every key the children updated, in any order and with repeats.
+    updated: Vec<BindingKey>,
     flat: bool,
 }
 /// The map a conjunction last (re)started from, compared to detect a loop.
@@ -966,7 +969,8 @@ struct Disj {
     index: usize,
     evaluated_maps: Vec<BindingMap>,
     unevaluated_maps: Vec<BindingMap>,
-    updated: BTreeSet<BindingKey>,
+    /// Every key the branches updated, in any order and with repeats.
+    updated: Vec<BindingKey>,
     /// Ascending positions of the branches that did not fail.
     survived: Vec<u32>,
     newly_failed: bool,
@@ -1020,7 +1024,7 @@ fn restore_entry(entry: Option<&Cache>, map: &BindingMap) -> BindingMap {
     }
     out
 }
-fn save_entry(entry: &mut Cache, updated: &BTreeSet<BindingKey>, map: &BindingMap) {
+fn save_entry(entry: &mut Cache, updated: &KeySet, map: &BindingMap) {
     if let Cache::Active { local, dirty } = entry {
         for key in updated {
             if let Some(value) = map.get(key) {
@@ -1034,7 +1038,7 @@ fn enter(
     key: &VariableId,
     value: Type,
     mut map: BindingMap,
-) -> Result<(BindingMap, BTreeSet<BindingKey>), SolveError> {
+) -> Result<(BindingMap, KeySet), SolveError> {
     let key = BindingKey::Label(key.clone());
     let changed = if value == Type::any() {
         if map.contains_key(&key) {
@@ -1052,7 +1056,7 @@ fn enter(
             true
         }
     };
-    let mut updated = BTreeSet::new();
+    let mut updated = KeySet::new();
     if changed {
         updated.insert(key.clone());
     }
