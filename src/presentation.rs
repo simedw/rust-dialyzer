@@ -151,7 +151,7 @@ fn bound_string(bound: &Bound) -> String {
 }
 fn print_tuple(tuple: &TupleVariant, ctx: &PresentationContext) -> Result<String, LatticeError> {
     if let Some(tag) = &tuple.tag
-        && let Some(fields) = ctx.records.get(&(tag.clone(), tuple.elements.len() - 1))
+        && let Some(fields) = ctx.records.get(&(tag.to_string(), tuple.elements.len() - 1))
     {
         let mut strings = Vec::new();
         for (actual, field) in tuple.elements[1..].iter().zip(fields) {
@@ -205,7 +205,7 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
             }
         },
         Repr::NominalSet(n) => union(
-            std::iter::once(*n.structural.clone())
+            std::iter::once(n.structural.clone())
                 .chain(n.nominals.iter().map(Nominal::as_type))
                 .filter(|t| !t.is_none()),
             ctx,
@@ -275,9 +275,9 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                         nonempty,
                     } => {
                         let content = print_type(elements, ctx)?;
-                        if **tail == Type::nil() {
+                        if *tail == Type::nil() {
                             let char_type = Type::builtin(BuiltinType::Char)?;
-                            if **elements == char_type {
+                            if *elements == char_type {
                                 if *nonempty {
                                     "nonempty_string()".into()
                                 } else {
@@ -365,9 +365,9 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                         .collect::<Vec<_>>();
                     if !map.default_key.is_none() || !map.default_value.is_none() {
                         pairs.push((
-                            *map.default_key.clone(),
+                            map.default_key.clone(),
                             Presence::Optional,
-                            *map.default_value.clone(),
+                            map.default_value.clone(),
                         ));
                     }
                     let mut mandatory = Vec::new();
@@ -423,7 +423,7 @@ impl Type {
         })?;
         let fields = ctx
             .records
-            .get(&(tag.clone(), tuple.elements.len() - 1))
+            .get(&(tag.to_string(), tuple.elements.len() - 1))
             .ok_or_else(|| {
                 LatticeError::BadMatchNative(Box::new(NativeValue::Atom("error".into())))
             })?;
@@ -515,12 +515,12 @@ impl Type {
                         else {
                             return Err(LatticeError::BadMatch(Box::new(v)));
                         };
-                        ((**elements).clone(), (**tail).clone())
+                        (elements.clone(), tail.clone())
                     };
                     return Ok(Self::new(Repr::Families(FamilyStore::raw(Slots {
                         list: Some(Arc::new(Lists::List {
-                            elements: Box::new(elements),
-                            tail: Box::new(tail),
+                            elements: elements,
+                            tail: tail,
                             nonempty: *nonempty,
                         })),
                         ..Slots::default()
@@ -529,8 +529,8 @@ impl Type {
                 if let Some(f) = s.functions() {
                     return Ok(Self::new(Repr::Families(FamilyStore::raw(Slots {
                         functions: Some(Arc::new(Functions {
-                            domain: Box::new(f.domain.abstract_records(ctx)?),
-                            range: Box::new(f.range.abstract_records(ctx)?),
+                            domain: f.domain.abstract_records(ctx)?,
+                            range: f.range.abstract_records(ctx)?,
                         })),
                         ..Slots::default()
                     }))));
@@ -539,7 +539,7 @@ impl Type {
                     let mut types = Vec::new();
                     for tuple in rows.values().flatten() {
                         if let Some(fields) = tuple.tag.as_ref().and_then(|tag| {
-                            ctx.records.get(&(tag.clone(), tuple.elements.len() - 1))
+                            ctx.records.get(&(tag.to_string(), tuple.elements.len() - 1))
                         }) {
                             let mut elements = vec![tuple.elements[0].clone()];
                             elements.extend(fields.iter().map(|f| f.declared_type.clone()));

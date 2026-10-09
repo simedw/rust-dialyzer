@@ -397,7 +397,7 @@ impl Type {
             Nil => Self::families(Slots { list: Some(Arc::new(Lists::Nil)), ..Slots::default() }),
             Tuple => Self::families(Slots { tuple: Some(Arc::new(Tuples::Any)), ..Slots::default() }),
             Map => Self::families(Slots { maps: Some(Arc::new(Maps {
-                entries: Vec::new(), default_key: Box::new(Self::any()), default_value: Box::new(Self::any()),
+                entries: Vec::new(), default_key: Self::any(), default_value: Self::any(),
             })), ..Slots::default() }),
             Identifier | Pid | Port | Reference => Self::families(Slots {
                 identifiers: Some(Arc::new(if matches!(kind, Identifier) { Identifiers::All } else {
@@ -412,13 +412,13 @@ impl Type {
             }),
             List | NonemptyList | MaybeImproperList | Cons => Self::families(Slots {
                 list: Some(Arc::new(Lists::List {
-                    elements: Box::new(Self::any()),
-                    tail: Box::new(if matches!(kind, List | NonemptyList) { Self::nil() } else { Self::any() }),
+                    elements: Self::any(),
+                    tail: if matches!(kind, List | NonemptyList) { Self::nil() } else { Self::any() },
                     nonempty: matches!(kind, NonemptyList | Cons),
                 })), ..Slots::default()
             }),
             Function => Self::families(Slots { functions: Some(Arc::new(Functions {
-                domain: Box::new(Self::any()), range: Box::new(Self::any()),
+                domain: Self::any(), range: Self::any(),
             })), ..Slots::default() }),
             Byte => Self::integer_interval(Bound::Finite(0.into()), Bound::Finite(255.into())),
             Char => Self::integer_interval(Bound::Finite(0.into()), Bound::Finite(0x10ffff.into())),
@@ -1292,8 +1292,8 @@ impl Identifiers {
 enum Lists {
     Nil,
     List {
-        elements: Box<Type>,
-        tail: Box<Type>,
+        elements: Type,
+        tail: Type,
         nonempty: bool,
     },
 }
@@ -1303,7 +1303,7 @@ impl Lists {
     fn shared(elements: Type, tail: Type, nonempty: bool, x: &Arc<Self>, y: &Arc<Self>) -> Arc<Self> {
         let holds = |l: &Self| {
             matches!(l, Self::List { elements: e, tail: t, nonempty: n }
-                if *n == nonempty && **e == elements && **t == tail)
+                if *n == nonempty && *e == elements && *t == tail)
         };
         if holds(x) {
             x.clone()
@@ -1311,8 +1311,8 @@ impl Lists {
             y.clone()
         } else {
             Arc::new(Self::List {
-                elements: Box::new(elements),
-                tail: Box::new(tail),
+                elements: elements,
+                tail: tail,
                 nonempty,
             })
         }
@@ -1322,7 +1322,7 @@ impl Lists {
             (Self::Nil, Self::Nil) => x.clone(),
             (Self::Nil, Self::List { elements, tail, .. })
             | (Self::List { elements, tail, .. }, Self::Nil) => Self::shared(
-                (**elements).clone(),
+                elements.clone(),
                 tail.join(&Type::nil())?,
                 false,
                 x,
@@ -1399,7 +1399,7 @@ impl Lists {
                         nonempty: false,
                     },
                     Self::Nil,
-                ) if **tail == Type::nil() => Some(Arc::new(Self::List {
+                ) if *tail == Type::nil() => Some(Arc::new(Self::List {
                     elements: elements.clone(),
                     tail: tail.clone(),
                     nonempty: true,
@@ -1436,7 +1436,7 @@ impl Lists {
                     nonempty,
                 } => {
                     let elements = elements.limit_aux(k - 1)?;
-                    let tail = if **tail == Type::nil() {
+                    let tail = if *tail == Type::nil() {
                         Type::nil()
                     } else {
                         tail.limit_aux((k - 1).max(1))?
@@ -1462,7 +1462,7 @@ impl Lists {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct TupleVariant {
     elements: Vec<Type>,
-    tag: Option<String>,
+    tag: Option<crate::atom::Atom>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Tuples {
@@ -1500,7 +1500,7 @@ impl Tuples {
                 if split && let Some(t) = &tag {
                     elements[0] = Type::atom(t)
                 }
-                TupleVariant { elements, tag: tag.map(String::from) }
+                TupleVariant { elements, tag }
             })
             .collect();
         Ok(Some(Self::Set(BTreeMap::from([(
@@ -1546,7 +1546,7 @@ impl Tuples {
                         tag: None,
                     }];
                 } else {
-                    let mut bytag: BTreeMap<String, Vec<Type>> = BTreeMap::new();
+                    let mut bytag: BTreeMap<crate::atom::Atom, Vec<Type>> = BTreeMap::new();
                     for v in variants.drain(..) {
                         let tag = v.tag.unwrap();
                         if let Some(es) = bytag.get_mut(&tag) {
@@ -1809,20 +1809,20 @@ impl Bitstrings {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Functions {
-    domain: Box<Type>,
-    range: Box<Type>,
+    domain: Type,
+    range: Type,
 }
 impl Functions {
     fn shared(domain: Type, range: Type, x: &Arc<Self>, y: &Arc<Self>) -> Arc<Self> {
-        let holds = |f: &Self| *f.domain == domain && *f.range == range;
+        let holds = |f: &Self| f.domain == domain && f.range == range;
         if holds(x) {
             x.clone()
         } else if holds(y) {
             y.clone()
         } else {
             Arc::new(Self {
-                domain: Box::new(domain),
-                range: Box::new(range),
+                domain: domain,
+                range: range,
             })
         }
     }
@@ -1934,7 +1934,7 @@ impl NominalName {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Nominal {
     name: NominalName,
-    inner: Box<Type>,
+    inner: Type,
 }
 impl Nominal {
     fn as_type(&self) -> Type {
@@ -1944,13 +1944,13 @@ impl Nominal {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct NominalSet {
     nominals: Vec<Nominal>,
-    structural: Box<Type>,
+    structural: Type,
 }
 impl NominalSet {
     fn raw(nominals: Vec<Nominal>, structural: Type) -> Type {
         Type::new(Repr::NominalSet(Arc::new(Self {
             nominals,
-            structural: Box::new(structural),
+            structural: structural,
         })))
     }
 }
@@ -2008,14 +2008,14 @@ impl Type {
         } else {
             Self::new(Repr::Nominal(Arc::new(Nominal {
                 name,
-                inner: Box::new(inner),
+                inner: inner,
             })))
         }
     }
     fn raw_nominal(name: NominalName, inner: Self) -> Self {
         Self::new(Repr::Nominal(Arc::new(Nominal {
             name,
-            inner: Box::new(inner),
+            inner: inner,
         })))
     }
     fn normalized_nominals(mut remaining: Vec<Self>, other: Self) -> Result<Self, LatticeError> {
@@ -2081,7 +2081,7 @@ impl Type {
         let mut inserted = false;
         for n in &mut acc {
             if n.name == sup.name {
-                *n.inner = n.inner.join(&sup.inner)?;
+                n.inner = n.inner.join(&sup.inner)?;
                 inserted = true;
                 break;
             }
@@ -2130,8 +2130,8 @@ impl Type {
                 }
                 (_, Nominal(_)) => rhs.nominal_join(self)?,
                 (NominalSet(x), NominalSet(y)) => {
-                    let mut sup = Self::raw_nominal(a.name.clone(), *x.structural.clone())
-                        .join(&Self::raw_nominal(b.name.clone(), *y.structural.clone()))?;
+                    let mut sup = Self::raw_nominal(a.name.clone(), x.structural.clone())
+                        .join(&Self::raw_nominal(b.name.clone(), y.structural.clone()))?;
                     for n in &x.nominals {
                         sup = Self::raw_nominal(a.name.clone(), n.as_type()).join(&sup)?
                     }
@@ -2146,11 +2146,11 @@ impl Type {
                         .iter()
                         .map(|n| self::Nominal {
                             name: a.name.clone(),
-                            inner: Box::new(n.as_type()),
+                            inner: n.as_type(),
                         })
                         .collect::<Vec<_>>();
                     Self::nominal_absorb(&expanded, b)?
-                        .join(&Self::raw_nominal(a.name.clone(), *x.structural.clone()))?
+                        .join(&Self::raw_nominal(a.name.clone(), x.structural.clone()))?
                 }
                 (_, NominalSet(_)) => rhs.nominal_join(self)?,
                 _ => Self::nominal_pair(a, b),
@@ -2241,7 +2241,7 @@ impl Type {
                 }
                 (NominalSet(x), NominalSet(y)) => {
                     let expand = |name: &NominalName, s: &self::NominalSet| {
-                        let mut ts = vec![Self::raw_nominal(name.clone(), *s.structural.clone())];
+                        let mut ts = vec![Self::raw_nominal(name.clone(), s.structural.clone())];
                         ts.extend(
                             s.nominals
                                 .iter()
@@ -2284,7 +2284,7 @@ impl Type {
         })
     }
     fn nominal_components(s: &NominalSet) -> Vec<Self> {
-        let mut ts = vec![*s.structural.clone()];
+        let mut ts = vec![s.structural.clone()];
         ts.extend(s.nominals.iter().map(self::Nominal::as_type));
         ts
     }
@@ -2341,7 +2341,7 @@ impl Type {
         match &self.repr {
             Repr::Nominal(n) => n.inner.shallow_structural(),
             Repr::NominalSet(ns) => {
-                let mut s = *ns.structural.clone();
+                let mut s = ns.structural.clone();
                 for n in &ns.nominals {
                     s = s.join(&n.inner)?
                 }
@@ -2468,8 +2468,8 @@ type AlignedMapPair = (MapKey, Presence, Type, Presence, Type);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Maps {
     entries: Vec<MapEntry>,
-    default_key: Box<Type>,
-    default_value: Box<Type>,
+    default_key: Type,
+    default_value: Type,
 }
 impl Maps {
     fn canonical(entries: Vec<MapEntry>, dk: Type, dv: Type) -> Result<Option<Self>, LatticeError> {
@@ -2597,8 +2597,8 @@ impl Maps {
         }
         Ok(Some(Self {
             entries,
-            default_key: Box::new(dk),
-            default_value: Box::new(dv),
+            default_key: dk,
+            default_value: dv,
         }))
     }
     fn store(entries: &mut Vec<MapEntry>, e: MapEntry) {
@@ -2611,7 +2611,7 @@ impl Maps {
         let v = if k.as_type().meet(&self.default_key)?.is_none() {
             Type::none()
         } else {
-            *self.default_value.clone()
+            self.default_value.clone()
         };
         Ok((Presence::Optional, v))
     }
@@ -2670,8 +2670,8 @@ impl Maps {
                 Self::store(&mut entries, constraints.pop().unwrap());
                 Ok(Self::canonical(
                     entries,
-                    *x.default_key.clone(),
-                    *x.default_value.clone(),
+                    x.default_key.clone(),
+                    x.default_value.clone(),
                 )?
                 .map(|m| reuse_left(m, x)))
             }
@@ -2722,8 +2722,8 @@ impl Maps {
         )
     }
     fn limit_aux(&self, k: i64) -> Result<Option<Self>, LatticeError> {
-        let mut dk = *self.default_key.clone();
-        let mut dv = *self.default_value.clone();
+        let mut dk = self.default_key.clone();
+        let mut dv = self.default_value.clone();
         let mut entries = Vec::new();
         for e in &self.entries {
             let key = e.key.as_type().limit_aux(k - 1)?;
@@ -2753,7 +2753,7 @@ impl Maps {
         let mut result = if self.default_key.meet(key)?.is_impossible() {
             Type::none()
         } else {
-            *self.default_value.clone()
+            self.default_value.clone()
         };
         if MapKey::from_type(key).is_err() {
             for e in &self.entries {
@@ -2792,7 +2792,7 @@ impl Maps {
             return Ok(None);
         }
         let mut entries = self.entries.clone();
-        let (mut dk, mut dv) = (*self.default_key.clone(), *self.default_value.clone());
+        let (mut dk, mut dv) = (self.default_key.clone(), self.default_value.clone());
         if let Ok(key) = MapKey::from_type(&key) {
             Self::store(
                 &mut entries,
@@ -2822,7 +2822,7 @@ impl Maps {
         };
         let mut es = self.entries.clone();
         es.remove(i);
-        Self::canonical(es, *self.default_key.clone(), *self.default_value.clone())
+        Self::canonical(es, self.default_key.clone(), self.default_value.clone())
     }
 }
 impl Type {
@@ -3037,8 +3037,8 @@ impl Type {
         } else {
             Self::families(Slots {
                 list: Some(Arc::new(Lists::List {
-                    elements: Box::new(elements),
-                    tail: Box::new(tail),
+                    elements: elements,
+                    tail: tail,
                     nonempty,
                 })),
                 ..Slots::default()
@@ -3066,7 +3066,7 @@ impl Type {
                         ..
                     }) = slots.list()
                 {
-                    return Ok(Self::list(head.join(elements)?, *termination.clone(), true));
+                    return Ok(Self::list(head.join(elements)?, termination.clone(), true));
                 }
             }
             let list_part = tail
@@ -3207,8 +3207,8 @@ impl Type {
             .unwrap_or_else(Self::any);
         Self::families(Slots {
             functions: Some(Arc::new(Functions {
-                domain: Box::new(domain),
-                range: Box::new(range),
+                domain: domain,
+                range: range,
             })),
             ..Slots::default()
         })
@@ -3826,7 +3826,7 @@ impl<'a> TupleAlternativesView<'a> {
             .flat_map(|vs| vs.iter())
             .map(|v| TupleAlternativeView {
                 elements: &v.elements,
-                tag: v.tag.as_deref(),
+                tag: v.tag.as_ref().map(|t| t.as_str()),
             })
     }
     pub fn arities(self) -> impl Iterator<Item = usize> + 'a {
@@ -4323,16 +4323,16 @@ impl Type {
         match &self.repr {
             Repr::Nominal(n) => pending.push(&n.inner),
             Repr::NominalSet(n) => {
-                pending.extend(n.nominals.iter().map(|v| v.inner.as_ref()));
+                pending.extend(n.nominals.iter().map(|v| &v.inner));
                 pending.push(&n.structural);
             }
             Repr::Product(p) => pending.extend(p.iter()),
             Repr::Families(s) => {
                 if let Some(f) = s.functions() {
-                    pending.extend([f.domain.as_ref(), f.range.as_ref()]);
+                    pending.extend([&f.domain, &f.range]);
                 }
                 if let Some(Lists::List { elements, tail, .. }) = s.list() {
-                    pending.extend([elements.as_ref(), tail.as_ref()]);
+                    pending.extend([elements, tail]);
                 }
                 if let Some(Tuples::Set(groups)) = s.tuple() {
                     for variant in groups.values().flatten() {
@@ -4340,7 +4340,7 @@ impl Type {
                     }
                 }
                 if let Some(map) = s.maps() {
-                    pending.extend([map.default_key.as_ref(), map.default_value.as_ref()]);
+                    pending.extend([&map.default_key, &map.default_value]);
                 }
             }
             _ => (),
@@ -4435,8 +4435,8 @@ impl Type {
                 let mut s = slots.rebuild_base();
                 if let Some(f) = slots.functions() {
                     s.functions = Some(Arc::new(Functions {
-                        domain: Box::new(f.domain.substitute_aux(lookup)?),
-                        range: Box::new(f.range.substitute_aux(lookup)?),
+                        domain: f.domain.substitute_aux(lookup)?,
+                        range: f.range.substitute_aux(lookup)?,
                     }));
                 }
                 if let Some(Lists::List {
@@ -4452,8 +4452,8 @@ impl Type {
                         let end = tail.substitute_aux(lookup)?;
                         if end == Self::nil() || end.is_any() {
                             s.list = Some(Arc::new(Lists::List {
-                                elements: Box::new(head),
-                                tail: Box::new(end),
+                                elements: head,
+                                tail: end,
                                 nonempty: *nonempty,
                             }));
                         } else {
@@ -4895,8 +4895,8 @@ impl Unifier {
                     return self.types(&na.structural, &nb.structural, up);
                 }
                 return self.types(
-                    &NominalSet::raw(na.nominals[1..].to_vec(), *na.structural.clone()),
-                    &NominalSet::raw(nb.nominals[1..].to_vec(), *nb.structural.clone()),
+                    &NominalSet::raw(na.nominals[1..].to_vec(), na.structural.clone()),
+                    &NominalSet::raw(nb.nominals[1..].to_vec(), nb.structural.clone()),
                     up,
                 );
             }
@@ -4924,7 +4924,7 @@ impl Unifier {
             if n.nominals.len() == 1 {
                 return Ok(());
             }
-            let rest = NominalSet::raw(n.nominals[1..].to_vec(), *n.structural.clone());
+            let rest = NominalSet::raw(n.nominals[1..].to_vec(), n.structural.clone());
             return self.pair(Val::Type(&rest), b, Some(up));
         }
         if b.is_nominal_set() {
@@ -6025,8 +6025,8 @@ mod immutable_transform_tests {
                         value: Type::atom("first"),
                     },
                 ],
-                default_key: Box::new(Type::none()),
-                default_value: Box::new(Type::none()),
+                default_key: Type::none(),
+                default_value: Type::none(),
             })),
             ..Slots::default()
         })));
@@ -6248,17 +6248,17 @@ mod immutable_nominal_payload_tests {
         };
         let sup = Nominal {
             name: original.name.clone(),
-            inner: Box::new(Type::atom("b")),
+            inner: Type::atom("b"),
         };
         let output = Type::nominal_absorb(&[original.as_ref().clone()], &sup).unwrap();
         let Repr::NominalSet(result) = &output.repr else {
             unreachable!()
         };
         assert_eq!(
-            *result.nominals[0].inner,
+            result.nominals[0].inner,
             Type::atoms(["a", "b"])
         );
-        assert_eq!(*original.inner, Type::atom("a"));
+        assert_eq!(original.inner, Type::atom("a"));
         assert_eq!(source, alias);
         assert_eq!(source.to_value(), alias.to_value());
     }
@@ -6285,7 +6285,7 @@ mod borrowed_query_contract_tests {
                 let ty = NominalSet::raw(
                     vec![Nominal {
                         name: NominalName::Symbol("n".into()),
-                        inner: Box::new(inner),
+                        inner: inner,
                     }],
                     structural,
                 );
@@ -6348,13 +6348,13 @@ mod rebuild_base_tests {
             list: Some(Arc::new(Lists::Nil)),
             tuple: Some(Arc::new(Tuples::Any)),
             functions: Some(Arc::new(Functions {
-                domain: Box::new(Type::any()),
-                range: Box::new(Type::any()),
+                domain: Type::any(),
+                range: Type::any(),
             })),
             maps: Some(Arc::new(Maps {
                 entries: vec![],
-                default_key: Box::new(Type::any()),
-                default_value: Box::new(Type::none()),
+                default_key: Type::any(),
+                default_value: Type::none(),
             })),
         };
         let base = FamilyStore::raw(source.clone()).rebuild_base();
@@ -6372,8 +6372,8 @@ mod rebuild_base_tests {
     fn substitution_still_skips_tail_lookup_after_impossible_head() {
         let t = Type::new(Repr::Families(FamilyStore::raw(Slots {
             list: Some(Arc::new(Lists::List {
-                elements: Box::new(Type::variable_atom("head")),
-                tail: Box::new(Type::variable_atom("tail")),
+                elements: Type::variable_atom("head"),
+                tail: Type::variable_atom("tail"),
                 nonempty: true,
             })),
             ..Slots::default()
@@ -6538,7 +6538,7 @@ mod canonical_constructor_tests {
         let list=Type::list(Type::any(),raw_nil.clone(),false);
         let Repr::Families(slots)=&list.repr else {panic!()};
         let Some(Lists::List{tail,..})=slots.list() else {panic!()};
-        assert_eq!(**tail,raw_nil);
+        assert_eq!(*tail,raw_nil);
         assert_ne!(list,Type::proper_list(Type::any(),false));
         assert_eq!(Type::list(Type::unit(),Type::any(),false),Type::none());
     }

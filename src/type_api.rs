@@ -226,11 +226,11 @@ impl Type {
             Nil => matches!(list, Some(Lists::Nil)),
             List => {
                 matches!(list, Some(Lists::Nil))
-                    || matches!(list,Some(Lists::List{tail,..})if tail.as_ref()==&Self::nil())
+                    || matches!(list,Some(Lists::List{tail,..})if *tail==Self::nil())
             }
             MaybeImproperList => list.is_some(),
             String => {
-                matches!(list,Some(Lists::List{elements,tail,..})if tail.as_ref()==&Self::nil()&&elements.predicate(Char)?)
+                matches!(list,Some(Lists::List{elements,tail,..})if *tail==Self::nil()&&elements.predicate(Char)?)
             }
             Map => s.is_some_and(|s| s.maps().is_some()),
             Tuple => s.is_some_and(|s| s.tuple().is_some()),
@@ -454,7 +454,7 @@ impl Type {
             FunctionArgs | FunctionArity | FunctionRange => {
                 let f = s.and_then(|s| s.functions()).ok_or_else(bad)?;
                 if matches!(getter, FunctionRange) {
-                    TypeValue::Type(*f.range.clone())
+                    TypeValue::Type(f.range.clone())
                 } else {
                     match (&f.domain.repr, getter) {
                         (Repr::Any, FunctionArgs) => TypeValue::Types(Known::Unknown),
@@ -482,8 +482,8 @@ impl Type {
                             nonempty: true,
                             ..
                         },
-                    ) => *elements.clone(),
-                    (ListTermination, Lists::List { tail, .. }) => *tail.clone(),
+                    ) => elements.clone(),
+                    (ListTermination, Lists::List { tail, .. }) => tail.clone(),
                     (
                         ConsTail,
                         Lists::List {
@@ -535,8 +535,8 @@ impl Type {
                 let m = s.and_then(|s| s.maps()).ok_or_else(bad)?;
                 match getter {
                     MapEntries => TypeValue::Entries(m.entries.clone()),
-                    MapDefaultKey => TypeValue::Type(*m.default_key.clone()),
-                    _ => TypeValue::Type(*m.default_value.clone()),
+                    MapDefaultKey => TypeValue::Type(m.default_key.clone()),
+                    _ => TypeValue::Type(m.default_value.clone()),
                 }
             }
             VariableName => {
@@ -565,7 +565,7 @@ impl Type {
         match t.direct_slots().and_then(|s| s.list()) {
             Some(Lists::Nil) => Ok(Self::nil()),
             Some(Lists::List { elements, tail, .. }) => {
-                Ok(Self::list(*elements.clone(), *tail.clone(), false))
+                Ok(Self::list(elements.clone(), tail.clone(), false))
             }
             _ => Err(LatticeError::FunctionClause),
         }
@@ -668,8 +668,8 @@ impl Type {
                 let mut s = slots.rebuild_base();
                 if let Some(f) = slots.functions() {
                     s.functions = Some(Arc::new(Functions {
-                        domain: Box::new(f.domain.widen_to_number()?),
-                        range: Box::new(f.range.widen_to_number()?),
+                        domain: f.domain.widen_to_number()?,
+                        range: f.range.widen_to_number()?,
                     }));
                 }
                 if let Some(Lists::List {
@@ -679,8 +679,8 @@ impl Type {
                 }) = slots.list()
                 {
                     s.list = Some(Arc::new(Lists::List {
-                        elements: Box::new(elements.widen_to_number()?),
-                        tail: Box::new(tail.widen_to_number()?),
+                        elements: elements.widen_to_number()?,
+                        tail: tail.widen_to_number()?,
                         nonempty: *nonempty,
                     }));
                 }
