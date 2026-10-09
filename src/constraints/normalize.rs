@@ -23,12 +23,33 @@ fn union<'a>(runs: impl IntoIterator<Item = &'a Dependencies>) -> Dependencies {
     let Some(third) = runs.next() else {
         return merge(first, second).into();
     };
-    // Many runs: the stable sort finds and merges them.
-    let mut all: Vec<_> = [first, second, third]
+    let runs: Vec<_> = [first, second, third].into_iter().chain(runs).collect();
+    // Variables are nearly always machine integers, which sort as such
+    // (`VariableId` puts integers before atoms), so they are sorted as keys.
+    let mut small = Vec::with_capacity(runs.iter().map(|run| run.len()).sum());
+    for v in runs.iter().flat_map(|run| run.iter()) {
+        match v {
+            VariableId::Integer(n) => match n.small() {
+                Some(n) => small.push(n),
+                None => return union_sorted(&runs),
+            },
+            VariableId::Atom(_) => return union_sorted(&runs),
+        }
+    }
+    small.sort_unstable();
+    small.dedup();
+    let out: Dependencies = small
         .into_iter()
-        .chain(runs)
-        .flat_map(|run| run.iter())
+        .map(|n| VariableId::Integer(n.into()))
         .collect();
+    if crate::lattice::verify_fast_paths() {
+        assert_eq!(out, union_sorted(&runs), "small variable union fast path");
+    }
+    out
+}
+/// Many runs: the stable sort finds and merges them.
+fn union_sorted(runs: &[&Dependencies]) -> Dependencies {
+    let mut all: Vec<_> = runs.iter().flat_map(|run| run.iter()).collect();
     all.sort();
     all.dedup();
     all.into_iter().cloned().collect()
