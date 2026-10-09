@@ -559,10 +559,32 @@ impl PreparedDefinitions {
             }
         }
         timings.mark("opaque_types");
-        let mut records = BTreeMap::new();
-        let mut own_types = BTreeMap::new();
-        for (index, module) in core.modules.iter().enumerate() {
+        // Parallel record and contract steps read the forms from every worker;
+        // parse them all up front so workers only read. Failures stay
+        // deferred and surface where they did before.
+        let parallel = !crate::ordered_parallel::sequential();
+        if parallel {
+            let mut id = 0;
+            while id < resolver.forms.nodes.len() {
+                let _ = resolver.materialize(crate::forms::FormId(id));
+                id += 1;
+            }
+        }
+        enum RecordFailure {
+            /// Completed with the external type events seen before the failure.
+            WithEvents(PreparationStage, NativeFormSite, FormError),
+        }
+        type RecordEntries = (
+            Vec<((ModuleId, String), Vec<Type>)>,
+            Vec<((ModuleId, String, usize), PreparedRecord)>,
+        );
+        let record_module = |resolver: &mut Resolver<'_>,
+                             index: usize|
+         -> std::result::Result<RecordEntries, RecordFailure> {
+            let module = &core.modules[index];
             let mid = ModuleId(index);
+            let mut own_types = Vec::new();
+            let mut records = Vec::new();
             resolver.replace_cache(FormCache::new());
             for record in forms.records.values().filter(|r| r.module == mid) {
                 let mut site = sites[&record.metadata].clone();
@@ -579,28 +601,32 @@ impl PreparedDefinitions {
                         let mut check = site.clone();
                         check.kind = NativeSiteKind::Check;
                         resolver.set_native_site(check.clone());
-                        resolver
-                            .check_remote_at(id, Site::Check)
-                            .map_err(|e| failure(PreparationStage::Records, check, e, &resolver))?;
+                        resolver.check_remote_at(id, Site::Check).map_err(|e| {
+                            RecordFailure::WithEvents(PreparationStage::Records, check, e)
+                        })?;
                         resolver.set_native_site(site.clone());
                         values.push(
                             resolver
                                 .resolve(id, Site::Record, BTreeMap::new())
                                 .map_err(|e| {
-                                    failure(PreparationStage::Records, site.clone(), e, &resolver)
+                                    RecordFailure::WithEvents(
+                                        PreparationStage::Records,
+                                        site.clone(),
+                                        e,
+                                    )
                                 })?,
                         );
                     } else {
                         values.push(Type::any());
                     }
                 }
-                own_types.insert((mid, record.name.clone()), values.clone());
+                own_types.push(((mid, record.name.clone()), values.clone()));
                 let mut tagged = vec![Type::atom(&record.name)];
                 tagged.extend(values.clone());
                 let prototype = Type::tuple(tagged).map_err(|e| {
-                    failure(PreparationStage::Records, site.clone(), e.into(), &resolver)
+                    RecordFailure::WithEvents(PreparationStage::Records, site.clone(), e.into())
                 })?;
-                records.insert(
+                records.push((
                     (mid, record.name.clone(), values.len()),
                     PreparedRecord {
                         module: mid,
@@ -610,16 +636,52 @@ impl PreparedDefinitions {
                         prototype,
                         origin: program.metadata[record.metadata].origin.clone(),
                     },
-                );
+                ));
             }
             for d in ordered_declarations(&forms, &module.name) {
                 let mut site = sites[&d.metadata].clone();
                 site.kind = NativeSiteKind::Check;
                 site.scope = d.name.clone().into();
                 resolver.set_native_site(site.clone());
-                resolver
-                    .check_remote_at(d.body, Site::Check)
-                    .map_err(|e| failure(PreparationStage::Records, site, e, &resolver))?;
+                resolver.check_remote_at(d.body, Site::Check).map_err(|e| {
+                    RecordFailure::WithEvents(PreparationStage::Records, site, e)
+                })?;
+            }
+            Ok((own_types, records))
+        };
+        let record_outcomes = if parallel {
+            per_module_workers(&resolver, core.modules.len(), &record_module)
+        } else {
+            None
+        };
+        let mut records = BTreeMap::new();
+        let mut own_types = BTreeMap::new();
+        let mut add_records = |(types, entries): RecordEntries| {
+            own_types.extend(types);
+            records.extend(entries);
+        };
+        let record_failure = |f: RecordFailure, resolver: &Resolver<'_>| match f {
+            RecordFailure::WithEvents(stage, site, error) => failure(stage, site, error, resolver),
+        };
+        let records_mode = if record_outcomes.is_some() { "parallel" } else { "sequential" };
+        match record_outcomes {
+            Some(outcomes) => {
+                for (result, events, missing) in outcomes {
+                    resolver.external_types.extend(events);
+                    resolver.missing.extend(missing);
+                    match result {
+                        Ok(entries) => add_records(entries),
+                        Err(f) => return Err(record_failure(f, &resolver)),
+                    }
+                }
+            }
+            None => {
+                for index in 0..core.modules.len() {
+                    match record_module(&mut resolver, index) {
+                        Ok(entries) => add_records(entries),
+                        Err(f) => return Err(record_failure(f, &resolver)),
+                    }
+                }
             }
         }
         let mut all_types = resolver
@@ -769,67 +831,17 @@ impl PreparedDefinitions {
         // Parallel: one resolver per worker; each module's events are drained
         // and merged in module order, which reproduces the sequential order.
         // If any worker had to modify the shared forms, redo sequentially.
-        let parallel = std::env::var_os("RUST_DIALYZER_SEQUENTIAL").is_none_or(|v| v != "1");
-        if parallel {
-            // Forms are parsed lazily on first use, which would make workers
-            // copy them; parse everything up front so workers only read.
-            // Failures stay deferred and surface where they did before.
-            let mut id = 0;
-            while id < resolver.forms.nodes.len() {
-                let _ = resolver.materialize(crate::forms::FormId(id));
-                id += 1;
-            }
-        }
-        type ModuleResult = (
-            std::result::Result<Vec<PreparedDeclaration>, ContractFailure>,
-            Vec<ExternalTypeEvent>,
-            Vec<TypeName>,
-            bool,
-        );
-        let mut outcomes: Option<Vec<ModuleResult>> = None;
-        if parallel {
-            let next = std::sync::atomic::AtomicUsize::new(0);
-            let workers = std::thread::available_parallelism().map_or(1, usize::from).min(core.modules.len().max(1));
-            let base = &resolver;
-            let compile_module = &compile_module;
-            let mut slots: Vec<Option<ModuleResult>> = (0..core.modules.len()).map(|_| None).collect();
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = (0..workers)
-                    .map(|_| {
-                        let next = &next;
-                        std::thread::Builder::new()
-                            .stack_size(1 << 30)
-                            .spawn_scoped(scope, move || {
-                                let mut worker = base.borrowing_worker();
-                                let mut done = Vec::new();
-                                loop {
-                                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    if i >= core.modules.len() {
-                                        break;
-                                    }
-                                    let result = compile_module(&mut worker, i);
-                                    let mutated = matches!(worker.forms, std::borrow::Cow::Owned(_));
-                                    done.push((i, (result, std::mem::take(&mut worker.external_types), std::mem::take(&mut worker.missing), mutated)));
-                                    if mutated {
-                                        break;
-                                    }
-                                }
-                                done
-                            })
-                            .expect("spawn contract worker")
-                    })
-                    .collect();
-                for handle in handles {
-                    for (i, r) in handle.join().expect("contract worker panicked") {
-                        slots[i] = Some(r);
-                    }
-                }
-            });
-            if slots.iter().all(|s| matches!(s, Some((_, _, _, false)))) {
-                outcomes = Some(slots.into_iter().map(|s| s.expect("module compiled")).collect());
-            }
-        }
-        timings.label(|| format!("contracts {}", if outcomes.is_some() { "parallel" } else { "sequential" }));
+        let outcomes = if parallel {
+            per_module_workers(&resolver, core.modules.len(), &compile_module)
+        } else {
+            None
+        };
+        timings.label(|| {
+            format!(
+                "records {records_mode} contracts {}",
+                if outcomes.is_some() { "parallel" } else { "sequential" }
+            )
+        });
         let mut staged_contracts = BTreeMap::<ModuleId, Vec<PreparedDeclaration>>::new();
         let mut staged_callbacks = BTreeMap::<ModuleId, Vec<PreparedDeclaration>>::new();
         let mut stage = |entries: Vec<PreparedDeclaration>| {
@@ -847,7 +859,7 @@ impl PreparedDefinitions {
         };
         match outcomes {
             Some(outcomes) => {
-                for (result, events, missing, _) in outcomes {
+                for (result, events, missing) in outcomes {
                     resolver.external_types.extend(events);
                     resolver.missing.extend(missing);
                     match result {
@@ -889,6 +901,59 @@ impl PreparedDefinitions {
             exported_types: exports,
         })
     }
+}
+/// Runs `run` for every module on all cores, each worker with a resolver that
+/// borrows `base`'s forms. Results come with the external type events and
+/// missing names each module added, in module order; `None` if any worker had
+/// to modify the forms, in which case the caller redoes the work sequentially.
+fn per_module_workers<R: Send>(
+    base: &Resolver<'_>,
+    count: usize,
+    run: &(impl Fn(&mut Resolver<'_>, usize) -> R + Sync),
+) -> Option<Vec<(R, Vec<ExternalTypeEvent>, Vec<TypeName>)>> {
+    type Slot<R> = (R, Vec<ExternalTypeEvent>, Vec<TypeName>, bool);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism().map_or(1, usize::from).min(count.max(1));
+    let mut slots: Vec<Option<Slot<R>>> = (0..count).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let next = &next;
+                std::thread::Builder::new()
+                    .stack_size(1 << 30)
+                    .spawn_scoped(scope, move || {
+                        let mut worker = base.borrowing_worker();
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= count {
+                                break;
+                            }
+                            let result = run(&mut worker, i);
+                            let mutated = matches!(worker.forms, std::borrow::Cow::Owned(_));
+                            done.push((i, (result, std::mem::take(&mut worker.external_types), std::mem::take(&mut worker.missing), mutated)));
+                            if mutated {
+                                break;
+                            }
+                        }
+                        done
+                    })
+                    .expect("spawn definition worker")
+            })
+            .collect();
+        for handle in handles {
+            for (i, r) in handle.join().expect("definition worker panicked") {
+                slots[i] = Some(r);
+            }
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| match slot {
+            Some((result, events, missing, false)) => Some((result, events, missing)),
+            _ => None,
+        })
+        .collect()
 }
 fn source_location(b: &mut ReasonBuilder, source: &SourceOrigin) -> TermId {
     match (source.line, source.column) {
@@ -1097,7 +1162,10 @@ fn finalize_tables(
             _ => unreachable!("constructed list"),
         }
     }
-    for (index, module) in core.modules.iter().enumerate() {
+    let finalize = |tables: &BTreeMap<String, ModuleTableHandle>,
+                    index: usize|
+     -> Result<ModuleTableHandle, FormError> {
+        let module = &core.modules[index];
         let old = &tables[&module.name];
         let a = old.arena();
         let mut b = ReasonBuilder::from_terms(a.terms.clone());
@@ -1146,10 +1214,23 @@ fn finalize_tables(
         }
         let root = b.push(ErlangTerm::Map(final_pairs));
         let raw = b.finish(root);
-        tables.insert(
-            module.name.clone(),
-            ModuleTableHandle::at(raw.arena().clone(), root)?,
-        );
+        ModuleTableHandle::at(raw.arena().clone(), root)
+    };
+    // Each module reads only its own table, so with distinct names the
+    // tables can be rebuilt in parallel and stored in module order.
+    let distinct = core.modules.iter().map(|m| &m.name).collect::<BTreeSet<_>>().len()
+        == core.modules.len();
+    if distinct {
+        let indices = (0..core.modules.len()).collect::<Vec<_>>();
+        let finalized = crate::ordered_parallel::setup_map(&indices, |&index| finalize(tables, index));
+        for (module, table) in core.modules.iter().zip(finalized) {
+            tables.insert(module.name.clone(), table?);
+        }
+    } else {
+        for (index, module) in core.modules.iter().enumerate() {
+            let table = finalize(tables, index)?;
+            tables.insert(module.name.clone(), table);
+        }
     }
     Ok(())
 }
