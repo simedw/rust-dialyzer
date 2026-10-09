@@ -2,7 +2,7 @@ use super::*;
 impl Generator<'_> {
     pub(super) fn begin_handler(
         &mut self,
-        context: TryContext,
+        context: Box<TryContext>,
         body_result: Type,
         todo: &mut Vec<Frame>,
         values: &mut Vec<Type>,
@@ -24,9 +24,9 @@ impl Generator<'_> {
         let defined = self.defined(context.site.module, &vars, context.defined)?;
         todo.push(Frame::TryHandler {
             site: context.site,
-            body_state,
+            body_state: Box::new(body_state),
             body_result,
-            outer: context.outer,
+            outer: Box::new(context.outer),
             base: context.base,
         });
         todo.push(Frame::Visit(

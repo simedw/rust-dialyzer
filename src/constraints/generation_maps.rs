@@ -6,7 +6,7 @@ use crate::{
 impl Generator<'_> {
     pub(super) fn next_map_pair(
         &mut self,
-        mut context: MapContext,
+        mut context: Box<MapContext>,
         todo: &mut Vec<Frame>,
         values: &mut Vec<Type>,
     ) -> Result<()> {
@@ -58,7 +58,7 @@ impl Generator<'_> {
         } else {
             self.state.in_match = context.in_match;
             if context.in_match {
-                values.push(self.finish_map(context, Type::map_any())?);
+                values.push(self.finish_map(*context, Type::map_any())?);
             } else {
                 let PatternRef::Core(node) = context.pattern else {
                     return Err(GenerationError::Boundary(
