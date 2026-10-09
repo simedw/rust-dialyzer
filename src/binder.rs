@@ -12,6 +12,49 @@ use crate::{
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::{collections::BTreeMap, sync::Arc};
+/// `given.opacity_conflict(required, module)`, memoized per thread.
+///
+/// The result is a function of the two (interned) types and the module name.
+/// Refinement calls it outside any lattice operation, so no nominal pair is
+/// active. Only successful results are stored; types serve only as hash keys.
+pub(crate) fn opacity_conflict(
+    given: &Type,
+    required: &Type,
+    module: &str,
+) -> Result<OpacityConflict, LatticeError> {
+    if !given.contains_nominal() && !required.contains_nominal() {
+        return given.opacity_conflict(required, module);
+    }
+    type Memo = crate::fast_hash::FastHashMap<(Type, Type), (Box<str>, OpacityConflict)>;
+    thread_local! {
+        static MEMO: std::cell::RefCell<Memo> = std::cell::RefCell::new(Memo::default());
+    }
+    let key = (*given, *required);
+    let hit = MEMO.with(|memo| {
+        memo.borrow()
+            .get(&key)
+            .and_then(|(m, conflict)| (**m == *module).then_some(*conflict))
+    });
+    if let Some(conflict) = hit {
+        if crate::lattice::verify_fast_paths() {
+            assert_eq!(
+                Ok(conflict),
+                given.opacity_conflict(required, module),
+                "memoized opacity conflict: {given:?} vs {required:?}"
+            );
+        }
+        return Ok(conflict);
+    }
+    let conflict = given.opacity_conflict(required, module)?;
+    MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() >= 1 << 20 {
+            memo.clear();
+        }
+        memo.insert(key, (module.into(), conflict));
+    });
+    Ok(conflict)
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Forward,
@@ -341,7 +384,7 @@ impl Binder<'_, '_, '_> {
         state: &mut BinderState<W>,
     ) -> Result<Type, BindError> {
         let inf = expected.meet(actual)?;
-        if actual.opacity_conflict(expected, &state.module)? != OpacityConflict::None {
+        if opacity_conflict(actual, expected, &state.module)? != OpacityConflict::None {
             let context = state.presentation_context();
             let text = crate::core_print::CorePrinter {
                 patterns: self.patterns,

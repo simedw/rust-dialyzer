@@ -548,7 +548,7 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
         let TypeValue::Integers(numbers) = refined_size.get(TypeGetter::NumberValues)? else {
             return Err(LatticeError::FunctionClause.into());
         };
-        if refined_size.opacity_conflict(&refined_value, &state.module)? != OpacityConflict::None {
+        if crate::binder::opacity_conflict(&refined_size, &refined_value, &state.module)? != OpacityConflict::None {
             let actual = state.presentation_context().type_to_string(&refined_size)?;
             let size_string = (CorePrinter {
                 patterns: self.patterns,

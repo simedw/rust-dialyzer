@@ -186,7 +186,7 @@ pub fn evaluate(input: CallInput<'_>) -> Result<CallTransfer> {
         expected: expected_opacity.clone(),
     };
     for (index, (given, expected)) in input.actual.iter().zip(&expected_opacity).enumerate() {
-        let conflict = given.opacity_conflict(expected, input.module)?;
+        let conflict = crate::binder::opacity_conflict(given, expected, input.module)?;
         match conflict {
             OpacityConflict::None => {}
             OpacityConflict::ExpectedOpaque => {

@@ -66,7 +66,7 @@ impl GuardControl<'_, '_, '_> {
         {
             return self.strict_general(guard, function, args, map, env, eval, &state, depth);
         }
-        if types[0].opacity_conflict(&types[1], &state.module)? != OpacityConflict::None {
+        if crate::binder::opacity_conflict(&types[0], &types[1], &state.module)? != OpacityConflict::None {
             return self.fail(guard, function, args, &types, eval, false, &state);
         }
         Ok(GuardBound {
