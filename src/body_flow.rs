@@ -353,6 +353,40 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
     fn refresh_letrec<W>(&self, state: &mut BinderState<W>) -> Result<()> {
         let generation = self.functions.signature_generation();
         if state.letrec.is_current(self.letrec, generation) { return Ok(()); }
+        // A refresh writes every link's current function type, so after an
+        // earlier refresh only the functions changed since need rewriting.
+        let changed = state
+            .letrec
+            .refreshed_with(self.letrec)
+            .and_then(|earlier| generation.changed_since(earlier, self.letrec.len()));
+        let Some(changed) = changed else {
+            return self.refresh_letrec_table(&mut state.letrec);
+        };
+        let full = crate::lattice::verify_fast_paths().then(|| {
+            let mut full = state.letrec.clone();
+            self.refresh_letrec_table(&mut full).map(|()| full)
+        });
+        let mut changes = Vec::new();
+        for key in changed {
+            let FunctionKey::Label(function) = key else { continue };
+            for &variable in self.letrec.variables_of(function) {
+                let typ = self.function_type(function)?;
+                let key = variable.into();
+                if state.letrec.get(&key) != Some(&typ) {
+                    changes.push((key, typ));
+                }
+            }
+        }
+        if !changes.is_empty() {
+            state.letrec.make_mut().extend(changes);
+        }
+        state.letrec.mark_current(self.letrec, generation);
+        if let Some(full) = full {
+            assert_eq!(*full?, *state.letrec, "incremental letrec refresh");
+        }
+        Ok(())
+    }
+    fn refresh_letrec_table(&self, table: &mut crate::letrec_types::LetrecTypes) -> Result<()> {
         // Only changed entries are written, so an unchanged table is not copied;
         // on failure the entries before it are still written, as before.
         let mut changes = Vec::new();
@@ -361,7 +395,7 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
             match self.function_type(function) {
                 Ok(typ) => {
                     let key = variable.into();
-                    if state.letrec.get(&key) != Some(&typ) {
+                    if table.get(&key) != Some(&typ) {
                         changes.push((key, typ));
                     }
                 }
@@ -372,13 +406,12 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
             }
         }
         if !changes.is_empty() || failure.is_some() {
-            let letrec = state.letrec.make_mut();
-            letrec.extend(changes);
+            table.make_mut().extend(changes);
         }
         if let Some(error) = failure {
             return Err(error);
         }
-        state.letrec.mark_current(self.letrec, generation);
+        table.mark_current(self.letrec, self.functions.signature_generation());
         Ok(())
     }
     fn atom(&self, node: NodeRef) -> Result<&str> {
