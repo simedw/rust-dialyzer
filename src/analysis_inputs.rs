@@ -66,7 +66,10 @@ impl LibraryTypes for CallWorld<'_> {
 pub fn generation_contract(contract: &ActiveContract) -> Result<generation::ActiveContract, String> {
     generation::ActiveContract::new(
         contract.summary.clone(),
-        CaptureEnvironment::literal_roots(contract.capture.arena(), &[contract.capture.id()])?,
+        CaptureEnvironment::literal_roots_lazy(
+            contract.capture.arena().clone(),
+            vec![contract.capture.id()],
+        ),
     )
 }
 
