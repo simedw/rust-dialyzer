@@ -271,17 +271,18 @@ impl BodyFlow<'_, '_, '_> {
             + From<CaseWarning>,
     >(
         &mut self,
-        mut cursor: CaseCursor,
+        mut cursor: Box<CaseCursor>,
         todo: &mut Vec<Frame>,
         values: &mut Vec<Value>,
         state: &mut BinderState<W>,
     ) -> Result<()> {
+        let clause_nodes = self.patterns.nodes;
         while let Some(clause) = cursor.remaining.pop_front() {
             let CoreExpr::Clause {
                 patterns,
                 guard,
                 body,
-            } = self.patterns.nodes.expression(clause)?.clone()
+            } = clause_nodes.expression(clause)?
             else {
                 return Err(LatticeError::FunctionClause.into());
             };
