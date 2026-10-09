@@ -210,14 +210,64 @@ impl Arena<'_> {
     }
 }
 
+/// Literal arenas by source arena, so that the term order of an arena is
+/// built once for all the forms read from it (each call built it again).
+/// Keyed by the arena's address; each entry holds the arena alive, so an
+/// address is never reused while cached. Used for identity only.
+#[derive(Default)]
+pub struct LiteralArenas {
+    arenas: std::collections::HashMap<
+        usize,
+        (Arc<ErlangTerms>, std::result::Result<RawLiteralArena, String>),
+    >,
+    orders: std::collections::HashMap<
+        usize,
+        (Arc<ErlangTerms>, std::result::Result<crate::term_order::TermOrderArena, String>),
+    >,
+}
+impl LiteralArenas {
+    /// `RawLiteralArena::new(source.clone())`, built once per arena.
+    pub fn arena(
+        &mut self,
+        source: &Arc<ErlangTerms>,
+    ) -> std::result::Result<&RawLiteralArena, String> {
+        let (_, literals) = self
+            .arenas
+            .entry(Arc::as_ptr(source) as usize)
+            .or_insert_with(|| (source.clone(), RawLiteralArena::new(source.clone())));
+        literals.as_ref().map_err(Clone::clone)
+    }
+    /// `TermOrderArena::new(source)`, built once per arena.
+    pub fn order(
+        &mut self,
+        source: &Arc<ErlangTerms>,
+    ) -> std::result::Result<&crate::term_order::TermOrderArena, String> {
+        let (_, order) = self
+            .orders
+            .entry(Arc::as_ptr(source) as usize)
+            .or_insert_with(|| (source.clone(), crate::term_order::TermOrderArena::new(source)));
+        order.as_ref().map_err(Clone::clone)
+    }
+    fn get(&mut self, source: &Arc<ErlangTerms>) -> Result<&RawLiteralArena> {
+        self.arena(source).map_err(|_| ExportError::FunctionClause)
+    }
+}
+
 pub fn type_forms_to_remote_modules(
     source: &Arc<ErlangTerms>,
     forms: &[TermId],
 ) -> Result<Vec<RawLiteral>> {
+    type_forms_to_remote_modules_in(&mut LiteralArenas::default(), source, forms)
+}
+pub fn type_forms_to_remote_modules_in(
+    arenas: &mut LiteralArenas,
+    source: &Arc<ErlangTerms>,
+    forms: &[TermId],
+) -> Result<Vec<RawLiteral>> {
     let terms = &source.terms;
-    let literals = RawLiteralArena::new(source.clone()).map_err(|_| ExportError::FunctionClause)?;
+    let literals = arenas.get(source)?;
     let mut modules = Vec::new();
-    Arena(terms).visit_list(forms, 16, 10_000, &mut modules, &literals)?;
+    Arena(terms).visit_list(forms, 16, 10_000, &mut modules, literals)?;
     Ok(normal_usort(modules))
 }
 
@@ -226,10 +276,17 @@ pub fn constraint_form_to_remote_modules(
     source: &Arc<ErlangTerms>,
     constraints: TermId,
 ) -> Result<Vec<RawLiteral>> {
+    constraint_form_to_remote_modules_in(&mut LiteralArenas::default(), source, constraints)
+}
+pub fn constraint_form_to_remote_modules_in(
+    arenas: &mut LiteralArenas,
+    source: &Arc<ErlangTerms>,
+    constraints: TermId,
+) -> Result<Vec<RawLiteral>> {
     let terms = &source.terms;
     let arena = Arena(terms);
     let mut modules = Vec::new();
-    let literals = RawLiteralArena::new(source.clone()).map_err(|_| ExportError::FunctionClause)?;
+    let literals = arenas.get(source)?;
     let mut cursor = constraints;
     loop {
         let (items, tail) = match &terms[cursor.0] {
@@ -253,7 +310,7 @@ pub fn constraint_form_to_remote_modules(
             if operator.len() != 3 || arena.atom(operator[0]) != Some("atom") {
                 return Err(ExportError::FunctionClause);
             }
-            modules.extend(type_form_with_literals(source, args[1], &literals)?);
+            modules.extend(type_form_with_literals(source, args[1], literals)?);
         }
         cursor = tail;
     }
@@ -428,8 +485,15 @@ pub fn module_type_deps_of_type_defs(
     source: &Arc<ErlangTerms>,
     table: TermId,
 ) -> Result<Vec<RawLiteral>> {
+    module_type_deps_of_type_defs_in(&mut LiteralArenas::default(), source, table)
+}
+pub fn module_type_deps_of_type_defs_in(
+    arenas: &mut LiteralArenas,
+    source: &Arc<ErlangTerms>,
+    table: TermId,
+) -> Result<Vec<RawLiteral>> {
     let terms = &source.terms;
-    let literals = RawLiteralArena::new(source.clone()).map_err(|_| ExportError::FunctionClause)?;
+    let literals = arenas.get(source)?;
     let arena = Arena(terms);
     let mut result = Vec::new();
     let ErlangTerm::Map(entries) = &terms[table.0] else {
@@ -472,9 +536,9 @@ pub fn module_type_deps_of_type_defs(
         };
         let mut modules = Vec::new();
         if key.len() == 3 {
-            arena.visit(forms[0], 16, 10_000, &mut modules, &literals)?;
+            arena.visit(forms[0], 16, 10_000, &mut modules, literals)?;
         } else {
-            arena.visit_list(&forms, 16, 10_000, &mut modules, &literals)?;
+            arena.visit_list(&forms, 16, 10_000, &mut modules, literals)?;
         }
         result.extend(normal_usort(modules));
     }

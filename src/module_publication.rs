@@ -59,7 +59,10 @@ fn list(terms: &[ErlangTerm], mut id: TermId) -> Result<Vec<TermId>> {
         }
     }
 }
-fn contract_dependencies(contract: &PreparedContract) -> Result<Vec<RawLiteral>> {
+fn contract_dependencies(
+    contract: &PreparedContract,
+    arenas: &mut type_exports::LiteralArenas,
+) -> Result<Vec<RawLiteral>> {
     let raw = &contract.capture;
     let terms = &raw.arena().terms;
     let fields = tuple(terms, raw.id())?;
@@ -83,9 +86,18 @@ fn contract_dependencies(contract: &PreparedContract) -> Result<Vec<RawLiteral>>
         list(terms, *constraints)?;
     }
     let forms = pairs.iter().map(|(form, _)| *form).collect::<Vec<_>>();
-    let mut dependencies = type_exports::type_forms_to_remote_modules(raw.arena(), &forms)?;
+    let mut dependencies =
+        type_exports::type_forms_to_remote_modules_in(arenas, raw.arena(), &forms)?;
+    if crate::lattice::verify_fast_paths() {
+        assert_eq!(
+            dependencies,
+            type_exports::type_forms_to_remote_modules(raw.arena(), &forms)?,
+            "shared literal arena changed contract form dependencies"
+        );
+    }
     for (_, constraints) in pairs {
-        dependencies.extend(type_exports::constraint_form_to_remote_modules(
+        dependencies.extend(type_exports::constraint_form_to_remote_modules_in(
+            arenas,
             raw.arena(),
             constraints,
         )?);
@@ -142,6 +154,9 @@ impl PublicationInput<'_> {
             ));
         }
         let mut rows = Vec::new();
+        // Contract keys and forms of a module share its arena; its term order
+        // is built once instead of for every key and form read from it.
+        let mut arenas = type_exports::LiteralArenas::default();
         for (enabled, table) in [
             (self.use_contracts, &self.definitions.contracts),
             (true, &self.definitions.callbacks),
@@ -152,8 +167,12 @@ impl PublicationInput<'_> {
             let entries = table
                 .raw_entries()
                 .map(|e| {
+                    let raw = e.key.raw();
                     Ok((
-                        RawLiteral::new(e.key.raw().clone()).map_err(PublicationError::Boundary)?,
+                        arenas
+                            .arena(raw.arena())
+                            .and_then(|literals| literals.at(raw.id()))
+                            .map_err(PublicationError::Boundary)?,
                         e,
                     ))
                 })
@@ -161,10 +180,24 @@ impl PublicationInput<'_> {
             let keys = entries
                 .iter()
                 .map(|(_, e)| {
-                    NativeHashKey::from_raw(e.key.raw())
+                    let raw = e.key.raw();
+                    arenas
+                        .order(raw.arena())
+                        .map_err(crate::native_runtime_hash::RuntimeHashError::Boundary)
+                        .and_then(|order| NativeHashKey::from_raw_with_order(raw, order))
                         .map_err(|e| PublicationError::Boundary(e.to_string()))
                 })
                 .collect::<Result<Vec<_>>>()?;
+            if crate::lattice::verify_fast_paths() {
+                for ((literal, e), key) in entries.iter().zip(&keys) {
+                    let raw = e.key.raw();
+                    assert!(
+                        RawLiteral::new(raw.clone()).is_ok_and(|fresh| &fresh == literal)
+                            && NativeHashKey::from_raw(raw).is_ok_and(|fresh| &fresh == key),
+                        "shared literal arena changed a declaration key"
+                    );
+                }
+            }
             // First entry per key, as the linear search over entries returned.
             let mut first_index = std::collections::BTreeMap::new();
             for (index, key) in keys.iter().enumerate() {
@@ -191,12 +224,16 @@ impl PublicationInput<'_> {
                     unreachable!()
                 };
                 rows.push((
-                    RawLiteral::from_arena(raw.arena().clone(), fields[0])
+                    arenas
+                        .arena(raw.arena())
+                        .and_then(|literals| literals.at(fields[0]))
                         .map_err(PublicationError::Boundary)?,
-                    contract_dependencies(&entry.value)?,
+                    contract_dependencies(&entry.value, &mut arenas)?,
                 ));
             }
         }
+        // Each module table is read once; release the contract arenas.
+        drop(arenas);
         let ordered_modules = self.ordered_keys(
             self.targets
                 .iter()
