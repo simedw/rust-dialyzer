@@ -105,6 +105,10 @@ impl Type {
         self.native_value()
     }
     pub fn native_record_order(&self, rhs: &Self) -> Ordering {
+        // Equal types have equal native values.
+        if self == rhs {
+            return Ordering::Equal;
+        }
         if let (Some(a), Some(b)) = (self.singleton_key(), rhs.singleton_key()) {
             return a.cmp(&b);
         }

@@ -322,28 +322,36 @@ mod memo {
     const BITS: u32 = 16;
     type Entry = Cell<(usize, usize, usize)>;
     pub(super) struct Table(std::thread::LocalKey<Box<[Entry]>>);
+    fn entries() -> Box<[Entry]> {
+        (0..1 << BITS).map(|_| Cell::new((0, 0, 0))).collect()
+    }
     thread_local! {
-        static MEET_ENTRIES: Box<[Entry]> = (0..1 << BITS).map(|_| Cell::new((0, 0, 0))).collect();
+        static MEET_ENTRIES: Box<[Entry]> = entries();
+        static JOIN_ENTRIES: Box<[Entry]> = entries();
+        static SUBTRACT_ENTRIES: Box<[Entry]> = entries();
+        static LIMIT_ENTRIES: Box<[Entry]> = entries();
     }
     pub(super) static MEET: Table = Table(MEET_ENTRIES);
+    pub(super) static JOIN: Table = Table(JOIN_ENTRIES);
+    pub(super) static SUBTRACT: Table = Table(SUBTRACT_ENTRIES);
+    /// Keyed by the operand and the depth.
+    pub(super) static LIMIT: Table = Table(LIMIT_ENTRIES);
 
     pub(super) fn pure(a: &Type, b: &Type) -> bool {
         (a.info.flags | b.info.flags) & NOMINAL == 0
             || ACTIVE_PAIRS.with(|pairs| pairs.borrow().is_empty())
     }
-    fn key(a: &Type, b: &Type) -> (usize, usize, usize) {
-        let (x, y) = (a.0 as *const Node as usize, b.0 as *const Node as usize);
-        let h = (x ^ y.rotate_left(29)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        (x, y, h >> (usize::BITS - BITS))
+    pub(super) fn key(a: &Type, b: usize) -> (usize, usize, usize) {
+        let x = a.0 as *const Node as usize;
+        let h = (x ^ b.rotate_left(29)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        (x, b, h >> (usize::BITS - BITS))
     }
-    pub(super) fn get(table: &'static Table, a: &Type, b: &Type) -> Option<Type> {
-        let (x, y, i) = key(a, b);
+    pub(super) fn get(table: &'static Table, (x, y, i): (usize, usize, usize)) -> Option<Type> {
         let (ka, kb, r) = table.0.with(|t| t[i].get());
         // Stored results are interned nodes, which are never freed.
         (ka == x && kb == y).then(|| Type(unsafe { &*(r as *const Node) }))
     }
-    pub(super) fn put(table: &'static Table, a: &Type, b: &Type, result: Type) {
-        let (x, y, i) = key(a, b);
+    pub(super) fn put(table: &'static Table, (x, y, i): (usize, usize, usize), result: Type) {
         table.0.with(|t| t[i].set((x, y, result.0 as *const Node as usize)));
     }
 }
@@ -3263,7 +3271,7 @@ impl Type {
     pub fn opaque_sentinel() -> Self {
         Self::new(Repr::Opaque)
     }
-    pub fn join(&self, rhs: &Self) -> Result<Self, LatticeError> {
+    fn join_uncached(&self, rhs: &Self) -> Result<Self, LatticeError> {
         let _active = ActivePairGuard::enter(Operation::Join, self, rhs)?;
         Ok({
             use Repr::*;
@@ -3293,24 +3301,46 @@ impl Type {
             }
         })
     }
-    pub fn meet(&self, rhs: &Self) -> Result<Self, LatticeError> {
+    /// `op(self, rhs)`, through the per-thread memo `table` unless an
+    /// operand is a leaf the operation handles directly.
+    fn memoized(
+        &self,
+        rhs: &Self,
+        table: &'static memo::Table,
+        op: impl Fn() -> Result<Self, LatticeError>,
+    ) -> Result<Self, LatticeError> {
         use Repr::*;
         if matches!(self.repr, Var(_) | Any | None | Unit)
             || matches!(rhs.repr, Var(_) | Any | None | Unit)
-            || self == rhs
             || !memo::pure(self, rhs)
         {
-            return self.meet_uncached(rhs);
+            return op();
         }
-        if let Some(hit) = memo::get(&memo::MEET, self, rhs) {
+        let key = memo::key(self, rhs.0 as *const Node as usize);
+        if let Some(hit) = memo::get(table, key) {
             if verify_fast_paths() {
-                assert_eq!(Ok(hit), self.meet_uncached(rhs), "meet memo: {self:?} /\\ {rhs:?}");
+                assert_eq!(Ok(hit), op(), "lattice memo: {self:?} {rhs:?}");
             }
             return Ok(hit);
         }
-        let result = self.meet_uncached(rhs)?;
-        memo::put(&memo::MEET, self, rhs, result);
+        let result = op()?;
+        memo::put(table, key, result);
         Ok(result)
+    }
+    pub fn meet(&self, rhs: &Self) -> Result<Self, LatticeError> {
+        if self == rhs {
+            return self.meet_uncached(rhs);
+        }
+        self.memoized(rhs, &memo::MEET, || self.meet_uncached(rhs))
+    }
+    pub fn join(&self, rhs: &Self) -> Result<Self, LatticeError> {
+        if self == rhs {
+            return self.join_uncached(rhs);
+        }
+        self.memoized(rhs, &memo::JOIN, || self.join_uncached(rhs))
+    }
+    pub fn subtract(&self, rhs: &Self) -> Result<Self, LatticeError> {
+        self.memoized(rhs, &memo::SUBTRACT, || self.subtract_uncached(rhs))
     }
     fn meet_uncached(&self, rhs: &Self) -> Result<Self, LatticeError> {
         let _active = ActivePairGuard::enter(Operation::Meet, self, rhs)?;
@@ -3341,7 +3371,7 @@ impl Type {
             }
         })
     }
-    pub fn subtract(&self, rhs: &Self) -> Result<Self, LatticeError> {
+    fn subtract_uncached(&self, rhs: &Self) -> Result<Self, LatticeError> {
         let _active = ActivePairGuard::enter(Operation::Subtract, self, rhs)?;
         use Repr::*;
         Ok(match (&self.repr, &rhs.repr) {
@@ -3389,6 +3419,24 @@ impl Type {
         }
     }
     fn limit_aux(&self, depth: i64) -> Result<Self, LatticeError> {
+        if depth <= 0
+            || !matches!(self.repr, Repr::Families(_) | Repr::Product(_) | Repr::Nominal(_) | Repr::NominalSet(_))
+            || !memo::pure(self, self)
+        {
+            return self.limit_uncached(depth);
+        }
+        let key = memo::key(self, depth as usize);
+        if let Some(hit) = memo::get(&memo::LIMIT, key) {
+            if verify_fast_paths() {
+                assert_eq!(Ok(hit), self.limit_uncached(depth), "limit memo: {depth} {self:?}");
+            }
+            return Ok(hit);
+        }
+        let result = self.limit_uncached(depth)?;
+        memo::put(&memo::LIMIT, key, result);
+        Ok(result)
+    }
+    fn limit_uncached(&self, depth: i64) -> Result<Self, LatticeError> {
         Ok({
             if depth <= 0 {
                 return Ok(Self::any());
