@@ -5,7 +5,6 @@ use crate::{
     guard_ops::GuardEval,
     guard_warning::GuardWarning,
     lattice::NativeValue,
-    underapprox::SafeUnderapprox,
     warning_payload::{NativeWarning, string},
 };
 
@@ -374,9 +373,8 @@ impl BodyFlow<'_, '_, '_> {
                 Err(e) => return Err(e.into()),
             }
             let nodes = self.patterns.nodes;
-            let under = SafeUnderapprox::new(nodes.core(), nodes.labels(), nodes.literal_types());
-            let approximation = under
-                .evaluate_with_refold_events(
+            let approximation = nodes
+                .clause_underapprox(
                     clause.module,
                     &patterns,
                     crate::core::NodeId(guard.node),

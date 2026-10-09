@@ -5,7 +5,7 @@ use crate::{
     lattice::{Known, Type, TypeGetter, TypePredicate, TypeValue},
     patterns::{PatternRef, Patterns},
     program::NodeRef,
-    underapprox::{SafeUnderapprox, UnderapproxError},
+    underapprox::UnderapproxError,
 };
 use crate::{
     guard_control::{GuardBound, GuardControl, GuardEnvironment, GuardError},
@@ -40,11 +40,6 @@ impl GuardControl<'_, '_, '_> {
         let mut accumulated = Type::none();
         let mut maps = Vec::new();
         let mut throws = Vec::new();
-        let safe = SafeUnderapprox::new(
-            self.nodes.core(),
-            self.nodes.labels(),
-            self.nodes.literal_types(),
-        );
         for &clause in clauses {
             let CoreExpr::Clause {
                 patterns,
@@ -138,8 +133,11 @@ impl GuardControl<'_, '_, '_> {
                     }
                 }
             }
-            let under = safe
-                .evaluate(node.module, patterns, crate::core::NodeId(guard.node))
+            let under = self
+                .nodes
+                .clause_underapprox(node.module, patterns, crate::core::NodeId(guard.node), |_| {
+                    Ok(())
+                })
                 .map_err(|error| match error {
                     UnderapproxError::Native(error) => GuardError::from(error),
                     UnderapproxError::NativeCaseClauseAtom(atom) => {
