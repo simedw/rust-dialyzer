@@ -13,8 +13,10 @@ use crate::{
     diagnostic_inputs::{PreparedCallbackGroups, TargetCallbackState},
     folded_core::FoldedCore,
     labels::{CoreLabel, Labels},
+    ordered_parallel::{join, setup_map},
     module_publication::{ModuleDependencies, PublicationInput},
     patterns::Patterns,
+    phase_timings::PhaseTimings,
     program::{ModuleId, Program, TargetContracts},
     source_callgraph::SourceCallGraph,
     warning_policy::Policy,
@@ -64,66 +66,152 @@ fn analyze_phases(
     input: AnalysisInput<'_>,
     phase: &mut &'static str,
 ) -> Result<AnalysisOutput, String> {
-    let mut timings = crate::phase_timings::PhaseTimings::new("compiled_analysis");
+    let mut timings = PhaseTimings::new("compiled_analysis");
     let layout = input
         .core
         .atom_layout
         .as_ref()
         .ok_or("compiler atom layout missing")?;
-    let labels = Labels::build(input.core, CoreLabel(0))?;
-    let nodes = DataflowNodes::build(input.core, &labels)?;
-    timings.mark("labels_and_dataflow");
+    // Setup steps run concurrently where their inputs allow; failures are
+    // checked afterwards in the order the steps run sequentially.
+    let core = input.core;
+    let ((labels, folded), ((program, prior), (policy, states))) = join(
+        || {
+            join(
+                || {
+                    let mut timings = PhaseTimings::new("setup_branch");
+                    timings.label(|| "labels".into());
+                    let labels = Labels::build(core, CoreLabel(0));
+                    timings.mark("labels");
+                    labels
+                },
+                || {
+                    let mut timings = PhaseTimings::new("setup_branch");
+                    timings.label(|| "folded_core".into());
+                    let folded = FoldedCore::build(core);
+                    timings.mark("folded_core");
+                    folded
+                },
+            )
+        },
+        || {
+            join(
+                || {
+                    let mut timings = PhaseTimings::new("setup_branch");
+                    timings.label(|| "program".into());
+                    let program = Program::build_with_contracts(core, input.contracts);
+                    timings.mark("program");
+                    let prior = PriorPlt::parse(input.prior, core, input.import);
+                    timings.mark("prior_parse");
+                    (program, prior)
+                },
+                || {
+                    let mut timings = PhaseTimings::new("setup_branch");
+                    timings.label(|| "policy".into());
+                    let policy = Policy::build(core, input.warning_registry, input.legal_warnings)
+                        .map_err(|error| format!("{error:?}"));
+                    timings.mark("policy");
+                    let modules = (0..core.modules.len()).map(ModuleId).collect::<Vec<_>>();
+                    let states = setup_map(&modules, |&module| {
+                        BinderState::<OpaqueMatch>::for_compiler_module(core, module, true)
+                            .map_err(|error| error.to_string())
+                    })
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>();
+                    timings.mark("binder_states");
+                    (policy, states)
+                },
+            )
+        },
+    );
+    let labels = labels?;
+    timings.mark("setup_independent");
+    let (definitions, (nodes, dependencies, graph, cleanup)) = join(
+        || {
+            let (Ok(prior), Ok(program)) = (&prior, &program) else {
+                return None;
+            };
+            Some(
+                prior
+                    .prepare_definitions(core, program)
+                    .map_err(|error| error.to_string()),
+            )
+        },
+        || {
+            let mut timings = PhaseTimings::new("setup_branch");
+            timings.label(|| "callgraph".into());
+            let (nodes, dependencies) = join(
+                || DataflowNodes::build(core, &labels),
+                || {
+                    program.as_ref().ok().map(|program| {
+                        ClosureDependencies::analyze(core, program, input.dependency_policy)
+                    })
+                },
+            );
+            timings.mark("dataflow_and_dependencies");
+            let mut graph = match (&nodes, &program, &dependencies) {
+                (Ok(nodes), Ok(program), Some(Ok(dependencies))) => Some(
+                    SourceCallGraph::build(nodes, program, dependencies, input.bifs)
+                        .and_then(|mut graph| {
+                            graph.attach_layout(layout.clone())?;
+                            Ok(graph)
+                        })
+                        .map_err(|error| error.to_string()),
+                ),
+                _ => None,
+            };
+            timings.mark("callgraph");
+            let cleanup = match (&nodes, &program, &mut graph, &prior, &policy, &states) {
+                (Ok(nodes), Ok(program), Some(Ok(graph)), Ok(prior), Ok(policy), Ok(states)) => {
+                    let mut patterns = Patterns::new(nodes);
+                    let binder = Binder {
+                        patterns: &mut patterns,
+                    };
+                    let context = CleanupContext {
+                        program,
+                        binder: &binder,
+                        module_states: states,
+                        policy,
+                        original_plt: prior.original_membership(),
+                    };
+                    Some(
+                        callgraph_cleanup::cleanup_callgraph(graph, &context)
+                            .map(|cleanup| {
+                                let mut calls = if input.legal_warnings.contains(Tag::WarnUnknown) {
+                                    context.unknown_functions(&cleanup.external_calls)
+                                } else {
+                                    Vec::new()
+                                };
+                                if let Some(report) = &input.report_modules {
+                                    calls.retain(|(module, _)| report.contains(module));
+                                }
+                                (cleanup, calls)
+                            })
+                            .map_err(|error| error.to_string()),
+                    )
+                }
+                _ => None,
+            };
+            timings.mark("cleanup");
+            (nodes, dependencies, graph, cleanup)
+        },
+    );
+    timings.mark("setup_dependent");
+    let nodes = nodes?;
     *phase = "program_dependencies_callgraph";
-    let program = Program::build_with_contracts(input.core, input.contracts)?;
-    let dependencies = ClosureDependencies::analyze(input.core, &program, input.dependency_policy)?;
-    let mut graph =
-        SourceCallGraph::build(&nodes, &program, &dependencies, input.bifs)
-            .map_err(|error| error.to_string())?;
-    graph
-        .attach_layout(layout.clone())
-        .map_err(|error| error.to_string())?;
-    timings.mark("program_dependencies_callgraph");
+    let program = program?;
+    let dependencies = dependencies.expect("program built")?;
+    let graph = graph.expect("callgraph inputs built")?;
     *phase = "prior_parse";
-    let prior = PriorPlt::parse(input.prior, input.core, input.import)?;
-    timings.mark("prior_parse");
+    let prior = prior?;
     *phase = "policy_and_cleanup";
-    let policy = Policy::build(input.core, input.warning_registry, input.legal_warnings)
-        .map_err(|error| format!("{error:?}"))?;
+    let policy = policy?;
     *phase = "policy_and_cleanup/binder_states";
-    let states = (0..input.core.modules.len())
-        .map(|m| {
-            BinderState::<OpaqueMatch>::for_compiler_module(input.core, ModuleId(m), true)
-                .map_err(|error| error.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut patterns = Patterns::new(&nodes);
-    let binder = Binder {
-        patterns: &mut patterns,
-    };
-    let context = CleanupContext {
-        program: &program,
-        binder: &binder,
-        module_states: &states,
-        policy: &policy,
-        original_plt: prior.original_membership(),
-    };
+    states?;
     *phase = "policy_and_cleanup/cleanup_callgraph";
-    let cleanup = callgraph_cleanup::cleanup_callgraph(&mut graph, &context)
-        .map_err(|error| error.to_string())?;
-    let mut calls = if input.legal_warnings.contains(Tag::WarnUnknown) {
-        context.unknown_functions(&cleanup.external_calls)
-    } else {
-        Vec::new()
-    };
-    if let Some(report) = &input.report_modules {
-        calls.retain(|(module, _)| report.contains(module));
-    }
-    timings.mark("policy_and_cleanup");
+    let (cleanup, calls) = cleanup.expect("cleanup inputs built")?;
     *phase = "prepare_definitions";
-    let definitions = prior
-        .prepare_definitions(input.core, &program)
-        .map_err(|error| error.to_string())?;
-    timings.mark("prepare_definitions");
+    let definitions = definitions.expect("definition inputs built")?;
     *phase = "prior_cleanup";
     let library = prior.after_cleanup(&graph)?;
     timings.mark("prior_cleanup");
@@ -137,42 +225,52 @@ fn analyze_phases(
         .persistence_groups()
         .map_err(|error| format!("{error:?}"))?;
     timings.mark("callback_preparation");
-    *phase = "folded_core";
-    let folded = FoldedCore::build(input.core);
-    timings.mark("folded_core");
-    *phase = "core_pipeline";
-    let analysis = core_pipeline::analyze(
-        CorePhaseInputs {
-            nodes: &nodes,
-            program: &program,
-            dependencies: &dependencies,
-            graph: &graph,
-            definitions: &definitions,
-            profile: input.closure_profile,
-            folded: &folded,
-            bifs: input.bifs,
+    // Module dependency publication does not read the analysis; it runs
+    // alongside it.
+    let (analysis, module_dependencies) = join(
+        || {
+            core_pipeline::analyze(
+                CorePhaseInputs {
+                    nodes: &nodes,
+                    program: &program,
+                    dependencies: &dependencies,
+                    graph: &graph,
+                    definitions: &definitions,
+                    profile: input.closure_profile,
+                    folded: &folded,
+                    bifs: input.bifs,
+                },
+                &library,
+                &callbacks,
+                layout,
+                format!("rust-analysis/{}", layout.scope),
+                input.solvers,
+                input.mode,
+                input.report_modules.as_ref(),
+            )
+            .map_err(|error| format!("{error:?}"))
         },
-        &library,
-        &callbacks,
-        layout,
-        format!("rust-analysis/{}", layout.scope),
-        input.solvers,
-        input.mode,
-        input.report_modules.as_ref(),
-    )
-    .map_err(|error| format!("{error:?}"))?;
+        || {
+            let mut timings = PhaseTimings::new("setup_branch");
+            timings.label(|| "module_dependencies".into());
+            let published = PublicationInput {
+                core: input.core,
+                program: &program,
+                definitions: &definitions,
+                targets: &targets,
+                use_contracts: input.contracts == TargetContracts::Use,
+            }
+            .publish(&cleanup.module_dependencies)
+            .map_err(|error| format!("{error:?}"));
+            timings.mark("module_dependencies");
+            published
+        },
+    );
+    *phase = "core_pipeline";
+    let analysis = analysis?;
     timings.mark("core_pipeline");
     *phase = "publication";
-    let module_dependencies = PublicationInput {
-        core: input.core,
-        program: &program,
-        definitions: &definitions,
-        targets: &targets,
-        use_contracts: input.contracts == TargetContracts::Use,
-    }
-    .publish(&cleanup.module_dependencies)
-    .map_err(|error| format!("{error:?}"))?;
-    timings.mark("module_dependencies");
+    let module_dependencies = module_dependencies?;
     let unknown = warning_publication::collect_unknown(
         calls,
         &definitions.external_types,
