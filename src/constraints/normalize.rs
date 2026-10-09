@@ -23,12 +23,33 @@ fn union<'a>(runs: impl IntoIterator<Item = &'a Dependencies>) -> Dependencies {
     let Some(third) = runs.next() else {
         return merge(first, second).into();
     };
-    // Many runs: the stable sort finds and merges them.
-    let mut all: Vec<_> = [first, second, third]
+    let runs: Vec<_> = [first, second, third].into_iter().chain(runs).collect();
+    // Variables are nearly always machine integers, which sort as such
+    // (`VariableId` puts integers before atoms), so they are sorted as keys.
+    let mut small = Vec::with_capacity(runs.iter().map(|run| run.len()).sum());
+    for v in runs.iter().flat_map(|run| run.iter()) {
+        match v {
+            VariableId::Integer(n) => match n.small() {
+                Some(n) => small.push(n),
+                None => return union_sorted(&runs),
+            },
+            VariableId::Atom(_) => return union_sorted(&runs),
+        }
+    }
+    small.sort_unstable();
+    small.dedup();
+    let out: Dependencies = small
         .into_iter()
-        .chain(runs)
-        .flat_map(|run| run.iter())
+        .map(|n| VariableId::Integer(n.into()))
         .collect();
+    if crate::lattice::verify_fast_paths() {
+        assert_eq!(out, union_sorted(&runs), "small variable union fast path");
+    }
+    out
+}
+/// Many runs: the stable sort finds and merges them.
+fn union_sorted(runs: &[&Dependencies]) -> Dependencies {
+    let mut all: Vec<_> = runs.iter().flat_map(|run| run.iter()).collect();
     all.sort();
     all.dedup();
     all.into_iter().cloned().collect()
@@ -123,8 +144,34 @@ impl From<SolveError> for NormalizationError {
 }
 #[derive(Default)]
 struct AtomicOrderKeys {
-    left: OnceLock<NativeOrderKey>,
-    right: OnceLock<NativeOrderKey>,
+    left: OnceLock<Arc<NativeOrderKey>>,
+    right: OnceLock<Arc<NativeOrderKey>>,
+}
+/// The order key of `t`, from a per-thread memo: the same types recur across
+/// the constraints of an SCC and across SCCs. Types are interned, so equal
+/// types are one key and the key is a function of the type.
+fn order_key(t: &Type) -> Arc<NativeOrderKey> {
+    use std::cell::RefCell;
+    const LIMIT: usize = 1 << 16;
+    thread_local! {
+        static KEYS: RefCell<crate::fast_hash::FastHashMap<Type, Arc<NativeOrderKey>>> =
+            RefCell::new(Default::default());
+    }
+    KEYS.with(|keys| {
+        if let Some(key) = keys.borrow().get(t) {
+            if crate::lattice::verify_fast_paths() {
+                assert_eq!(**key, t.native_order_key(), "order key memo");
+            }
+            return key.clone();
+        }
+        let key = Arc::new(t.native_order_key());
+        let mut keys = keys.borrow_mut();
+        if keys.len() >= LIMIT {
+            keys.clear();
+        }
+        keys.insert(t.clone(), key.clone());
+        key
+    })
 }
 
 #[derive(Default)]
@@ -234,7 +281,7 @@ impl NativeConstraintArena {
         let keys = AtomicOrderKeys::default();
         let (left, right) = match right {
             NativeOperand::Type(t) if matches!(relation, Relation::Equal) => {
-                let (l, r) = (left.native_order_key(), t.native_order_key());
+                let (l, r) = (order_key(&left), order_key(&t));
                 let swap = l >= r;
                 if crate::lattice::verify_fast_paths() {
                     assert_eq!(
@@ -552,7 +599,7 @@ impl NativeConstraintArena {
         let key = |id: NativeConstraintId, t: &Type| {
             self.order_keys[id.0]
                 .left
-                .get_or_init(|| t.native_order_key())
+                .get_or_init(|| order_key(t))
         };
         // Variables are `{c, var, Id, unknown}`, so two of them are ordered by
         // their identities: integers before atoms, each in its own order.
@@ -563,7 +610,12 @@ impl NativeConstraintArena {
             }
             return order;
         }
-        let order = key(ai, a).cmp(key(bi, b));
+        // Interned types are equal exactly when they are the same term.
+        let order = if a == b {
+            Ordering::Equal
+        } else {
+            key(ai, a).cmp(key(bi, b))
+        };
         if crate::lattice::verify_fast_paths() {
             assert_eq!(order, a.to_native_value().cmp(&b.to_native_value()), "left order diverged");
         }
@@ -578,9 +630,13 @@ impl NativeConstraintArena {
     ) -> Result<Ordering, NormalizationError> {
         Ok(match (a, b) {
             (NativeOperand::Type(a), NativeOperand::Type(b)) => {
-                let ka = self.order_keys[ai.0].right.get_or_init(|| a.native_order_key());
-                let kb = self.order_keys[bi.0].right.get_or_init(|| b.native_order_key());
-                let order = ka.cmp(kb);
+                let order = if a == b {
+                    Ordering::Equal
+                } else {
+                    let ka = self.order_keys[ai.0].right.get_or_init(|| order_key(a));
+                    let kb = self.order_keys[bi.0].right.get_or_init(|| order_key(b));
+                    ka.cmp(kb)
+                };
                 if crate::lattice::verify_fast_paths() {
                     assert_eq!(
                         order,
@@ -895,11 +951,11 @@ mod tests {
         assert!(arena.order_keys[second.0].left.get().is_some());
         assert!(arena.order_keys[first.0].right.get().is_none());
         assert!(arena.order_keys[second.0].right.get().is_none());
-        let left = arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey;
+        let left = &**arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey;
         assert_eq!(arena.compare(first, second).unwrap(), Ordering::Less);
         assert_eq!(
             left,
-            arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey
+            &**arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey
         );
     }
 

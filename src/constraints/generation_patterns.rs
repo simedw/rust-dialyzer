@@ -140,7 +140,7 @@ impl Generator<'_> {
                     in_match: self.state.in_match,
                     base: values.len(),
                 };
-                self.next_map_pair(context, todo, values)?;
+                self.next_map_pair(Box::new(context), todo, values)?;
                 return Ok(());
             }
             _ => {

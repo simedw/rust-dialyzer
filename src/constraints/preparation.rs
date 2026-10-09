@@ -1,5 +1,6 @@
 use crate::constraints::normalize::{
-    GroupKind, NativeConstraint, NativeConstraintArena, NativeConstraintId, NativeOperand,
+    Dependencies, GroupKind, NativeConstraint, NativeConstraintArena, NativeConstraintId,
+    NativeOperand,
 };
 use crate::constraints::tree::FunctionVariable;
 use crate::lattice::VariableId;
@@ -13,9 +14,10 @@ pub struct NativeListId(pub usize);
 pub struct PreparedNode {
     pub source: NativeConstraintId,
     pub children: Vec<PreparedNodeId>,
-    pub dependencies: BTreeSet<VariableId>,
+    /// Sorted and without duplicates, shared with the arena where unchanged.
+    pub dependencies: Dependencies,
     /// Child positions per variable, zero-based as the solver uses them.
-    pub masks: Option<BTreeMap<VariableId, BTreeSet<usize>>>,
+    pub masks: Option<crate::constraints::tree::Masks>,
     pub list_id: Option<NativeListId>,
 }
 #[derive(Clone, Debug)]
@@ -208,13 +210,15 @@ impl PreparedConstruction {
         }
         let mut entries = Vec::new();
         let mut root_deps = BTreeSet::new();
-        let mut root_masks: BTreeMap<VariableId, BTreeSet<usize>> = BTreeMap::new();
-        for ((index, function), mut deps) in entry_functions.iter().enumerate().zip(entry_deps) {
-            deps.remove(function.variable());
-            root_deps.extend(deps.clone());
-            for v in &deps {
-                root_masks.entry(v.clone()).or_default().insert(index);
-            }
+        let mut root_children = Vec::new();
+        for (function, deps) in entry_functions.iter().zip(entry_deps) {
+            let deps: Dependencies = deps
+                .iter()
+                .filter(|v| *v != function.variable())
+                .cloned()
+                .collect();
+            root_deps.extend(deps.iter().cloned());
+            root_children.push(deps.clone());
             entries.push(ConstraintId(nodes.len()));
             nodes.push(ConstraintNode {
                 constraint: Constraint::Reference {
@@ -222,7 +226,7 @@ impl PreparedConstruction {
                     dependencies: deps.clone(),
                 },
                 dependencies: deps,
-                masks: BTreeMap::new(),
+                masks: Default::default(),
             });
         }
         let root = if entries.len() == 1 {
@@ -231,8 +235,10 @@ impl PreparedConstruction {
             let id = ConstraintId(nodes.len());
             nodes.push(ConstraintNode {
                 constraint: Constraint::Conjunction(entries),
-                dependencies: root_deps,
-                masks: root_masks,
+                dependencies: root_deps.into_iter().collect(),
+                masks: crate::constraints::tree::Masks::from_children(
+                    root_children.iter().map(|deps| &deps[..]),
+                ),
             });
             id
         };
@@ -320,9 +326,7 @@ impl PreparedConstruction {
                         dependencies: arena
                             .dependencies(source)
                             .map_err(|e| format!("{e:?}"))?
-                            .iter()
-                            .cloned()
-                            .collect(),
+                            .clone(),
                         masks: None,
                         list_id: None,
                     });
@@ -342,7 +346,7 @@ impl PreparedConstruction {
         enum Work {
             Enter(PreparedNodeId),
             Group(PreparedNodeId, usize, usize),
-            Reference(PreparedNodeId, FunctionVariable, BTreeSet<VariableId>),
+            Reference(PreparedNodeId, FunctionVariable, Dependencies),
         }
         let mut work = vec![Work::Enter(root)];
         let mut values = Vec::new();
@@ -444,11 +448,10 @@ impl PreparedConstruction {
                         self.nodes[target.0].list_id = Some(NativeListId(self.next_list_id));
                         self.next_list_id += 1;
                     } else {
-                        let mut masks: BTreeMap<VariableId, BTreeSet<usize>> = BTreeMap::new();
-                        for (index, child) in children.iter_mut().enumerate() {
-                            for key in &self.nodes[child.0].dependencies {
-                                masks.entry(key.clone()).or_default().insert(index);
-                            }
+                        let masks = crate::constraints::tree::Masks::from_children(
+                            children.iter().map(|child| &self.nodes[child.0].dependencies[..]),
+                        );
+                        for child in children.iter_mut() {
                             let reset = if copying {
                                 let fresh = PreparedNodeId(self.nodes.len());
                                 self.nodes.push(self.nodes[child.0].clone());
@@ -457,7 +460,7 @@ impl PreparedConstruction {
                                 *child
                             };
                             if self.dependency_retention == DependencyRetention::Clear {
-                                self.nodes[reset.0].dependencies.clear();
+                                self.nodes[reset.0].dependencies = Dependencies::default();
                             }
                             *child = reset;
                         }
@@ -480,7 +483,7 @@ impl PreparedConstruction {
         flat: &[PreparedNodeId],
         parent: NativeConstraintId,
         copying: bool,
-    ) -> Result<(NativeConstraintId, BTreeSet<VariableId>), String> {
+    ) -> Result<(NativeConstraintId, Dependencies), String> {
         let sources: Vec<_> = flat.iter().map(|n| self.nodes[n.0].source).collect();
         let fallible = sources
             .iter()
@@ -501,9 +504,7 @@ impl PreparedConstruction {
             let dependencies = arena
                 .dependencies(source)
                 .map_err(|e| format!("{e:?}"))?
-                .iter()
-                .cloned()
-                .collect();
+                .clone();
             return Ok((source, dependencies));
         }
         let mut all = Vec::new();

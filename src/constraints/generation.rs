@@ -220,17 +220,17 @@ struct MapContext {
 }
 enum Frame {
     MapKey {
-        context: MapContext,
+        context: Box<MapContext>,
         value: crate::patterns::PatternRef,
         operation: crate::constraints::derived::MapOperation,
     },
     MapValue {
-        context: MapContext,
+        context: Box<MapContext>,
         key: Type,
         operation: crate::constraints::derived::MapOperation,
     },
     MapArgument {
-        context: MapContext,
+        context: Box<MapContext>,
     },
     CaseArgument {
         site: Site,
@@ -239,20 +239,20 @@ enum Frame {
         base: usize,
     },
     ClausePatterns {
-        context: CaseContext,
+        context: Box<CaseContext>,
         guard: NodeId,
         body: NodeId,
         defined: Defined,
         count: usize,
     },
     ClauseGuard {
-        context: CaseContext,
+        context: Box<CaseContext>,
         body: NodeId,
         defined: Defined,
-        pattern_state: State,
+        pattern_state: Box<State>,
     },
     ClauseBody {
-        context: CaseContext,
+        context: Box<CaseContext>,
     },
     Visit(Site, Defined),
     PatternVisit {
@@ -280,23 +280,23 @@ enum Frame {
         count: usize,
     },
     TryArgument {
-        context: TryContext,
+        context: Box<TryContext>,
     },
     TryBody {
-        context: TryContext,
+        context: Box<TryContext>,
         argument: Type,
     },
     TryHandler {
         site: Site,
-        body_state: State,
+        body_state: Box<State>,
         body_result: Type,
-        outer: State,
+        outer: Box<State>,
         base: usize,
     },
     Function {
         site: Site,
         params: Vec<NodeId>,
-        saved: State,
+        saved: Box<State>,
         base: usize,
     },
 }
@@ -829,7 +829,7 @@ impl<'a> Generator<'a> {
                                     in_match: self.state.in_match,
                                     base: values.len(),
                                 };
-                                self.next_map_pair(context, &mut todo, &mut values)?;
+                                self.next_map_pair(Box::new(context), &mut todo, &mut values)?;
                             }
                             CoreExpr::Var(_) => {
                                 let label = self.variable_id(&site)?;
@@ -939,7 +939,9 @@ impl<'a> Generator<'a> {
                                     outer,
                                     base: values.len(),
                                 };
-                                todo.push(Frame::TryArgument { context });
+                                todo.push(Frame::TryArgument {
+                                    context: Box::new(context),
+                                });
                                 todo.push(Frame::Visit(
                                     Site {
                                         module: site.module,
@@ -1044,7 +1046,7 @@ impl<'a> Generator<'a> {
                                 todo.push(Frame::Function {
                                     site,
                                     params,
-                                    saved,
+                                    saved: Box::new(saved),
                                     base: values.len(),
                                 });
                                 todo.push(Frame::Visit(Site { module, node: body }, d));
@@ -1332,9 +1334,9 @@ impl<'a> Generator<'a> {
                         values.truncate(base);
                         values.push(self.finish_try(
                             site,
-                            body_state,
+                            *body_state,
                             body_result,
-                            outer,
+                            *outer,
                             handler,
                         )?);
                     }
@@ -1381,7 +1383,7 @@ impl<'a> Generator<'a> {
                         let argument = values.pop().ok_or_else(|| {
                             GenerationError::Boundary("map argument result absent".into())
                         })?;
-                        let result = self.finish_map(context, argument)?;
+                        let result = self.finish_map(*context, argument)?;
                         values.push(result);
                     }
                     Frame::PatternVisit {
@@ -1442,7 +1444,7 @@ impl<'a> Generator<'a> {
                             branches: vec![],
                             base,
                         };
-                        self.next_clause(context, &mut todo, &mut values)?;
+                        self.next_clause(Box::new(context), &mut todo, &mut values)?;
                     }
                     Frame::ClausePatterns {
                         mut context,
@@ -1478,7 +1480,7 @@ impl<'a> Generator<'a> {
                             context,
                             body,
                             defined: defined.clone(),
-                            pattern_state,
+                            pattern_state: Box::new(pattern_state),
                         });
                         todo.push(Frame::Visit(
                             Site {
@@ -1533,7 +1535,7 @@ impl<'a> Generator<'a> {
                             GenerationError::Boundary("function result missing".into())
                         })?;
                         values.truncate(base);
-                        values.push(self.finish_function(site, params, saved, body)?);
+                        values.push(self.finish_function(site, params, *saved, body)?);
                     }
                 }
                 Ok(())
@@ -1587,14 +1589,14 @@ impl<'a> Generator<'a> {
                             outer,
                             base,
                         } => {
-                            self.state = body_state.clone();
+                            self.state = (*body_state).clone();
                             self.state.context.clear();
                             values.truncate(base);
                             match self.finish_try(
                                 site,
-                                body_state,
+                                *body_state,
                                 body_result,
-                                outer,
+                                *outer,
                                 Type::none(),
                             ) {
                                 Ok(value) => {
@@ -1625,7 +1627,7 @@ impl<'a> Generator<'a> {
                 let Some((site, params, saved, base)) = caught else {
                     continue;
                 };
-                self.state = saved.clone();
+                self.state = (*saved).clone();
                 self.state.context.clear();
                 values.truncate(base);
                 // The source failure constraint uses propagated domain if available, otherwise Any arguments.

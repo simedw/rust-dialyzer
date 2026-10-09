@@ -3,7 +3,7 @@ use crate::underapprox::SafeUnderapprox;
 impl Generator<'_> {
     pub(super) fn next_clause(
         &mut self,
-        mut context: CaseContext,
+        mut context: Box<CaseContext>,
         todo: &mut Vec<Frame>,
         values: &mut Vec<Type>,
     ) -> Result<()> {

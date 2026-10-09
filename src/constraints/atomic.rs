@@ -1,7 +1,7 @@
-pub use crate::constraints::bindings::{BindingKey, BindingMap};
+pub use crate::constraints::bindings::{BindingKey, BindingMap, KeySet};
 use crate::constraints::derived::{BifResultProvider, DerivedArena, DerivedId, EvalError};
 use crate::lattice::{LatticeError, Type, TypePredicate, UnificationError, UnificationValue};
-use std::collections::BTreeSet;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Relation {
     Equal,
@@ -30,7 +30,7 @@ pub enum AtomicOutcome {
     Failed,
     Solved {
         bindings: BindingMap,
-        updated: BTreeSet<BindingKey>,
+        updated: KeySet,
     },
 }
 impl From<LatticeError> for SolveError {
@@ -73,7 +73,7 @@ impl AtomicConstraint {
             &self.left,
             &intersection,
             bindings,
-            BTreeSet::new(),
+            KeySet::new(),
             log.as_deref_mut(),
         )?;
         match (self.relation, first) {
@@ -94,7 +94,7 @@ pub(crate) fn refine(
     original: &Type,
     intersection: &Type,
     bindings: BindingMap,
-    updated: BTreeSet<BindingKey>,
+    updated: KeySet,
 ) -> Result<AtomicOutcome, SolveError> {
     refine_logged(original, intersection, bindings, updated, None)
 }
@@ -102,7 +102,7 @@ fn refine_logged(
     original: &Type,
     intersection: &Type,
     bindings: BindingMap,
-    updated: BTreeSet<BindingKey>,
+    updated: KeySet,
     log: Option<&mut WriteLog>,
 ) -> Result<AtomicOutcome, SolveError> {
     if let Some(variable) = original.variable_ref() {
@@ -138,14 +138,14 @@ fn refine_logged(
 pub(crate) fn refine_values(
     values: impl IntoIterator<Item = (BindingKey, UnificationValue)>,
     bindings: BindingMap,
-    updated: BTreeSet<BindingKey>,
+    updated: KeySet,
 ) -> Result<AtomicOutcome, SolveError> {
     refine_values_logged(values, bindings, updated, None)
 }
 fn refine_values_logged(
     values: impl IntoIterator<Item = (BindingKey, UnificationValue)>,
     mut bindings: BindingMap,
-    mut updated: BTreeSet<BindingKey>,
+    mut updated: KeySet,
     mut log: Option<&mut WriteLog>,
 ) -> Result<AtomicOutcome, SolveError> {
     for (variable, value) in values {
@@ -258,7 +258,7 @@ mod substitution_lookup_tests {
         };
         assert_eq!(bindings[&label(1)], Type::atom("label"));
         assert_eq!(bindings[&raw], Type::atom("raw"));
-        assert_eq!(updated, BTreeSet::from([label(1)]));
+        assert_eq!(updated, KeySet::from([label(1)]));
     }
     #[test]
     fn public_and_borrowed_substitution_keep_one_step_replacement() {
@@ -308,7 +308,7 @@ mod variable_refinement_tests {
         let left = Type::variable_id(x.clone());
         let right = Type::variable_id(y.clone());
         let AtomicOutcome::Solved { bindings, updated } =
-            refine(&left, &right, BindingMap::new(), BTreeSet::new()).unwrap()
+            refine(&left, &right, BindingMap::new(), KeySet::new()).unwrap()
         else {
             panic!("expected solution")
         };
@@ -319,7 +319,7 @@ mod variable_refinement_tests {
             .into_iter()
             .collect();
         assert!(matches!(
-            refine(&left, &Type::atom("new"), bindings, BTreeSet::new()).unwrap(),
+            refine(&left, &Type::atom("new"), bindings, KeySet::new()).unwrap(),
             AtomicOutcome::Failed
         ));
     }
@@ -342,7 +342,7 @@ mod absent_removal_proof {
             BindingKey::RawVariableRecord(VariableId::Integer(999.into())),
             Type::atom("raw"),
         );
-        let updated: BTreeSet<BindingKey> =
+        let updated: KeySet =
             [BindingKey::Label(VariableId::Integer(3.into()))].into();
         let result = refine_values(
             [(
@@ -371,7 +371,7 @@ mod absent_removal_proof {
         let AtomicOutcome::Solved { bindings, updated } = refine_values(
             [(key, UnificationValue::Type(Type::any()))],
             input,
-            BTreeSet::new(),
+            KeySet::new(),
         )
         .unwrap() else {
             panic!("must solve")

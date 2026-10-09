@@ -61,7 +61,9 @@ impl PartialOrd for BindingKey {
 #[derive(Clone, Default)]
 pub struct BindingMap {
     labels: LabelTrie,
-    rest: im::OrdMap<BindingKey, Type>,
+    /// `None` until a key outside the trie is first written: an empty
+    /// `im::OrdMap` allocates its root node, and most maps never need one.
+    rest: Option<im::OrdMap<BindingKey, Type>>,
     /// Under `verify_fast_paths()`, the same contents in the map this replaced.
     shadow: Option<im::OrdMap<BindingKey, Type>>,
 }
@@ -80,14 +82,14 @@ impl BindingMap {
     pub fn new() -> Self {
         Self {
             labels: LabelTrie::default(),
-            rest: im::OrdMap::new(),
+            rest: None,
             shadow: crate::lattice::verify_fast_paths().then(im::OrdMap::new),
         }
     }
     pub fn get(&self, key: &BindingKey) -> Option<&Type> {
         let found = match key.trie_index() {
             Some(index) => self.labels.get(index),
-            None => self.rest.get(key),
+            None => self.rest.as_ref().and_then(|rest| rest.get(key)),
         };
         if let Some(shadow) = &self.shadow {
             assert_eq!(found, shadow.get(key), "binding map lookup");
@@ -109,13 +111,16 @@ impl BindingMap {
     fn insert_unshadowed(&mut self, key: BindingKey, value: Type) -> Option<Type> {
         match key.trie_index() {
             Some(index) => self.labels.insert(index, value),
-            None => self.rest.insert(key, value),
+            None => self
+                .rest
+                .get_or_insert_with(im::OrdMap::new)
+                .insert(key, value),
         }
     }
     pub fn remove(&mut self, key: &BindingKey) -> Option<Type> {
         let old = match key.trie_index() {
             Some(index) => self.labels.remove(index),
-            None => self.rest.remove(key),
+            None => self.rest.as_mut().and_then(|rest| rest.remove(key)),
         };
         if let Some(shadow) = &mut self.shadow {
             assert_eq!(old, shadow.remove(key), "binding map remove");
@@ -123,7 +128,7 @@ impl BindingMap {
         old
     }
     pub fn len(&self) -> usize {
-        self.labels.len + self.rest.len()
+        self.labels.len + self.rest.as_ref().map_or(0, |rest| rest.len())
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -133,21 +138,33 @@ impl BindingMap {
         fn owned<'a>((k, v): (&BindingKey, &'a Type)) -> (BindingKey, &'a Type) {
             (k.clone(), v)
         }
+        let below = zero.clone();
         self.rest
-            .range(..zero.clone())
+            .iter()
+            .flat_map(move |rest| rest.range(..below.clone()))
             .map(owned)
             .chain(
                 self.labels
                     .iter()
                     .map(|(index, value)| (BindingKey::trie_key(index), value)),
             )
-            .chain(self.rest.range(zero..).map(owned))
+            .chain(
+                self.rest
+                    .iter()
+                    .flat_map(move |rest| rest.range(zero.clone()..))
+                    .map(owned),
+            )
     }
     pub fn keys(&self) -> impl Iterator<Item = BindingKey> + '_ {
         self.iter().map(|(key, _)| key)
     }
     pub fn ptr_eq(&self, other: &Self) -> bool {
-        self.labels.ptr_eq(&other.labels) && self.rest.ptr_eq(&other.rest)
+        self.labels.ptr_eq(&other.labels)
+            && match (&self.rest, &other.rest) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.ptr_eq(b),
+                _ => false,
+            }
     }
     /// Under `verify_fast_paths()`, asserts the contents and iteration order
     /// match the shadow `im::OrdMap`.
@@ -165,7 +182,12 @@ impl BindingMap {
 }
 impl PartialEq for BindingMap {
     fn eq(&self, other: &Self) -> bool {
-        let equal = self.labels == other.labels && self.rest == other.rest;
+        let rest = match (&self.rest, &other.rest) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a == b,
+            (Some(a), None) | (None, Some(a)) => a.is_empty(),
+        };
+        let equal = self.labels == other.labels && rest;
         if let (Some(a), Some(b)) = (&self.shadow, &other.shadow) {
             assert_eq!(equal, a == b, "binding map equality");
         }
@@ -206,6 +228,100 @@ impl IntoIterator for BindingMap {
             .map(|(k, v)| (k, v.clone()))
             .collect::<Vec<_>>()
             .into_iter()
+    }
+}
+
+/// A set of binding keys, kept sorted and without duplicates in one vector:
+/// the sets the solver passes around are mostly a handful of keys.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeySet(Vec<BindingKey>);
+impl KeySet {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+    /// The set of the keys in `keys`, in any order and with repeats.
+    pub fn from_unsorted(mut keys: Vec<BindingKey>) -> Self {
+        keys.sort_unstable();
+        keys.dedup();
+        Self(keys)
+    }
+    pub fn insert(&mut self, key: BindingKey) -> bool {
+        match self.0.binary_search(&key) {
+            Ok(_) => false,
+            Err(at) => {
+                self.0.insert(at, key);
+                true
+            }
+        }
+    }
+    pub fn contains(&self, key: &BindingKey) -> bool {
+        self.0.binary_search(key).is_ok()
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn iter(&self) -> std::slice::Iter<'_, BindingKey> {
+        self.0.iter()
+    }
+    /// Adds every key of `other`.
+    pub fn union(&mut self, other: Self) {
+        if self.0.is_empty() {
+            *self = other;
+        } else if !other.0.is_empty() {
+            let a = std::mem::take(&mut self.0);
+            let mut out = Vec::with_capacity(a.len() + other.0.len());
+            let mut a = a.into_iter().peekable();
+            let mut b = other.0.into_iter().peekable();
+            loop {
+                let next = match (a.peek(), b.peek()) {
+                    (Some(x), Some(y)) => match x.cmp(y) {
+                        Ordering::Less => a.next(),
+                        Ordering::Greater => b.next(),
+                        Ordering::Equal => {
+                            b.next();
+                            a.next()
+                        }
+                    },
+                    (Some(_), None) => a.next(),
+                    (None, _) => b.next(),
+                };
+                match next {
+                    Some(key) => out.push(key),
+                    None => break,
+                }
+            }
+            self.0 = out;
+        }
+    }
+    pub fn into_vec(self) -> Vec<BindingKey> {
+        self.0
+    }
+}
+impl IntoIterator for KeySet {
+    type Item = BindingKey;
+    type IntoIter = std::vec::IntoIter<BindingKey>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+impl<'a> IntoIterator for &'a KeySet {
+    type Item = &'a BindingKey;
+    type IntoIter = std::slice::Iter<'a, BindingKey>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+impl FromIterator<BindingKey> for KeySet {
+    fn from_iter<I: IntoIterator<Item = BindingKey>>(keys: I) -> Self {
+        Self::from_unsorted(keys.into_iter().collect())
+    }
+}
+impl<const N: usize> From<[BindingKey; N]> for KeySet {
+    fn from(keys: [BindingKey; N]) -> Self {
+        keys.into_iter().collect()
     }
 }
 
