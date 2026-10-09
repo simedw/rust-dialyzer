@@ -12,6 +12,7 @@ import shutil
 import subprocess
 
 from compare_warnings import expand, items
+from storage import require_disk_reserve
 
 ROOT = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -25,6 +26,7 @@ parser.add_argument('--keep-target', action='store_true')
 args = parser.parse_args()
 source = args.source.resolve()
 out = args.output.resolve()
+require_disk_reserve(out)
 assert not out.exists(), 'Output must be new; stale profiles cannot be reused'
 rust_version = subprocess.check_output([args.rustc, '-vV'], text=True)
 target = re.search(r'^host: (.+)$', rust_version, re.M).group(1)
@@ -54,6 +56,7 @@ metadata = {
 
 
 def run(label, command, environment=env, cwd=ROOT):
+    require_disk_reserve(out)
     with (out / f'{label}.stdout').open('w') as stdout, \
             (out / f'{label}.stderr').open('w') as stderr:
         subprocess.run(list(map(str, command)), cwd=cwd, env=environment,

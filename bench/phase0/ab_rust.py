@@ -19,6 +19,7 @@ import subprocess
 import sys
 
 from compare_warnings import expand, items
+from storage import require_disk_reserve
 
 ROOT = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
@@ -31,6 +32,7 @@ args = parser.parse_args()
 assert args.repetitions > 0
 config = json.loads(args.config.read_text())
 out = args.output.resolve()
+require_disk_reserve(out)
 out.mkdir(parents=True, exist_ok=False)
 env = dict(os.environ, ERL_FLAGS='+S 14:14', RUST_BACKTRACE='1')
 projects = args.project or ['phoenix', 'elixir']
@@ -47,6 +49,7 @@ def warnings(result):
 
 
 def measure(label, command, directory):
+    require_disk_reserve(directory)
     load_before = os.getloadavg()
     with (directory / (label + '.stdout')).open('w') as stdout, \
             (directory / (label + '.stderr')).open('w') as stderr:

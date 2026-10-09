@@ -17,6 +17,8 @@ import shutil
 import subprocess
 import sys
 
+from storage import require_disk_reserve
+
 ROOT = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('out', type=Path)
@@ -28,6 +30,7 @@ parser.add_argument('--cleanup-caches', action='store_true',
                     help='Remove completed Core caches and PLTs after verification, outside timings')
 args = parser.parse_args()
 OUT = args.out.resolve()
+require_disk_reserve(OUT)
 ELIXIR = ROOT / '.cache/real-projects/elixir-v1.20.4/bin/elixir'
 BINARY = args.binary.resolve()
 PRIOR = ROOT / '.cache/phase0/rust-cone/out/prior-library.json'
@@ -50,6 +53,7 @@ sources = [BINARY, args.cache_script.resolve(), OUT / 'otp.exs',
 
 
 def measure(label, command, directory):
+    require_disk_reserve(directory)
     stdout = directory / f'{label}.stdout'
     stderr = directory / f'{label}.stderr'
     with stdout.open('w') as output, stderr.open('w') as errors:

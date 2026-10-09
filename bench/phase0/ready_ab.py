@@ -16,6 +16,7 @@ import statistics
 import subprocess
 
 from compare_warnings import expand, items
+from storage import require_disk_reserve
 
 
 def signatures(result):
@@ -39,6 +40,7 @@ assert args.repetitions > 0
 root = Path(__file__).resolve().parents[2]
 config = json.loads(args.config.read_text())
 output = args.output.resolve()
+require_disk_reserve(output)
 output.mkdir(parents=True, exist_ok=False)
 env = dict(os.environ, RUST_BACKTRACE='1')
 for key in ('RUST_DIALYZER_TIMINGS', 'RUST_DIALYZER_VERIFY_FASTPATH',
@@ -63,6 +65,7 @@ for repeat in range(1, args.repetitions + 1):
     for project, manifest in config['manifests'].items():
         order = ('baseline', 'candidate') if repeat % 2 else ('candidate', 'baseline')
         for variant in order:
+            require_disk_reserve(output)
             directory = output / project / f'{repeat}-{variant}'
             directory.mkdir(parents=True)
             load_before = os.getloadavg()

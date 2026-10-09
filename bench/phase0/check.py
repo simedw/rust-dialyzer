@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from storage import require_disk_reserve
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 PRIOR = REPO / ".cache/phase0/rust-cone/out/prior-library.json"
@@ -32,6 +34,7 @@ def main():
     ap.add_argument("--options", type=Path, default=OPTIONS)
     ap.add_argument("--env", nargs="*", default=[])
     args = ap.parse_args()
+    require_disk_reserve(args.out)
     args.out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, **dict(kv.split("=", 1) for kv in args.env))
     result_path, stderr_path = args.out / "out.json", args.out / "stderr"
