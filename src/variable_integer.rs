@@ -1,9 +1,9 @@
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 use std::{cmp::Ordering, fmt, str::FromStr, sync::Arc};
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct VariableInteger(Repr);
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum Repr {
     Small(i64),
     Large(Arc<BigInt>),

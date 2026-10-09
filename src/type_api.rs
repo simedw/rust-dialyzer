@@ -718,8 +718,8 @@ impl Type {
                             .join(&tuples)?;
                         }
                     }
-                    s.tuple = match tuples.repr {
-                        Repr::Families(t) => t.into_slots().tuple,
+                    s.tuple = match &tuples.repr {
+                        Repr::Families(t) => t.tuple_owner().cloned(),
                         _ => None,
                     };
                 }

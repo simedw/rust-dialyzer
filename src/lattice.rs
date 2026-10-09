@@ -77,20 +77,33 @@ impl NativeTypeOutcome {
     }
 }
 
-#[derive(Clone)]
-pub struct Type {
-    repr: Repr,
-    info: Info,
+#[derive(Clone, Copy)]
+pub struct Type(&'static Node);
+impl std::ops::Deref for Type {
+    type Target = Node;
+    fn deref(&self) -> &Node {
+        self.0
+    }
 }
 impl PartialEq for Type {
     fn eq(&self, other: &Self) -> bool {
-        self.repr == other.repr
+        let same = std::ptr::eq(self.0, other.0);
+        if verify_fast_paths() && !same {
+            // Children are interned, so this compares one level only.
+            assert!(self.0.repr != other.0.repr, "duplicate interned node: {self:?}");
+        }
+        same
     }
 }
 impl Eq for Type {}
+impl std::hash::Hash for Type {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0.hash)
+    }
+}
 impl std::fmt::Debug for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Type").field(&self.repr).finish()
+        f.debug_tuple("Type").field(&self.0.repr).finish()
     }
 }
 /// `has_var()` holds.
@@ -179,7 +192,7 @@ impl Info {
         Self { flags, limited_from: from }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Repr {
     Any,
     None,
@@ -205,10 +218,149 @@ thread_local! {
     static CANONICAL_TYPES: [std::cell::OnceCell<Type>; CANONICAL_TYPE_COUNT] =
         const { [const { std::cell::OnceCell::new() }; CANONICAL_TYPE_COUNT] };
 }
+/// One hash-consed type: structurally equal types share a single node, so
+/// equality and hashing look at the pointer. Node addresses never influence
+/// ordering or output.
+pub struct Node {
+    hash: u64,
+    info: Info,
+    repr: Repr,
+}
+mod interner {
+    use super::{Info, Node, Repr};
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+    /// Open addressing with slots that are only ever filled, as in
+    /// `crate::atom`: lookups are atomic loads and threads never wait.
+    struct Table<const SLOTS: usize> {
+        slots: [AtomicPtr<Node>; SLOTS],
+        overflow: Mutex<Option<HashMap<u64, Vec<&'static Node>>>>,
+    }
+    const PROBES: usize = 32;
+    pub(super) static NODES: AtomicUsize = AtomicUsize::new(0);
+    static TABLE: Table<{ 1 << 24 }> = Table {
+        slots: [const { AtomicPtr::new(std::ptr::null_mut()) }; 1 << 24],
+        overflow: Mutex::new(None),
+    };
+
+    pub(super) fn hash(repr: &Repr) -> u64 {
+        let mut h = crate::fast_hash::FxHasher::default();
+        repr.hash(&mut h);
+        // FxHash leaves the low bits weak; fold the high bits in.
+        let x = h.finish();
+        x ^ (x >> 29) ^ (x >> 47)
+    }
+    pub(super) fn intern(repr: Repr) -> &'static Node {
+        let hash = hash(&repr);
+        let start = hash as usize;
+        let mut fresh: Option<*mut Node> = None;
+        let mut candidate = Some(repr);
+        let slots = &TABLE.slots;
+        for probe in 0..PROBES {
+            let slot = &slots[(start.wrapping_add(probe)) & (slots.len() - 1)];
+            let mut current = slot.load(Ordering::Acquire);
+            if current.is_null() {
+                let entry = *fresh.get_or_insert_with(|| {
+                    let repr = candidate.take().unwrap();
+                    let info = Info::of(&repr);
+                    Box::into_raw(Box::new(Node { hash, info, repr }))
+                });
+                match slot.compare_exchange(std::ptr::null_mut(), entry, Ordering::AcqRel, Ordering::Acquire) {
+                    Ok(_) => {
+                        NODES.fetch_add(1, Ordering::Relaxed);
+                        return unsafe { &*entry };
+                    }
+                    Err(winner) => current = winner,
+                }
+            }
+            // Published nodes are leaked, so they stay valid forever.
+            let existing: &'static Node = unsafe { &*current };
+            if existing.hash == hash {
+                let same = match (&candidate, fresh) {
+                    (Some(r), _) => existing.repr == *r,
+                    (None, Some(entry)) => existing.repr == unsafe { &*entry }.repr,
+                    (None, None) => unreachable!(),
+                };
+                if same {
+                    if let Some(entry) = fresh {
+                        drop(unsafe { Box::from_raw(entry) });
+                    }
+                    return existing;
+                }
+            }
+        }
+        let node = match fresh {
+            Some(entry) => unsafe { *Box::from_raw(entry) },
+            None => {
+                let repr = candidate.take().unwrap();
+                Node { hash, info: Info::of(&repr), repr }
+            }
+        };
+        let mut overflow = TABLE.overflow.lock().expect("type overflow table");
+        let chain = overflow.get_or_insert_with(HashMap::new).entry(hash).or_default();
+        if let Some(existing) = chain.iter().find(|n| n.repr == node.repr) {
+            return existing;
+        }
+        let leaked: &'static Node = Box::leak(Box::new(node));
+        NODES.fetch_add(1, Ordering::Relaxed);
+        chain.push(leaked);
+        leaked
+    }
+}
+/// Per-thread caches of lattice results keyed by the operands' node
+/// pointers. Only results that are a pure function of the operands are
+/// stored: never errors, and never while an enclosing nominal operation is
+/// active unless both operands are free of nominals (`ActivePairGuard` only
+/// ever consults that stack for nominal operands).
+mod memo {
+    use super::{ACTIVE_PAIRS, NOMINAL, Node, Type};
+    use std::cell::Cell;
+
+    const BITS: u32 = 16;
+    type Entry = Cell<(usize, usize, usize)>;
+    pub(super) struct Table(std::thread::LocalKey<Box<[Entry]>>);
+    thread_local! {
+        static MEET_ENTRIES: Box<[Entry]> = (0..1 << BITS).map(|_| Cell::new((0, 0, 0))).collect();
+    }
+    pub(super) static MEET: Table = Table(MEET_ENTRIES);
+
+    pub(super) fn pure(a: &Type, b: &Type) -> bool {
+        (a.info.flags | b.info.flags) & NOMINAL == 0
+            || ACTIVE_PAIRS.with(|pairs| pairs.borrow().is_empty())
+    }
+    fn key(a: &Type, b: &Type) -> (usize, usize, usize) {
+        let (x, y) = (a.0 as *const Node as usize, b.0 as *const Node as usize);
+        let h = (x ^ y.rotate_left(29)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        (x, y, h >> (usize::BITS - BITS))
+    }
+    pub(super) fn get(table: &'static Table, a: &Type, b: &Type) -> Option<Type> {
+        let (x, y, i) = key(a, b);
+        let (ka, kb, r) = table.0.with(|t| t[i].get());
+        // Stored results are interned nodes, which are never freed.
+        (ka == x && kb == y).then(|| Type(unsafe { &*(r as *const Node) }))
+    }
+    pub(super) fn put(table: &'static Table, a: &Type, b: &Type, result: Type) {
+        let (x, y, i) = key(a, b);
+        table.0.with(|t| t[i].set((x, y, result.0 as *const Node as usize)));
+    }
+}
+
 impl Type {
     fn new(repr: Repr) -> Self {
-        let info = Info::of(&repr);
-        Self { repr, info }
+        static ANY: Node = Node { hash: 1, info: Info { flags: 0, limited_from: i32::MIN }, repr: Repr::Any };
+        static NONE: Node = Node { hash: 2, info: Info { flags: 0, limited_from: 1 }, repr: Repr::None };
+        static UNIT: Node = Node { hash: 3, info: Info { flags: 0, limited_from: 1 }, repr: Repr::Unit };
+        static OPAQUE: Node = Node { hash: 4, info: Info { flags: NOMINAL, limited_from: 1 }, repr: Repr::Opaque };
+        Self(match repr {
+            Repr::Any => &ANY,
+            Repr::None => &NONE,
+            Repr::Unit => &UNIT,
+            Repr::Opaque => &OPAQUE,
+            repr => interner::intern(repr),
+        })
     }
     fn integer_interval(from: Bound, to: Bound) -> Self {
         Self::scalar(None, Some(Numeric::Integer(Integers::Range(from, to))))
@@ -269,24 +421,24 @@ impl Type {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Atoms {
     All,
     Set(BTreeSet<crate::atom::Atom>),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Numeric {
     Float,
     Number,
     Integer(Integers),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Integers {
     All,
     Set(BTreeSet<BigInt>),
     Range(Bound, Bound),
 }
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Bound {
     NegativeInfinity,
     Finite(BigInt),
@@ -683,7 +835,7 @@ fn checked_subtract_slot<T>(
         _ => Ok(None),
     }
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 struct Slots {
     union_record: bool,
     atoms: Option<Arc<Atoms>>,
@@ -695,7 +847,7 @@ struct Slots {
     tuple: Option<Arc<Tuples>>,
     maps: Option<Arc<Maps>>,
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum FamilyStore {
     Atoms(Arc<Atoms>),
     Bitstrings(Arc<Bitstrings>),
@@ -1075,7 +1227,7 @@ impl Slots {
             && self.maps.is_none()
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Identifiers {
     All,
     Set(BTreeSet<String>),
@@ -1128,7 +1280,7 @@ impl Identifiers {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Lists {
     Nil,
     List {
@@ -1299,12 +1451,12 @@ impl Lists {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct TupleVariant {
     elements: Vec<Type>,
     tag: Option<String>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Tuples {
     Any,
     Set(BTreeMap<usize, Vec<TupleVariant>>),
@@ -1533,7 +1685,7 @@ impl Tuples {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Bitstrings {
     unit: BigInt,
     base: BigInt,
@@ -1647,7 +1799,7 @@ impl Bitstrings {
         json!({"kind":"bitstring","unit":self.unit.to_string(),"base":self.base.to_string()})
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Functions {
     domain: Box<Type>,
     range: Box<Type>,
@@ -1702,7 +1854,7 @@ impl Functions {
         json!({"kind":"function","domain":domain,"range":self.range.to_value()})
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VariableId {
     Integer(VariableInteger),
     Atom(String),
@@ -1725,12 +1877,12 @@ impl VariableId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Opacity {
     Opaque,
     Transparent,
 }
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NominalName {
     Symbol(String),
     Defined {
@@ -1771,7 +1923,7 @@ impl NominalName {
         })
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Nominal {
     name: NominalName,
     inner: Box<Type>,
@@ -1781,7 +1933,7 @@ impl Nominal {
         Type::new(Repr::Nominal(Arc::new(self.clone())))
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct NominalSet {
     nominals: Vec<Nominal>,
     structural: Box<Type>,
@@ -1871,10 +2023,10 @@ impl Type {
                     _ => {
                         let mut ns = Vec::new();
                         for t in done {
-                            let Repr::Nominal(n) = t.repr else {
+                            let Repr::Nominal(n) = &t.repr else {
                                 return Err(LatticeError::FunctionClause);
                             };
-                            ns.push(Arc::unwrap_or_clone(n))
+                            ns.push((**n).clone())
                         }
                         self::NominalSet::raw(ns, other)
                     }
@@ -1897,8 +2049,8 @@ impl Type {
     fn from_nominal_types(types: Vec<Self>, other: Self) -> Result<Self, LatticeError> {
         let mut ns = Vec::new();
         for t in types {
-            if let Repr::Nominal(n) = t.repr {
-                ns.push(Arc::unwrap_or_clone(n))
+            if let Repr::Nominal(n) = &t.repr {
+                ns.push((**n).clone())
             } else if !t.is_none() {
                 return Err(LatticeError::FunctionClause);
             }
@@ -2237,7 +2389,7 @@ impl Type {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MapKey {
     Atom(String),
     Nil,
@@ -2287,12 +2439,12 @@ impl MapKey {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Presence {
     Mandatory,
     Optional,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MapEntry {
     pub key: MapKey,
     pub presence: Presence,
@@ -2305,7 +2457,7 @@ pub struct MapTypeEntry {
     pub value: Type,
 }
 type AlignedMapPair = (MapKey, Presence, Type, Presence, Type);
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Maps {
     entries: Vec<MapEntry>,
     default_key: Box<Type>,
@@ -2935,8 +3087,8 @@ impl Type {
     }
     /// The tuple family slot of a family value, moved out without copying.
     fn into_tuple_slot(self) -> Option<Arc<Tuples>> {
-        match self.repr {
-            Repr::Families(s) => s.into_slots().tuple,
+        match &self.repr {
+            Repr::Families(s) => s.tuple_owner().cloned(),
             _ => None,
         }
     }
@@ -3121,7 +3273,7 @@ impl Type {
                 (_, None) => self.clone(),
                 (Unit, _) => rhs.clone(),
                 (_, Unit) => self.clone(),
-                (a, b) if a == b => self.clone(),
+                _ if self == rhs => self.clone(),
                 (Opaque, _) => rhs.clone(),
                 (_, Opaque) => self.clone(),
                 (Var(_), _) | (_, Var(_)) => Self::any(),
@@ -3142,6 +3294,25 @@ impl Type {
         })
     }
     pub fn meet(&self, rhs: &Self) -> Result<Self, LatticeError> {
+        use Repr::*;
+        if matches!(self.repr, Var(_) | Any | None | Unit)
+            || matches!(rhs.repr, Var(_) | Any | None | Unit)
+            || self == rhs
+            || !memo::pure(self, rhs)
+        {
+            return self.meet_uncached(rhs);
+        }
+        if let Some(hit) = memo::get(&memo::MEET, self, rhs) {
+            if verify_fast_paths() {
+                assert_eq!(Ok(hit), self.meet_uncached(rhs), "meet memo: {self:?} /\\ {rhs:?}");
+            }
+            return Ok(hit);
+        }
+        let result = self.meet_uncached(rhs)?;
+        memo::put(&memo::MEET, self, rhs, result);
+        Ok(result)
+    }
+    fn meet_uncached(&self, rhs: &Self) -> Result<Self, LatticeError> {
         let _active = ActivePairGuard::enter(Operation::Meet, self, rhs)?;
         Ok({
             use Repr::*;
@@ -3153,7 +3324,7 @@ impl Type {
                 (_, Any) => self.clone(),
                 (None, _) | (_, None) => Self::none(),
                 (Unit, _) | (_, Unit) => Self::unit(),
-                (a, b) if a == b => self.clone(),
+                _ if self == rhs => self.clone(),
                 (Nominal(_) | NominalSet(_), _) | (_, Nominal(_) | NominalSet(_)) => {
                     self.nominal_meet(rhs)?
                 }
@@ -4072,7 +4243,7 @@ impl Type {
             if t.is_none() {
                 continue;
             }
-            let Repr::Families(s) = t.repr else {
+            let Repr::Families(s) = &t.repr else {
                 return Err("native union slot must be a family or none".into());
             };
             if s.union_record() || s.count() != 1 {
@@ -4265,8 +4436,8 @@ impl Type {
                         )?;
                         combined = combined.join(&t)?;
                     }
-                    s.tuple = match combined.repr {
-                        Repr::Families(t) => t.into_slots().tuple,
+                    s.tuple = match &combined.repr {
+                        Repr::Families(t) => t.tuple_owner().cloned(),
                         _ => None,
                     };
                 }
@@ -4467,7 +4638,8 @@ impl UnificationValue {
     fn is_nominal_set(&self) -> bool {
         matches!(
             self,
-            Self::MalformedNominalSet { .. } | Self::Type(Type { repr: Repr::NominalSet(_), .. })
+            Self::MalformedNominalSet { .. }
+        ) || matches!(self, Self::Type(t) if matches!(t.repr, Repr::NominalSet(_))
         )
     }
 }
@@ -4685,7 +4857,7 @@ impl Unifier {
             return self.pair(b, a, Some(up));
         }
         if a.is_nominal_set()
-            && let Some(Type { repr: Repr::Nominal(_), .. }) = tb
+            && tb.is_some_and(|t| matches!(t.repr, Repr::Nominal(_)))
         {
             let malformed = UnificationValue::MalformedNominalSet {
                 nominal: tb.unwrap().clone(),
@@ -4693,7 +4865,7 @@ impl Unifier {
             };
             return self.pair(a, Val::Other(&malformed), Some(up));
         }
-        if let Some(Type { repr: Repr::NominalSet(n), .. }) = ta
+        if let Some(Repr::NominalSet(n)) = ta.map(|t| &t.repr)
             && let Some(head) = n.nominals.first()
         {
             self.pair(
@@ -4710,7 +4882,7 @@ impl Unifier {
         if b.is_nominal_set() {
             return self.pair(b, a, Some(up));
         }
-        if let Some(Type { repr: Repr::Nominal(n), .. }) = ta {
+        if let Some(Repr::Nominal(n)) = ta.map(|t| &t.repr) {
             return self.pair(Val::Type(&n.inner), b, Some(up));
         }
         if tb.is_some_and(|t| matches!(t.repr, Repr::Nominal(_))) {
@@ -5658,7 +5830,7 @@ mod borrowed_presence_proof_tests {
             .into_iter()
             .try_fold(Type::none(), |a, b| a.join(&b))
             .unwrap();
-        let Repr::Families(prototype) = all.repr else {
+        let Repr::Families(prototype) = all.repr.clone() else {
             panic!("family prototype")
         };
         for mask in 0..256 {
@@ -6197,7 +6369,7 @@ mod family_store_roundtrip_tests {
         ];
         let mut template = Slots::default();
         for typ in fixtures {
-            let Repr::Families(store) = typ.repr else {
+            let Repr::Families(store) = typ.repr.clone() else {
                 panic!("fixture is not a family")
             };
             let fields = store.into_slots();
@@ -6325,7 +6497,7 @@ mod canonical_constructor_tests {
     #[test]
     fn owned_extraction_mutation_cannot_change_cached_owner() {
         let original=Type::nil();
-        let Repr::Families(s)=original.clone().repr else {panic!()};
+        let Repr::Families(s)=original.repr.clone() else {panic!()};
         let mut owned=s.into_slots();
         owned.list=None;
         owned.atoms=Some(Arc::new(Atoms::All));
@@ -6338,7 +6510,7 @@ mod canonical_constructor_tests {
         let there=std::thread::spawn(Type::nil).join().unwrap();
         assert_eq!(here,there);
         let (Repr::Families(a),Repr::Families(b))=(&here.repr,&there.repr)else{panic!()};
-        assert!(!same_owner(a,b));
+        assert!(same_owner(a,b), "interning shares one node across threads");
         assert_eq!(there.to_value(),here.to_value());
     }
 }
