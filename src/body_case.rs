@@ -529,7 +529,15 @@ impl BodyFlow<'_, '_, '_> {
         // Without any nominal (or the opaque sentinel) among the clause
         // results, no element can be opaque and `elements` cannot fail, so
         // the answer is empty; skip building native values.
-        if successes.iter().all(|(_, typ)| !typ.contains_nominal()) {
+        // Likewise when no element of any result is opaque to this module
+        // (and `elements` succeeds, so no error could surface instead).
+        let no_opaque = || -> bool {
+            successes.iter().all(|(_, typ)| {
+                typ.elements()
+                    .is_ok_and(|flat| flat.iter().all(|ty| !ty.is_opaque(&state.module)))
+            })
+        };
+        if successes.iter().all(|(_, typ)| !typ.contains_nominal()) || no_opaque() {
             if crate::lattice::verify_fast_paths() {
                 assert!(
                     self.opaque_case_warnings_full(successes, state)?.is_empty(),
