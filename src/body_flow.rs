@@ -219,23 +219,25 @@ enum Frame {
         body: NodeRef,
         exceptions: Vec<NodeRef>,
         handler: NodeRef,
-        outer: DataflowMap,
+        outer: Box<DataflowMap>,
     },
     TryBody {
         exceptions: Vec<NodeRef>,
         handler: NodeRef,
-        outer: DataflowMap,
-        argument_map: DataflowMap,
+        outer: Box<DataflowMap>,
+        argument_map: Box<DataflowMap>,
     },
     CaseArgument {
         node: NodeRef,
         argument: NodeRef,
         clauses: Vec<NodeRef>,
     },
-    CaseBody(CaseCursor),
+    // Boxed: these frames are large and rare next to `Visit`, and every
+    // frame is moved on each push and pop.
+    CaseBody(Box<CaseCursor>),
     TryHandler {
-        success: Value,
-        argument_map: DataflowMap,
+        success: Box<Value>,
+        argument_map: Box<DataflowMap>,
     },
 }
 pub struct BodyFlow<'a, 'b, 'c> {
@@ -548,7 +550,7 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
         let TypeValue::Integers(numbers) = refined_size.get(TypeGetter::NumberValues)? else {
             return Err(LatticeError::FunctionClause.into());
         };
-        if refined_size.opacity_conflict(&refined_value, &state.module)? != OpacityConflict::None {
+        if crate::binder::opacity_conflict(&refined_size, &refined_value, &state.module)? != OpacityConflict::None {
             let actual = state.presentation_context().type_to_string(&refined_size)?;
             let size_string = (CorePrinter {
                 patterns: self.patterns,
@@ -1292,7 +1294,7 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
                                 body: reference(body),
                                 exceptions: Self::refs(node, &exception_vars),
                                 handler: reference(handler),
-                                outer: map.clone(),
+                                outer: Box::new(map.clone()),
                             });
                             todo.push(Frame::Visit(reference(argument), map));
                         }
@@ -1324,7 +1326,7 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
                         values.push(value);
                     } else {
                         self.next_body_clause(
-                            CaseCursor::new(node, argument, value, clauses),
+                            Box::new(CaseCursor::new(node, argument, value, clauses)),
                             &mut todo,
                             &mut values,
                             &mut state,
@@ -1564,7 +1566,7 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
                         exceptions,
                         handler,
                         outer,
-                        argument_map: value.map,
+                        argument_map: Box::new(value.map),
                     });
                     if success {
                         todo.push(Frame::Visit(body, map));
@@ -1586,10 +1588,10 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
                         .ok_or_else(|| BodyError::Boundary("try body absent".into()))?;
                     self.patterns.nodes.mark_fresh(&exceptions, &mut outer)?;
                     todo.push(Frame::TryHandler {
-                        success,
+                        success: Box::new(success),
                         argument_map,
                     });
-                    todo.push(Frame::Visit(handler, outer));
+                    todo.push(Frame::Visit(handler, *outer));
                 }
                 Frame::TryHandler {
                     success,

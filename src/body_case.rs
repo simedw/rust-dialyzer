@@ -5,7 +5,6 @@ use crate::{
     guard_ops::GuardEval,
     guard_warning::GuardWarning,
     lattice::NativeValue,
-    underapprox::SafeUnderapprox,
     warning_payload::{NativeWarning, string},
 };
 
@@ -272,17 +271,18 @@ impl BodyFlow<'_, '_, '_> {
             + From<CaseWarning>,
     >(
         &mut self,
-        mut cursor: CaseCursor,
+        mut cursor: Box<CaseCursor>,
         todo: &mut Vec<Frame>,
         values: &mut Vec<Value>,
         state: &mut BinderState<W>,
     ) -> Result<()> {
+        let clause_nodes = self.patterns.nodes;
         while let Some(clause) = cursor.remaining.pop_front() {
             let CoreExpr::Clause {
                 patterns,
                 guard,
                 body,
-            } = self.patterns.nodes.expression(clause)?.clone()
+            } = clause_nodes.expression(clause)?
             else {
                 return Err(LatticeError::FunctionClause.into());
             };
@@ -336,7 +336,7 @@ impl BodyFlow<'_, '_, '_> {
             let bound = match (Binder {
                 patterns: self.patterns,
             })
-            .bind(&references, &actual, &map, state, Direction::Forward)
+            .bind_owned(&references, &actual, map, state, Direction::Forward)
             {
                 Ok(bound) => bound,
                 Err(BindError::Failure(f)) => {
@@ -374,9 +374,8 @@ impl BodyFlow<'_, '_, '_> {
                 Err(e) => return Err(e.into()),
             }
             let nodes = self.patterns.nodes;
-            let under = SafeUnderapprox::new(nodes.core(), nodes.labels(), nodes.literal_types());
-            let approximation = under
-                .evaluate_with_refold_events(
+            let approximation = nodes
+                .clause_underapprox(
                     clause.module,
                     &patterns,
                     crate::core::NodeId(guard.node),
@@ -523,6 +522,33 @@ impl BodyFlow<'_, '_, '_> {
         })
     }
     fn opaque_case_warnings<W>(
+        &self,
+        successes: &[(NodeRef, Type)],
+        state: &BinderState<W>,
+    ) -> Result<Vec<Pending>> {
+        // Without any nominal (or the opaque sentinel) among the clause
+        // results, no element can be opaque and `elements` cannot fail, so
+        // the answer is empty; skip building native values.
+        // Likewise when no element of any result is opaque to this module
+        // (and `elements` succeeds, so no error could surface instead).
+        let no_opaque = || -> bool {
+            successes.iter().all(|(_, typ)| {
+                typ.elements()
+                    .is_ok_and(|flat| flat.iter().all(|ty| !ty.is_opaque(&state.module)))
+            })
+        };
+        if successes.iter().all(|(_, typ)| !typ.contains_nominal()) || no_opaque() {
+            if crate::lattice::verify_fast_paths() {
+                assert!(
+                    self.opaque_case_warnings_full(successes, state)?.is_empty(),
+                    "opaque_case_warnings fast path"
+                );
+            }
+            return Ok(vec![]);
+        }
+        self.opaque_case_warnings_full(successes, state)
+    }
+    fn opaque_case_warnings_full<W>(
         &self,
         successes: &[(NodeRef, Type)],
         state: &BinderState<W>,

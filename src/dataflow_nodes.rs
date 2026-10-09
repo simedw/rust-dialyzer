@@ -1,4 +1,4 @@
-use std::{sync::OnceLock, collections::BTreeMap};
+use std::{sync::{Mutex, OnceLock}, collections::BTreeMap};
 
 use crate::{
     atom::Atom,
@@ -19,6 +19,16 @@ pub struct DataflowNodes<'a> {
     contains_map: Vec<Vec<bool>>,
     named_variables: OnceLock<Result<BTreeMap<VariableId, Mfa>, String>>,
     definitions: OnceLock<FastHashMap<Atom, ModuleDefinitions>>,
+    /// Per module, clause underapproximations by guard node; see
+    /// `clause_underapprox`.
+    underapprox: Vec<Mutex<FastHashMap<usize, CachedUnderapprox>>>,
+}
+/// A clause underapproximation and the literal pattern nodes it reported, in
+/// order, to its refold observer.
+struct CachedUnderapprox {
+    patterns: Box<[NodeId]>,
+    typ: Type,
+    observed: Box<[usize]>,
 }
 /// Top-level definitions of the first module bearing a name, in the form a
 /// linear scan with `named_mfa` would see them: the first definition per
@@ -171,6 +181,7 @@ impl<'a> DataflowNodes<'a> {
             contains_map,
             named_variables: OnceLock::new(),
             definitions: OnceLock::new(),
+            underapprox: (0..core.modules.len()).map(|_| Mutex::default()).collect(),
         })
     }
     pub fn module(&self, id: ModuleId) -> Result<&crate::core::CoreModule, String> {
@@ -307,6 +318,59 @@ impl<'a> DataflowNodes<'a> {
             }));
         }
         Ok(())
+    }
+    /// `SafeUnderapprox::evaluate_with_refold_events` of a clause, memoized.
+    /// The result depends only on the (immutable) Core, labels and literal
+    /// types, so it is computed once per clause; a hit replays the observer
+    /// calls of the first evaluation in order, stopping at the first error as
+    /// the evaluation itself would. Errors are not cached.
+    pub fn clause_underapprox(
+        &self,
+        module: ModuleId,
+        patterns: &[NodeId],
+        guard: NodeId,
+        mut observe: impl FnMut(NodeRef) -> Result<(), crate::underapprox::UnderapproxError>,
+    ) -> Result<Type, crate::underapprox::UnderapproxError> {
+        let evaluate = |observe: &mut dyn FnMut(NodeRef) -> Result<(), crate::underapprox::UnderapproxError>| {
+            let mut observed = Vec::new();
+            crate::underapprox::SafeUnderapprox::new(self.core, self.labels, &self.literals)
+                .evaluate_with_refold_events(module, patterns, guard, |node| {
+                    observed.push(node.node);
+                    observe(node)
+                })
+                .map(|typ| CachedUnderapprox {
+                    patterns: patterns.into(),
+                    typ,
+                    observed: observed.into_boxed_slice(),
+                })
+        };
+        let Some(cache) = self.underapprox.get(module.0) else {
+            return evaluate(&mut observe).map(|cached| cached.typ);
+        };
+        let hit = cache
+            .lock()
+            .expect("underapprox cache")
+            .get(&guard.0)
+            .filter(|cached| *cached.patterns == *patterns)
+            .map(|cached| (cached.typ.clone(), cached.observed.clone()));
+        if let Some((typ, observed)) = hit {
+            if crate::lattice::verify_fast_paths() {
+                let fresh = evaluate(&mut |_| Ok(())).expect("cached underapprox recomputes");
+                assert_eq!(fresh.typ, typ, "cached clause underapprox type");
+                assert_eq!(fresh.observed, observed, "cached clause underapprox observations");
+            }
+            for &node in observed.iter() {
+                observe(NodeRef { module, node })?;
+            }
+            return Ok(typ);
+        }
+        let cached = evaluate(&mut observe)?;
+        let typ = cached.typ.clone();
+        cache
+            .lock()
+            .expect("underapprox cache")
+            .insert(guard.0, cached);
+        Ok(typ)
     }
     pub fn node(module: ModuleId, node: NodeId) -> NodeRef {
         NodeRef {

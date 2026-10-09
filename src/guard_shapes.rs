@@ -132,7 +132,7 @@ impl GuardControl<'_, '_, '_> {
         fields[0] = Type::atom(tag.clone());
         let tuple = Type::tuple(fields)?;
         let intersection = tuple.meet(&bound.value)?;
-        if bound.value.opacity_conflict(&tuple, &state.module)? != OpacityConflict::None {
+        if crate::binder::opacity_conflict(&bound.value, &tuple, &state.module)? != OpacityConflict::None {
             let mut patterns = Patterns::new(self.nodes);
             let pattern = PatternRef::Core(guard);
             let text = CorePrinter {

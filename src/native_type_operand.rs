@@ -49,10 +49,14 @@ impl NativeTypeOperand {
         }
         let terms = &raw.arena().terms;
         let mut work = vec![Work::Type(raw.id())];
-        let mut false_results = vec![false; terms.len()];
+        // Terms already found not to be opaque. A set, not a vector over the
+        // whole arena: the walk visits a handful of terms of a large arena.
+        let mut false_results = crate::fast_hash::FastHashSet::default();
         while let Some(next) = work.pop() {
             match next {
-                Work::Finish(id) => false_results[id.0] = true,
+                Work::Finish(id) => {
+                    false_results.insert(id.0);
+                }
                 Work::List(id, initial) => match &terms[id.0] {
                     ErlangTerm::Nil => {}
                     ErlangTerm::List { items, tail } => {
@@ -71,7 +75,7 @@ impl NativeTypeOperand {
                     }
                 },
                 Work::Type(id) => {
-                    if false_results[id.0] {
+                    if false_results.contains(&id.0) {
                         continue;
                     }
                     work.push(Work::Finish(id));
