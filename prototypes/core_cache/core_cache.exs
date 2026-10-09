@@ -73,7 +73,13 @@ end
 
 Application.load(:dialyzer)
 profile = CoreExport.profile()
-profile_key = :crypto.hash(:sha256, :erlang.term_to_binary(profile)) |> Base.encode16(case: :lower) |> binary_part(0, 16)
+canonical_profile = profile
+  |> Enum.map(fn {key, value} -> {Atom.to_string(key), value} end)
+  |> Enum.sort_by(&elem(&1, 0))
+profile_hash = :crypto.hash(:sha256,
+  :erlang.term_to_binary({"compact-source-atoms-v1", canonical_profile}))
+  |> Base.encode16(case: :lower) |> binary_part(0, 16)
+profile_key = "compact-source-atoms-v1-" <> profile_hash
 dir = Path.join(cache_dir, profile_key)
 File.mkdir_p!(dir)
 beams = beam_list |> File.read!() |> String.split("\n", trim: true)

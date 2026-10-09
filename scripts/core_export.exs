@@ -87,6 +87,27 @@ defmodule CoreExport do
     end
   end
 
+  # Mirror intern's atom visit order without retaining the source AST.
+  defp intern_source_atoms(value) when is_atom(value) do
+    intern(value)
+    :ok
+  end
+  defp intern_source_atoms(value) when is_tuple(value) do
+    value |> Tuple.to_list() |> Enum.each(&intern_source_atoms/1)
+  end
+  defp intern_source_atoms([_ | _] = value) do
+    {items, tail} = list_parts(value, [])
+    Enum.each(items, &intern_source_atoms/1)
+    intern_source_atoms(tail)
+  end
+  defp intern_source_atoms(value) when is_map(value) do
+    Enum.each(:maps.to_list(value), fn {key, item} ->
+      intern_source_atoms(key)
+      intern_source_atoms(item)
+    end)
+  end
+  defp intern_source_atoms(_value), do: :ok
+
   defp arena_node({:tuple, items}), do: %{kind: "tuple", items: items}
   defp arena_node({:list, items, tail}), do: %{kind: "list", items: items, tail: tail}
   defp arena_node({:map, entries, order}), do: %{kind: "map", entries: entries, iterator_order: order}
@@ -235,7 +256,13 @@ defmodule CoreExport do
     Process.put(:core_terms, [])
     Process.put(:core_nodes_count, 0)
     Process.put(:core_nodes, [])
-    source_forms = intern(forms)
+    source_forms = if format == :etf do
+      source_forms = intern([])
+      intern_source_atoms(forms)
+      source_forms
+    else
+      intern(forms)
+    end
     root = flat_node(core)
     variable_maps = contract_variable_maps(forms, %{}) |> Enum.sort() |> Enum.map(fn {form, map} -> [form, map] end)
     terms = Enum.reverse(Process.get(:core_terms))
