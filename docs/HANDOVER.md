@@ -1,8 +1,12 @@
 # Handover: rust-dialyzer performance work
 
-Last updated 2026-10-09. `main` at `4965204` (four parallel perf branches merged: setup, types, solver, refine). `perf-analysis` is still at `c164bf8`.
+Last updated 2026-10-09. The latest analyzer/exporter change on `main` is `aabdd4a`. The subsequent report commits record measurements without changing that implementation. `perf-analysis` is still at `c164bf8`.
 
-Later investigation from `ad54597`: [fresh-cache head-to-head measurements](../reports/head-to-head-2026-10-09/summary.json) and [the route to 2x](../reports/two-x-investigation-2026-10-09/findings.md). These benchmarks report warnings for every dependency module, unlike the earlier Phoenix project-only timings below. Local analyzer changes remove about 27%/32% of Phoenix/Elixir instructions and pass the full normal/fast-path parity suites. The 2x fresh-cache target remains unmet; the compact exporter and native-Core transport probe are isolated experiments.
+The current [same-window cumulative comparison](../reports/halving-rust-2026-10-09/cumulative-native-summary.json) includes fresh Core compilation and every dependency module. Three alternating pairs against the frozen `aa83b55` starting implementation give Phoenix 13.11 to 11.01 seconds and Elixir 13.73 to 11.39 seconds, a 16.0%/17.0% reduction. Peak footprint falls from 8.699 to 8.124 GB and 9.116 to 8.491 GB. All twelve analyses preserve every warning and all 31,050/39,126 signatures. Older baseline medians were 15.53/16.49 seconds under different host load; do not compare those directly with current candidate times or substitute the older `ad54597` measurements to claim halving.
+
+The compact source export, direct ETF node records, parallel signature serialization, composite value memo, and native Core transport are now committed. Native transport preserves complete typed module equality on 600+846 real modules and five deep fixtures, in normal and VERIFY modes. Its full warning/signature regression gate is green. [Native transport measurements and proof](../reports/halving-rust-2026-10-09/native-production-findings.md) show a modest additional gain and a small peak-memory increase. The halving target remains unmet. Independent dense graph IDs, allocator purging, and profile-guided compilation are the next experiments; none is yet accepted. Decisions and rejected patches are in [the experiment report](../reports/halving-rust-2026-10-09/README.md).
+
+The [latest fresh OTP comparison](../reports/halving-rust-2026-10-09/native-otp-summary.json) runs both tools three times in the same window. Phoenix is 16.55 seconds for OTP versus 11.06 seconds for fresh Core plus Rust, a 1.50x speedup. Elixir is 16.92 versus 11.72 seconds, a 1.44x speedup. Peak footprint is 1.352 versus 8.112 GB on Phoenix and 1.332 versus 8.477 GB on Elixir. Rust with an already built Core cache takes 9.01/9.75 seconds. All warnings match fresh OTP and every inferred signature matches the original reference. The 2x OTP target and halving target both remain open.
 
 ## Goal
 
@@ -10,7 +14,9 @@ A Rust reimplementation of OTP 28 Dialyzer for Elixir projects that is much fast
 
 **Exact parity is the hard constraint.** Every change must reproduce OTP's warnings and its inferred signatures for every function, including private ones, bit for bit.
 
-## Where we are
+## Earlier prebuilt-Core measurements
+
+The following measurements are historical and use Phoenix project-only reporting. Use the fresh-cache, all-module comparison above for the current target.
 
 Phoenix scenario: 600 modules from scratch. That is the 93 Phoenix modules plus the 507 OTP/Elixir/deps modules they reach, with no PLT. Measured on 2026-10-09, 14 cores, 36 GB RAM:
 

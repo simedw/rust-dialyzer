@@ -6,11 +6,14 @@ OUTPUT_DIR contains otp.exs and PROJECT/{beams.txt,options.json}.
 Each repetition builds a fresh Core cache and a fresh OTP PLT.
 """
 import argparse
+import errno
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import statistics
+import shutil
 import subprocess
 import sys
 
@@ -21,13 +24,29 @@ parser.add_argument('--binary', type=Path, default=ROOT / 'target/perf/release/c
 parser.add_argument('--cache-script', type=Path, default=ROOT / 'prototypes/core_cache/core_cache.exs')
 parser.add_argument('--reference', type=Path)
 parser.add_argument('--repetitions', type=int, default=3)
+parser.add_argument('--cleanup-caches', action='store_true',
+                    help='Remove completed Core caches and PLTs after verification, outside timings')
 args = parser.parse_args()
 OUT = args.out.resolve()
 ELIXIR = ROOT / '.cache/real-projects/elixir-v1.20.4/bin/elixir'
 BINARY = args.binary.resolve()
 PRIOR = ROOT / '.cache/phase0/rust-cone/out/prior-library.json'
 ENV = dict(os.environ, ERL_FLAGS='+S 14:14', RUST_BACKTRACE='1')
+for key in ['RUST_DIALYZER_TIMINGS', 'RUST_DIALYZER_VERIFY_FASTPATH',
+            'RUST_DIALYZER_SEQUENTIAL']:
+    ENV.pop(key, None)
 rows = []
+sources = [BINARY, args.cache_script.resolve(), OUT / 'otp.exs',
+           ROOT / 'scripts/core_export.exs', ROOT / 'scripts/core_native_export.exs']
+(OUT / 'metadata.json').write_text(json.dumps({
+    'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
+                                     text=True).strip(),
+    'sha256': {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+               for path in sources if path.exists()},
+    'repetitions': args.repetitions, 'cleanup_caches': args.cleanup_caches,
+    'metric': 'Fresh OTP PLT versus fresh Core cache plus Rust process',
+    'note': 'Filesystem cache is not flushed; peaks are sequential maxima.',
+}, indent=2) + '\n')
 
 
 def measure(label, command, directory):
@@ -49,7 +68,10 @@ def measure(label, command, directory):
 
 
 def signatures(result):
-    return {(s['module'], s['function'], s['arity']): s for s in result['signatures']}
+    rows = result['signatures']
+    indexed = {(s['module'], s['function'], s['arity']): s for s in rows}
+    assert len(indexed) == len(rows), 'duplicate inferred signature'
+    return indexed
 
 
 references = {}
@@ -79,6 +101,9 @@ for repeat in range(1, args.repetitions + 1):
         cache_details = json.loads((run / 'cold-cache.stdout').read_text().splitlines()[-1])
         warm_details = json.loads((run / 'warm-cache.stdout').read_text().splitlines()[-1])
         assert cache_details['compiled'] == cache_details['modules']
+        assert cache_details['reused'] == 0
+        assert warm_details['compiled'] == 0
+        assert warm_details['reused'] == warm_details['modules']
         output = json.loads((run / 'rust.stdout').read_text())
         if output['status'] != 'ok':
             raise RuntimeError(output)
@@ -101,6 +126,22 @@ for repeat in range(1, args.repetitions + 1):
                    cold_rust_peak_GB=max(cache['peak_GB'], rust['peak_GB']))
         rows.append(row)
         (OUT / 'measurements.json').write_text(json.dumps(rows, indent=2) + '\n')
+        if args.cleanup_caches:
+            cache = run / 'cache'
+            for attempt in range(3):
+                try:
+                    shutil.rmtree(cache)
+                    break
+                except FileNotFoundError:
+                    break
+                except OSError as error:
+                    if error.errno != errno.ENOTEMPTY or attempt == 2:
+                        raise
+            (run / 'otp.plt').unlink()
+            (run / 'cleanup.json').write_text(json.dumps({
+                'cache': str(cache), 'plt': str(run / 'otp.plt'),
+                'removed_after_exact_output_checks': True,
+            }, indent=2) + '\n')
 
 summary = {}
 for project in ['phoenix', 'elixir']:
