@@ -346,9 +346,24 @@ struct Analysis<'a> {
     core: &'a CoreProgram,
     program: &'a Program,
     policy: &'a DependencyPolicy,
-    result: ClosureDependencies,
+    result: ModuleDependencies,
     active_module: ModuleId,
-    caller_seen: Vec<BTreeSet<Option<FunctionId>>>,
+    caller_seen: BTreeSet<Option<FunctionId>>,
+}
+/// What one module's walk contributes to `ClosureDependencies`.
+#[derive(Default)]
+struct ModuleDependencies {
+    call_targets: BTreeMap<NodeRef, TargetSet>,
+    escaping: TargetSet,
+    dependencies: BTreeMap<FunctionId, TargetSet>,
+    root_dependencies: TargetSet,
+    letrec_targets: BTreeMap<BindingId, FunctionId>,
+    letrec_return_arities: BTreeMap<BindingId, usize>,
+    /// Interned values of this module's walk; ids are module-local.
+    outputs: TargetValues,
+    module_callers: Vec<Option<FunctionId>>,
+    module_roots: TargetSet,
+    module_escaping: TargetSet,
 }
 impl ClosureDependencies {
     pub fn analyze(
@@ -356,42 +371,72 @@ impl ClosureDependencies {
         program: &Program,
         policy: &DependencyPolicy,
     ) -> Result<Self> {
-        let mut a = Analysis {
-            core,
-            program,
-            policy,
-            active_module: ModuleId(0),
-            caller_seen: vec![BTreeSet::new(); core.modules.len()],
-            result: Self {
-                call_targets: BTreeMap::new(),
-                escaping: TargetSet::default(),
-                dependencies: vec![TargetSet::default(); program.functions.len()],
-                root_dependencies: TargetSet::default(),
-                external_dependencies: TargetSet::default(),
-                letrec_targets: BTreeMap::new(),
-                letrec_return_arities: BTreeMap::new(),
-                outputs: TargetValues::default(),
-                module_callers: vec![Vec::new(); core.modules.len()],
-                module_roots: vec![TargetSet::default(); core.modules.len()],
-                module_escaping: vec![TargetSet::default(); core.modules.len()],
-            },
-        };
-        for f in &program.functions {
-            if f.exported {
-                a.result.escaping.local.insert(f.id);
-                a.result.module_escaping[f.module.0].local.insert(f.id);
-            }
-        }
-        for (index, module) in core.modules.iter().enumerate() {
-            a.active_module = ModuleId(index);
+        // A module's walk reads only its own state and writes only entries of
+        // its own functions, sites and bindings (or set unions), so modules
+        // are walked independently on all cores and merged in module order.
+        // The first failing module in module order is reported, as before.
+        let indices = (0..core.modules.len()).collect::<Vec<_>>();
+        let partials = crate::ordered_parallel::setup_map(&indices, |&index| -> Result<ModuleDependencies> {
+            let mut a = Analysis {
+                core,
+                program,
+                policy,
+                active_module: ModuleId(index),
+                caller_seen: BTreeSet::new(),
+                result: ModuleDependencies::default(),
+            };
             a.on_load(ModuleId(index))?;
             a.walk(Site {
                 module: ModuleId(index),
-                node: module.core,
+                node: core.modules[index].core,
             })?;
+            Ok(a.result)
+        });
+        let mut result = Self {
+            call_targets: BTreeMap::new(),
+            escaping: TargetSet::default(),
+            dependencies: vec![TargetSet::default(); program.functions.len()],
+            root_dependencies: TargetSet::default(),
+            external_dependencies: TargetSet::default(),
+            letrec_targets: BTreeMap::new(),
+            letrec_return_arities: BTreeMap::new(),
+            outputs: TargetValues::default(),
+            module_callers: vec![Vec::new(); core.modules.len()],
+            module_roots: vec![TargetSet::default(); core.modules.len()],
+            module_escaping: vec![TargetSet::default(); core.modules.len()],
+        };
+        for f in &program.functions {
+            if f.exported {
+                result.escaping.local.insert(f.id);
+                result.module_escaping[f.module.0].local.insert(f.id);
+            }
         }
-        a.result.external_dependencies = a.result.escaping.clone();
-        Ok(a.result)
+        for (index, partial) in partials.into_iter().enumerate() {
+            let partial = partial?;
+            if crate::lattice::verify_fast_paths() {
+                // The independent walks rely on each module writing only
+                // its own entries.
+                assert!(partial.call_targets.keys().all(|site| site.module.0 == index));
+                assert!(partial
+                    .dependencies
+                    .keys()
+                    .all(|id| program.functions[id.0].module.0 == index));
+                assert!(partial.letrec_targets.keys().all(|binding| result.letrec_targets.get(binding).is_none()));
+            }
+            result.call_targets.extend(partial.call_targets);
+            result.escaping.extend_from(&partial.escaping);
+            for (id, targets) in partial.dependencies {
+                result.dependencies[id.0].extend_from(&targets);
+            }
+            result.root_dependencies.extend_from(&partial.root_dependencies);
+            result.letrec_targets.extend(partial.letrec_targets);
+            result.letrec_return_arities.extend(partial.letrec_return_arities);
+            result.module_callers[index] = partial.module_callers;
+            result.module_roots[index] = partial.module_roots;
+            result.module_escaping[index].extend_from(&partial.module_escaping);
+        }
+        result.external_dependencies = result.escaping.clone();
+        Ok(result)
     }
     pub fn function_edges(&self) -> impl Iterator<Item = (FunctionId, FunctionId)> + '_ {
         self.dependencies
@@ -427,14 +472,15 @@ impl Analysis<'_> {
             return;
         }
         // `module_callers` keeps first-seen order; the set answers membership.
-        if self.caller_seen[module.0].insert(current) {
-            self.result.module_callers[module.0].push(current);
+        debug_assert_eq!(module, self.active_module);
+        if self.caller_seen.insert(current) {
+            self.result.module_callers.push(current);
         }
         if current.is_none() {
-            self.result.module_roots[module.0].extend_from(&targets);
+            self.result.module_roots.extend_from(&targets);
         }
         let output = match current {
-            Some(id) => &mut self.result.dependencies[id.0],
+            Some(id) => self.result.dependencies.entry(id).or_default(),
             None => &mut self.result.root_dependencies,
         };
         output.extend_from(&targets);
@@ -443,9 +489,8 @@ impl Analysis<'_> {
         let targets = self.result.outputs.flatten(value);
         self.result.escaping.local.extend(targets.local.iter().copied());
         self.result.escaping.external |= targets.external;
-        let module = self.active_module.0;
-        self.result.module_escaping[module].local.extend(targets.local.iter().copied());
-        self.result.module_escaping[module].external |= targets.external;
+        self.result.module_escaping.local.extend(targets.local.iter().copied());
+        self.result.module_escaping.external |= targets.external;
     }
     fn bind(
         &self,
@@ -656,7 +701,8 @@ impl Analysis<'_> {
                             arity,
                         }) {
                             self.result.escaping.local.insert(*id);
-                            self.result.module_escaping[module.0].local.insert(*id);
+                            debug_assert_eq!(module, self.active_module);
+                            self.result.module_escaping.local.insert(*id);
                         }
                     }
                     _ => return Err("on_load attribute malformed".into()),
