@@ -436,9 +436,19 @@ impl AnalysisPhases for CorePhases<'_> {
         let mut timings = crate::phase_timings::PhaseTimings::new("module_memo");
         self.module_memo_counts.reset();
         let this = &*self;
-        let results = crate::ordered_parallel::parallel_map(&requests, |request| this.refine_module_shared(request));
+        // Modules are independent within a batch, so only the start order
+        // changes: largest Core first, so that the few very large modules do
+        // not start last and leave the other workers idle.
+        let core = self.nodes.core();
+        let mut order: Vec<usize> = (0..requests.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(core.modules[requests[i].module.0].nodes.len()));
+        let ordered = crate::ordered_parallel::parallel_map(&order, |&i| this.refine_module_shared(&requests[i]));
         timings.label(|| self.module_memo_counts.describe(requests.len()));
-        results
+        let mut results: Vec<_> = (0..requests.len()).map(|_| None).collect();
+        for (i, result) in order.into_iter().zip(ordered) {
+            results[i] = Some(result);
+        }
+        results.into_iter().map(|r| r.expect("every module refined")).collect()
     }
 }
 
