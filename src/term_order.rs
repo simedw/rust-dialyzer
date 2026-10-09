@@ -186,6 +186,7 @@ impl CaptureEnvironment {
             source_ids: Vec::new(),
             canonical_ids: Vec::new(),
             intern: HashMap::default(),
+            sparse: None,
         };
         let nil = arena.append_capture(Node::Nil);
         arena.source_ids.push(nil);
@@ -300,7 +301,7 @@ impl CaptureEnvironment {
                 }),
             });
         }
-        CaptureId(offset + arena.source_ids[root.0])
+        CaptureId(offset + arena.source(root.0).expect("capture root inside arena"))
     }
     pub fn append_values_to(&self, terms: &mut Vec<CaptureTerm>) -> Vec<CaptureId> {
         let mut root = self.append_to(terms);
@@ -350,15 +351,46 @@ impl CaptureEnvironment {
             count,
         })
     }
+    /// The list of the literals at `roots`. Its arena holds only the terms
+    /// reachable from them, which compare exactly as in the whole arena.
     pub fn literal_roots(source: &ErlangTerms, roots: &[TermId]) -> Result<Self, String> {
-        let mut arena = TermOrderArena::new(source)?;
+        let restricted = TermOrderArena::reachable(source, roots)
+            .and_then(|arena| Self::literal_list(arena, source, roots));
+        if crate::lattice::verify_fast_paths() {
+            let full = TermOrderArena::new(source)
+                .and_then(|arena| Self::literal_list(arena, source, roots));
+            match (&full, &restricted) {
+                (Ok(full), Ok(restricted)) => {
+                    assert_eq!(full.count, restricted.count, "restricted literal roots count");
+                    assert_eq!(
+                        full.compare_built(restricted),
+                        Ok(Ordering::Equal),
+                        "restricted literal roots diverged"
+                    );
+                }
+                (full, restricted) => assert_eq!(
+                    full.is_ok(),
+                    restricted.is_ok(),
+                    "restricted literal roots validity diverged"
+                ),
+            }
+        }
+        restricted
+    }
+    /// `literal_roots(&source, &roots)`, built once a comparison reaches it.
+    pub fn literal_roots_lazy(source: std::sync::Arc<ErlangTerms>, roots: Vec<TermId>) -> Self {
+        Self::lazy(roots.len(), move || Self::literal_roots(&source, &roots))
+    }
+    fn literal_list(
+        mut arena: TermOrderArena,
+        source: &ErlangTerms,
+        roots: &[TermId],
+    ) -> Result<Self, String> {
         let values = roots
             .iter()
             .map(|root| {
                 arena
-                    .source_ids
-                    .get(root.0)
-                    .copied()
+                    .source(root.0)
                     .ok_or_else(|| "literal capture root outside source arena".to_owned())
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -369,7 +401,11 @@ impl CaptureEnvironment {
             arena.nodes.push(Node::Cons(head, tail));
             tail = node;
         }
-        let root = CaptureId(arena.source_ids.len());
+        // The ID the whole arena gives the list: one past the source terms.
+        let root = CaptureId(source.terms.len());
+        if let Some(keys) = &mut arena.sparse {
+            keys.push(root.0);
+        }
         arena.source_ids.push(tail);
         Self::new(std::sync::Arc::new(arena), root)
     }
@@ -553,8 +589,72 @@ pub struct TermOrderArena {
     source_ids: Vec<Id>,
     canonical_ids: Vec<Id>,
     intern: HashMap<CanonicalKey, Id>,
+    /// For an arena of only some source terms: their ascending source IDs,
+    /// whose positions index `source_ids`.
+    sparse: Option<Vec<usize>>,
 }
 impl TermOrderArena {
+    /// The node of source term or capture `id`.
+    fn source(&self, id: usize) -> Option<Id> {
+        match &self.sparse {
+            None => self.source_ids.get(id).copied(),
+            Some(keys) => keys
+                .binary_search(&id)
+                .ok()
+                .and_then(|at| self.source_ids.get(at).copied()),
+        }
+    }
+    /// The arena `new(source)` builds, restricted to the terms reachable from
+    /// `roots`. Those compare exactly as there; other IDs are outside it.
+    pub fn reachable(source: &ErlangTerms, roots: &[TermId]) -> Result<Self, String> {
+        let mut seen = vec![0u64; source.terms.len().div_ceil(64)];
+        let mut count = 0;
+        let mut work: Vec<usize> = roots.iter().map(|root| root.0).collect();
+        while let Some(id) = work.pop() {
+            let Some(term) = source.terms.get(id) else { continue };
+            let (word, bit) = (id / 64, 1u64 << (id % 64));
+            if seen[word] & bit != 0 {
+                continue;
+            }
+            seen[word] |= bit;
+            count += 1;
+            match term {
+                ErlangTerm::Tuple(items) => work.extend(items.iter().map(|x| x.0)),
+                ErlangTerm::List { items, tail } => {
+                    work.extend(items.iter().map(|x| x.0));
+                    work.push(tail.0);
+                }
+                ErlangTerm::Map(pairs) => {
+                    work.extend(pairs.iter().flat_map(|(k, v)| [k.0, v.0]))
+                }
+                _ => {}
+            }
+        }
+        if count == source.terms.len() {
+            return Self::new(source);
+        }
+        let mut keys = Vec::with_capacity(count);
+        for (word, mut bits) in seen.into_iter().enumerate() {
+            while bits != 0 {
+                keys.push(word * 64 + bits.trailing_zeros() as usize);
+                bits &= bits - 1;
+            }
+        }
+        let nodes = keys.iter().map(|&key| node_count(&source.terms[key])).sum();
+        let mut out = Self {
+            nodes: Vec::with_capacity(nodes),
+            source_ids: Vec::with_capacity(count),
+            canonical_ids: Vec::new(),
+            intern: HashMap::default(),
+            sparse: Some(keys),
+        };
+        for at in 0..count {
+            let key = out.sparse.as_ref().expect("sparse arena")[at];
+            let id = out.append_core_term(&source.terms[key])?;
+            out.source_ids.push(id);
+        }
+        Ok(out)
+    }
     fn append_capture(&mut self, node: Node) -> Id {
         let key = match &node {
             Node::Integer(n) => CanonicalKey::Integer(n.clone()),
@@ -617,6 +717,7 @@ impl TermOrderArena {
             source_ids: Vec::with_capacity(source.len()),
             canonical_ids: Vec::new(),
             intern: HashMap::default(),
+            sparse: None,
         };
         let mut atom_ids: HashMap<&str, Id> = HashMap::default();
         let mut integer_ids: HashMap<&str, Id> = HashMap::default();
@@ -815,10 +916,7 @@ impl TermOrderArena {
         self.compare_with(TermId(a.0), other, TermId(b.0), true)
     }
     pub fn captured_environment_size(&self, root: CaptureId) -> Result<usize, String> {
-        let mut id = *self
-            .source_ids
-            .get(root.0)
-            .ok_or("capture root outside arena")?;
+        let mut id = self.source(root.0).ok_or("capture root outside arena")?;
         let mut count = 0;
         loop {
             match self.nodes.get(id).ok_or("capture node outside arena")? {
@@ -833,10 +931,11 @@ impl TermOrderArena {
     }
     pub fn new(source: &ErlangTerms) -> Result<Self, String> {
         let mut out = Self {
-            nodes: Vec::new(),
+            nodes: Vec::with_capacity(source.terms.iter().map(node_count).sum()),
             source_ids: Vec::with_capacity(source.terms.len()),
             canonical_ids: Vec::new(),
             intern: HashMap::default(),
+            sparse: None,
         };
         for term in &source.terms {
             let id = out.append_core_term(term)?;
@@ -846,9 +945,7 @@ impl TermOrderArena {
     }
     fn append_core_term(&mut self, term: &ErlangTerm) -> Result<Id, String> {
         let at = |id: &TermId| {
-            self.source_ids
-                .get(id.0)
-                .copied()
+            self.source(id.0)
                 .ok_or_else(|| "term children must precede their parents".to_owned())
         };
         let node = match term {
@@ -912,7 +1009,7 @@ impl TermOrderArena {
     ) -> Result<Vec<(TermId, TermId)>, String> {
         let mut unique: Vec<(TermId, TermId)> = Vec::with_capacity(pairs.len());
         for (key, value) in pairs {
-            if self.source_ids.get(value.0).is_none() {
+            if self.source(value.0).is_none() {
                 return Err("map value outside term arena".into());
             }
             let mut lo = 0;
@@ -942,9 +1039,16 @@ impl TermOrderArena {
         b: TermId,
         exact: bool,
     ) -> Result<Ordering, String> {
-        let a = *self.source_ids.get(a.0).ok_or("term ID outside arena")?;
-        let b = *other.source_ids.get(b.0).ok_or("term ID outside arena")?;
+        let a = self.source(a.0).ok_or("term ID outside arena")?;
+        let b = other.source(b.0).ok_or("term ID outside arena")?;
         compare(self, a, other, b, exact)
+    }
+}
+/// The nodes `append_core_term` adds for `term`.
+fn node_count(term: &ErlangTerm) -> usize {
+    match term {
+        ErlangTerm::List { items, .. } => items.len(),
+        _ => 1,
     }
 }
 pub(crate) struct RootTermOrder {
@@ -978,6 +1082,7 @@ impl RootTermOrder {
             source_ids: Vec::new(),
             canonical_ids: Vec::new(),
             intern: HashMap::default(),
+            sparse: None,
         };
         let mut source_ids = std::collections::BTreeMap::new();
         for id in reachable {

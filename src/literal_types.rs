@@ -161,7 +161,23 @@ impl LiteralTypes {
         Self::build_roots(arena, &[arena.root])
     }
     pub fn build_roots(arena: &ErlangTerms, roots: &[TermId]) -> Result<Self> {
-        let order = TermOrderArena::new(arena)?;
+        // Only the terms reachable from the roots are typed or compared.
+        let built = TermOrderArena::reachable(arena, roots)
+            .map_err(LiteralError::from)
+            .and_then(|order| Self::build_with(arena, roots, &order));
+        if crate::lattice::verify_fast_paths() {
+            let full = TermOrderArena::new(arena)
+                .map_err(LiteralError::from)
+                .and_then(|order| Self::build_with(arena, roots, &order));
+            assert_eq!(
+                full.as_ref().map(|x| &x.types),
+                built.as_ref().map(|x| &x.types),
+                "restricted literal types diverged"
+            );
+        }
+        built
+    }
+    fn build_with(arena: &ErlangTerms, roots: &[TermId], order: &TermOrderArena) -> Result<Self> {
         let mut needed = vec![false; arena.terms.len()];
         let mut pending = roots.to_vec();
         while let Some(id) = pending.pop() {

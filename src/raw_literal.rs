@@ -11,20 +11,34 @@ pub struct RawLiteral {
     raw: RawFormTerm,
     order: Arc<TermOrderArena>,
 }
+/// Literals of one arena. Callers take a few literals out of large form
+/// arenas, so each literal gets the comparison arena of the terms it reaches
+/// only, which orders exactly as the arena of all terms.
 pub struct RawLiteralArena {
     arena: Arc<ErlangTerms>,
-    order: Arc<TermOrderArena>,
+    /// The arena of all terms, under fast-path verification only.
+    full: Option<TermOrderArena>,
 }
 impl RawLiteralArena {
     pub fn new(arena: Arc<ErlangTerms>) -> Result<Self, String> {
-        let order = Arc::new(TermOrderArena::new(&arena)?);
-        Ok(Self { arena, order })
+        let full = match crate::lattice::verify_fast_paths() {
+            true => Some(TermOrderArena::new(&arena)?),
+            false => None,
+        };
+        Ok(Self { arena, full })
     }
     pub fn at(&self, id: TermId) -> Result<RawLiteral, String> {
-        Ok(RawLiteral {
-            raw: RawFormTerm::new(self.arena.clone(), id)?,
-            order: self.order.clone(),
-        })
+        let raw = RawFormTerm::new(self.arena.clone(), id)?;
+        let order = TermOrderArena::reachable(&self.arena, &[id])?;
+        if let Some(full) = &self.full {
+            assert_eq!(full.compare(id, &order, id), Ok(Ordering::Equal), "restricted literal");
+            assert_eq!(
+                full.compare_map_keys(id, &order, id),
+                Ok(Ordering::Equal),
+                "restricted literal key"
+            );
+        }
+        Ok(RawLiteral { raw, order: Arc::new(order) })
     }
 }
 impl RawLiteral {
