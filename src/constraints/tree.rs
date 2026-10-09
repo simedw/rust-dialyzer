@@ -2,6 +2,7 @@ use crate::constraints::atomic::{
     AtomicConstraint, AtomicOutcome, BindingKey, BindingMap, ConstraintValue, SolveError, WriteLog,
 };
 use crate::constraints::derived::{BifResultProvider, DerivedArena, DerivedId, DerivedOp};
+use crate::constraints::normalize::Dependencies;
 use crate::lattice::{Type, TypePredicate, UnificationValue, VariableId};
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -33,7 +34,7 @@ pub enum Constraint {
     Atomic(AtomicConstraint),
     Reference {
         function: FunctionVariable,
-        dependencies: BTreeSet<VariableId>,
+        dependencies: Dependencies,
     },
     Conjunction(Vec<ConstraintId>),
     Disjunction(Vec<ConstraintId>),
@@ -41,8 +42,157 @@ pub enum Constraint {
 #[derive(Clone, Debug)]
 pub struct ConstraintNode {
     pub constraint: Constraint,
-    pub dependencies: BTreeSet<VariableId>,
-    pub masks: BTreeMap<VariableId, BTreeSet<usize>>,
+    /// Sorted and without duplicates.
+    pub dependencies: Dependencies,
+    pub masks: Masks,
+}
+/// Child positions per variable, sorted by variable, each position list
+/// ascending: the solver's lookup table from an updated variable to the
+/// children that read it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Masks {
+    /// Each variable with the end of its run in `indices`.
+    keys: Vec<(VariableId, u32)>,
+    indices: Vec<u32>,
+    /// The keys as machine integers, when they all are: searched instead.
+    small: Option<Vec<i64>>,
+}
+impl Masks {
+    /// The masks of a group whose children have the given dependencies.
+    pub fn from_children<'a>(
+        children: impl IntoIterator<Item = &'a [VariableId]>,
+    ) -> Self {
+        let mut pairs: Vec<(&VariableId, u32)> = Vec::new();
+        for (index, deps) in children.into_iter().enumerate() {
+            pairs.extend(deps.iter().map(|v| (v, index as u32)));
+        }
+        // Stable by variable: positions stay ascending within a variable.
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        let mut keys: Vec<(VariableId, u32)> = Vec::new();
+        let mut indices = Vec::with_capacity(pairs.len());
+        for (v, index) in pairs {
+            match keys.last_mut() {
+                Some((last, end)) if last == v => *end += 1,
+                _ => keys.push((v.clone(), indices.len() as u32 + 1)),
+            }
+            indices.push(index);
+        }
+        let small = keys
+            .iter()
+            .map(|(v, _)| match v {
+                VariableId::Integer(n) => n.small(),
+                VariableId::Atom(_) => None,
+            })
+            .collect();
+        Self {
+            keys,
+            indices,
+            small,
+        }
+    }
+    pub fn get(&self, v: &VariableId) -> Option<&[u32]> {
+        let at = match &self.small {
+            // Small integers sort as machine integers, and below atoms.
+            Some(small) => match v {
+                VariableId::Integer(n) => small.binary_search(&n.small()?).ok()?,
+                VariableId::Atom(_) => return None,
+            },
+            None => self.keys.binary_search_by(|(k, _)| k.cmp(v)).ok()?,
+        };
+        if crate::lattice::verify_fast_paths() {
+            assert_eq!(
+                Some(at),
+                self.keys.binary_search_by(|(k, _)| k.cmp(v)).ok(),
+                "mask lookup fast path"
+            );
+        }
+        Some(self.run(at))
+    }
+    fn run(&self, at: usize) -> &[u32] {
+        let start = if at == 0 { 0 } else { self.keys[at - 1].1 };
+        &self.indices[start as usize..self.keys[at].1 as usize]
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&VariableId, &[u32])> + '_ {
+        (0..self.keys.len()).map(|at| (&self.keys[at].0, self.run(at)))
+    }
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+/// A set of child positions. The first 64 live inline.
+#[derive(Clone, Debug, Default)]
+struct Bits {
+    first: u64,
+    rest: Vec<u64>,
+}
+impl Bits {
+    fn all(n: usize) -> Self {
+        let mut bits = Self::default();
+        for i in 0..n {
+            bits.insert(i);
+        }
+        bits
+    }
+    fn insert(&mut self, i: usize) {
+        if i < 64 {
+            self.first |= 1 << i;
+        } else {
+            let word = i / 64 - 1;
+            if word >= self.rest.len() {
+                self.rest.resize(word + 1, 0);
+            }
+            self.rest[word] |= 1 << (i % 64);
+        }
+    }
+    fn contains(&self, i: usize) -> bool {
+        if i < 64 {
+            self.first & (1 << i) != 0
+        } else {
+            self.rest
+                .get(i / 64 - 1)
+                .is_some_and(|w| w & (1 << (i % 64)) != 0)
+        }
+    }
+    fn pop_first(&mut self) -> Option<usize> {
+        if self.first != 0 {
+            let i = self.first.trailing_zeros() as usize;
+            self.first &= self.first - 1;
+            return Some(i);
+        }
+        for (word, w) in self.rest.iter_mut().enumerate() {
+            if *w != 0 {
+                let i = w.trailing_zeros() as usize;
+                *w &= *w - 1;
+                return Some((word + 1) * 64 + i);
+            }
+        }
+        None
+    }
+    fn is_empty(&self) -> bool {
+        self.first == 0 && self.rest.iter().all(|w| *w == 0)
+    }
+}
+impl PartialEq for Bits {
+    fn eq(&self, other: &Self) -> bool {
+        let (short, long) = if self.rest.len() <= other.rest.len() {
+            (&self.rest, &other.rest)
+        } else {
+            (&other.rest, &self.rest)
+        };
+        self.first == other.first
+            && short.iter().zip(long.iter()).all(|(a, b)| a == b)
+            && long[short.len()..].iter().all(|w| *w == 0)
+    }
+}
+/// Whether every element of the ascending `small` is in the ascending `large`.
+fn sorted_subset(small: &[u32], large: &[u32]) -> bool {
+    let mut large = large.iter();
+    small
+        .iter()
+        .all(|x| large.by_ref().find(|y| *y >= x).is_some_and(|y| y == x))
 }
 #[derive(Clone, Debug, Default)]
 pub struct ConstraintTree {
@@ -100,7 +250,9 @@ impl ConstraintTree {
                     .functions
                     .get(function)
                     .ok_or("reference function is undefined")?;
-                if *dependencies != self.nodes[definition.body.0].dependencies {
+                let dependencies: BTreeSet<_> = dependencies.iter().collect();
+                let body: BTreeSet<_> = self.nodes[definition.body.0].dependencies.iter().collect();
+                if dependencies != body {
                     return Err("reference dependencies differ from function body".into());
                 }
             }
@@ -198,7 +350,7 @@ impl ConstraintTree {
     }
     pub fn push(&mut self, constraint: Constraint) -> Result<ConstraintId, String> {
         let mut dependencies = BTreeSet::new();
-        let mut masks: BTreeMap<VariableId, BTreeSet<usize>> = BTreeMap::new();
+        let mut masks = Masks::default();
         match &constraint {
             Constraint::Reference {
                 dependencies: deps, ..
@@ -218,7 +370,7 @@ impl ConstraintTree {
             }
             Constraint::Conjunction(children) | Constraint::Disjunction(children) => {
                 let mut atomic = None;
-                for (index, id) in children.iter().enumerate() {
+                for id in children.iter() {
                     let child = self
                         .nodes
                         .get(id.0)
@@ -241,10 +393,10 @@ impl ConstraintTree {
                         atomic = Some(is_atomic);
                     }
                     dependencies.extend(child.dependencies.iter().cloned());
-                    for v in &child.dependencies {
-                        masks.entry(v.clone()).or_default().insert(index);
-                    }
                 }
+                masks = Masks::from_children(
+                    children.iter().map(|id| &self.nodes[id.0].dependencies[..]),
+                );
             }
         }
         if dependencies
@@ -256,7 +408,7 @@ impl ConstraintTree {
         let id = ConstraintId(self.nodes.len());
         self.nodes.push(ConstraintNode {
             constraint,
-            dependencies,
+            dependencies: dependencies.into_iter().collect(),
             masks,
         });
         Ok(id)
@@ -306,15 +458,15 @@ impl ConstraintTree {
                             matches!(self.nodes[id.0].constraint, Constraint::Atomic(_))
                         });
                         frames.push(Frame::Conj(
-                            Conj {
+                            Box::new(Conj {
                                 id,
                                 snapshot: Snapshot::new(flat, &map),
                                 last_flags: pending.identity,
                                 flags: pending.indices,
-                                restart: BTreeSet::new(),
+                                restart: Bits::default(),
                                 updated: BTreeSet::new(),
                                 flat,
-                            },
+                            }),
                             map,
                         ));
                     }
@@ -323,7 +475,7 @@ impl ConstraintTree {
                             result = Some(AtomicOutcome::Failed);
                             continue;
                         };
-                        frames.push(Frame::Disj(Disj {
+                        frames.push(Frame::Disj(Box::new(Disj {
                             id,
                             map,
                             flags: pending.indices,
@@ -331,9 +483,9 @@ impl ConstraintTree {
                             evaluated_maps: Vec::new(),
                             unevaluated_maps: Vec::new(),
                             updated: BTreeSet::new(),
-                            survived: BTreeSet::new(),
+                            survived: Vec::new(),
                             newly_failed: false,
-                        }));
+                        })));
                     }
                 },
                 Frame::ReferenceReturn(function, map) => {
@@ -487,6 +639,7 @@ impl ConstraintTree {
                             for var in &updated {
                                 if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
                                     for &i in indices {
+                                        let i = i as usize;
                                         if i < index {
                                             c.restart.insert(i);
                                         } else if i > index {
@@ -501,6 +654,7 @@ impl ConstraintTree {
                             for var in &updated {
                                 if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
                                     for &i in indices {
+                                        let i = i as usize;
                                         if i != index {
                                             affected.entry(i).or_default().insert(var.clone());
                                         }
@@ -531,7 +685,7 @@ impl ConstraintTree {
                         let i = d.index;
                         d.index += 1;
                         let child = children[i];
-                        if d.flags.contains(&i) {
+                        if d.flags.contains(i) {
                             let map = state.restore(child, &d.map);
                             let was_failed = matches!(state.cache.get(&child), Some(Cache::Failed));
                             frames.push(Frame::DisjReturn(d, child, i, was_failed));
@@ -539,7 +693,7 @@ impl ConstraintTree {
                         } else {
                             if !matches!(state.cache.get(&child), Some(Cache::Failed)) {
                                 d.unevaluated_maps.push(state.restore(child, &d.map));
-                                d.survived.insert(i);
+                                d.survived.push(i as u32);
                             }
                             frames.push(Frame::Disj(d));
                         }
@@ -559,7 +713,7 @@ impl ConstraintTree {
                             // of over every SCC binding.
                             let keys = mask
                                 .iter()
-                                .filter(|(_, indices)| d.survived.is_subset(indices))
+                                .filter(|(_, indices)| sorted_subset(&d.survived, indices))
                                 .map(|(v, _)| BindingKey::Label(v.clone()))
                                 .filter(|k| maps.iter().all(|map| map.contains_key(k)))
                                 .collect();
@@ -573,7 +727,7 @@ impl ConstraintTree {
                                     .filter(|v| {
                                         v.label()
                                             .and_then(|v| mask.get(v))
-                                            .is_some_and(|indices| d.survived.is_subset(indices))
+                                            .is_some_and(|indices| sorted_subset(&d.survived, indices))
                                     })
                                     .collect();
                                 assert_eq!(keys, old, "disjunction key intersection fast path");
@@ -585,7 +739,7 @@ impl ConstraintTree {
                                 .filter(|v| {
                                     v.label()
                                         .and_then(|v| mask.get(v))
-                                        .is_some_and(|indices| d.survived.is_subset(indices))
+                                        .is_some_and(|indices| sorted_subset(&d.survived, indices))
                                 })
                                 .collect()
                         };
@@ -628,7 +782,7 @@ impl ConstraintTree {
                         AtomicOutcome::Solved { bindings, updated } => {
                             state.save(child, &updated, &bindings);
                             d.evaluated_maps.push(bindings);
-                            d.survived.insert(index);
+                            d.survived.push(index as u32);
                             d.updated.extend(updated);
                         }
                     }
@@ -670,8 +824,8 @@ enum Cache {
     },
 }
 struct Pending {
-    indices: BTreeSet<usize>,
-    identity: Option<BTreeSet<usize>>,
+    indices: Bits,
+    identity: Option<Bits>,
 }
 struct State<'a> {
     tree: &'a ConstraintTree,
@@ -690,11 +844,17 @@ impl State<'_> {
                 for variable in u {
                     if let Some(indices) = variable.label().and_then(|v| masks.get(v)) {
                         for &index in indices {
-                            affected.entry(index).or_default().insert(variable.clone());
+                            affected
+                                .entry(index as usize)
+                                .or_default()
+                                .insert(variable.clone());
                         }
                     }
                 }
-                let flags: BTreeSet<usize> = affected.keys().copied().collect();
+                let mut flags = Bits::default();
+                for &index in affected.keys() {
+                    flags.insert(index);
+                }
                 for (index, variables) in affected {
                     let child = children(&self.tree.nodes[id.0].constraint)[index];
                     self.invalidate(child, variables);
@@ -713,7 +873,7 @@ impl State<'_> {
                     },
                 );
                 Some(Pending {
-                    indices: (0..children(&self.tree.nodes[id.0].constraint).len()).collect(),
+                    indices: Bits::all(children(&self.tree.nodes[id.0].constraint).len()),
                     identity: None,
                 })
             }
@@ -756,9 +916,9 @@ impl State<'_> {
 struct Conj {
     id: ConstraintId,
     snapshot: Snapshot,
-    last_flags: Option<BTreeSet<usize>>,
-    flags: BTreeSet<usize>,
-    restart: BTreeSet<usize>,
+    last_flags: Option<Bits>,
+    flags: Bits,
+    restart: Bits,
     updated: BTreeSet<BindingKey>,
     flat: bool,
 }
@@ -802,12 +962,13 @@ impl Snapshot {
 struct Disj {
     id: ConstraintId,
     map: BindingMap,
-    flags: BTreeSet<usize>,
+    flags: Bits,
     index: usize,
     evaluated_maps: Vec<BindingMap>,
     unevaluated_maps: Vec<BindingMap>,
     updated: BTreeSet<BindingKey>,
-    survived: BTreeSet<usize>,
+    /// Ascending positions of the branches that did not fail.
+    survived: Vec<u32>,
     newly_failed: bool,
 }
 struct Recursive {
@@ -822,10 +983,10 @@ enum Frame {
     Recursive(Recursive),
     RecursiveReturn(Recursive),
     Enter(ConstraintId, BindingMap),
-    Conj(Conj, BindingMap),
-    ConjReturn(Conj, usize),
-    Disj(Disj),
-    DisjReturn(Disj, ConstraintId, usize, bool),
+    Conj(Box<Conj>, BindingMap),
+    ConjReturn(Box<Conj>, usize),
+    Disj(Box<Disj>),
+    DisjReturn(Box<Disj>, ConstraintId, usize, bool),
 }
 
 pub struct PreparedTree {
@@ -947,7 +1108,8 @@ impl PreparedTree {
             let definition = &self.tree.functions[function];
             for variable in self.tree.nodes[definition.body.0]
                 .dependencies
-                .intersection(&recursive_names)
+                .iter()
+                .filter(|v| recursive_names.contains(*v))
             {
                 users
                     .entry(variable.clone())
