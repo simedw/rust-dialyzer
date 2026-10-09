@@ -200,32 +200,46 @@ pub fn analyze_prepared<'a>(
     diagnostic_timings.mark("contract_warnings");
     let mut documentation = FunctionTypes::new();
     let bodies = phases.module_bodies();
-    let workers = std::thread::available_parallelism().map(usize::from).unwrap_or(1);
-    crate::ordered_parallel::ordered_prefetch(modules.len(), workers, |index| {
-        let module = modules[index];
-        let mut module_timings = crate::phase_timings::PhaseTimings::new("diagnostic_module_components");
-        let name = &phases.program.modules[module.0].name;
-        module_timings.label(|| name.clone());
-        let missing = diagnostics.missing_contract_functions(module).map_err(|e| {
-            PipelineError::Boundary(format!("module {name} missing_contract_functions: {e:?}"))
-        })?;
-        module_timings.mark("missing_contract_functions");
-        let previous = analyzer.module_previous(module, &state).map_err(PipelineError::Boundary)?;
-        module_timings.mark("previous_signatures");
-        let body = bodies.module_diagnostics(module, &previous).map_err(PipelineError::Phase)?;
-        module_timings.mark("body_diagnostics");
-        let callbacks = diagnostics.callbacks(module).map_err(|e| {
-            PipelineError::Boundary(format!("module {name} callbacks: {e:?}"))
-        })?;
-        module_timings.mark("callback_warnings");
-        Ok((missing, body, callbacks))
-    }, |_, (missing, body, callbacks)| {
+    let mut order: Vec<usize> = (0..modules.len()).collect();
+    order.sort_by_key(|&index| {
+        std::cmp::Reverse(phases.nodes.core().modules[modules[index].0].nodes.len())
+    });
+    let completed = crate::ordered_parallel::parallel_map(&order, |&index| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let module = modules[index];
+            let mut module_timings = crate::phase_timings::PhaseTimings::new("diagnostic_module_components");
+            let name = &phases.program.modules[module.0].name;
+            module_timings.label(|| name.clone());
+            let missing = diagnostics.missing_contract_functions(module).map_err(|e| {
+                PipelineError::Boundary(format!("module {name} missing_contract_functions: {e:?}"))
+            })?;
+            module_timings.mark("missing_contract_functions");
+            let previous = analyzer.module_previous(module, &state).map_err(PipelineError::Boundary)?;
+            module_timings.mark("previous_signatures");
+            let body = bodies.module_diagnostics(module, &previous).map_err(PipelineError::Phase)?;
+            module_timings.mark("body_diagnostics");
+            let callbacks = diagnostics.callbacks(module).map_err(|e| {
+                PipelineError::Boundary(format!("module {name} callbacks: {e:?}"))
+            })?;
+            module_timings.mark("callback_warnings");
+            Ok((missing, body, callbacks))
+        }))
+    });
+    let mut results: Vec<_> = (0..modules.len()).map(|_| None).collect();
+    for (index, result) in order.into_iter().zip(completed) {
+        results[index] = Some(result);
+    }
+    for result in results {
+        let prepared = match result.expect("every module diagnosed") {
+            Ok(prepared) => prepared,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
+        let (missing, body, callbacks) = prepared?;
         raw_warnings.extend(missing);
         raw_warnings.extend(body.warnings);
         raw_warnings.extend(callbacks);
         documentation.extend(body.signatures);
-        Ok(())
-    })?;
+    }
     diagnostic_timings.mark("all_modules");
     timings.mark("diagnostics");
     drop(bodies);

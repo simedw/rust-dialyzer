@@ -7,13 +7,14 @@ use crate::{
     lattice::Type,
     native_form_environment::{ExternalTypeEvent, NativeFormSite},
     program::ModuleId,
-    resolver::{FormCache, ModuleTableHandle, Resolver},
+    resolver::{FormCache, ModuleTableHandle, OrderingInput, Resolver},
 };
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone)]
 pub struct FormContext {
     tables: BTreeMap<String, ModuleTableHandle>,
+    ordering_inputs: BTreeMap<String, OrderingInput>,
     exported_types: Arc<ErlangTerms>,
 }
 pub enum FormOperation {
@@ -61,8 +62,12 @@ impl FormContext {
         tables: BTreeMap<String, ModuleTableHandle>,
         exported_types: Arc<ErlangTerms>,
     ) -> Self {
+        let ordering_inputs = tables.iter()
+            .map(|(name, table)| (name.clone(), OrderingInput::new(table.raw())))
+            .collect();
         Self {
             tables,
+            ordering_inputs,
             exported_types,
         }
     }
@@ -119,8 +124,14 @@ impl FormContext {
         // Parse only the requested source; metadata bodies are parsed on lookup.
         let id = forms.defer_raw(mid, form);
         let mut resolver = Resolver::new(&forms, &names);
-        let mut ordering_roots = tables.values().map(ModuleTableHandle::raw).collect::<Vec<_>>();
-        ordering_roots.push(form.clone());
+        let mut ordering_roots = tables.iter().map(|(name, table)| {
+            if supplied_cache && cache.cached_tables().contains_key(name) {
+                OrderingInput::new(table.raw())
+            } else {
+                self.ordering_inputs[name].clone()
+            }
+        }).collect::<Vec<_>>();
+        ordering_roots.push(OrderingInput::new(form.clone()));
         resolver.set_ordering_inputs(ordering_roots);
         resolver.set_native_site(site.clone());
         resolver.set_source_tables(tables);

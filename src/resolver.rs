@@ -173,6 +173,30 @@ struct RecordOverride {
     source_key: Option<crate::native_form_environment::RawFormTerm>,
 }
 #[derive(Clone)]
+pub(crate) struct OrderingInput {
+    root: crate::native_form_environment::RawFormTerm,
+    validation: std::sync::Arc<std::sync::OnceLock<Result<()>>>,
+}
+impl OrderingInput {
+    pub(crate) fn new(root: crate::native_form_environment::RawFormTerm) -> Self {
+        Self { root, validation: std::sync::Arc::new(std::sync::OnceLock::new()) }
+    }
+    fn validate(&self) -> Result<()> {
+        let check = || {
+            crate::term_order::RootTermOrder::new(self.root.arena(), self.root.id())?;
+            Ok(())
+        };
+        let cached = self.validation.get_or_init(check);
+        if crate::lattice::verify_fast_paths() {
+            let fresh = check();
+            assert_eq!(fresh.as_ref().err().map(ToString::to_string),
+                       cached.as_ref().err().map(ToString::to_string),
+                       "cached form ordering validation differs");
+        }
+        cached.clone()
+    }
+}
+#[derive(Clone)]
 pub struct Resolver<'a> {
     pub forms: std::borrow::Cow<'a, Forms>,
     pub modules: std::borrow::Cow<'a, [String]>,
@@ -182,7 +206,7 @@ pub struct Resolver<'a> {
     cache: FormCache,
     record_types: BTreeMap<(ModuleId, String), Vec<Type>>,
     source_tables: Option<BTreeMap<String, ModuleTableHandle>>,
-    ordering_inputs: Option<(Vec<crate::native_form_environment::RawFormTerm>, std::sync::OnceLock<Result<()>>)>,
+    ordering_inputs: Option<(Vec<OrderingInput>, std::sync::OnceLock<Result<()>>)>,
     exported_types: Option<BTreeSet<TypeName>>,
     definitions: BTreeMap<TypeName, crate::native_form_environment::RawDefinition>,
     compiled_sources: BTreeMap<ModuleId, crate::compiled_definitions::FormSourceArena>,
@@ -262,7 +286,7 @@ impl<'a> Resolver<'a> {
     }
     pub(crate) fn set_ordering_inputs(
         &mut self,
-        roots: Vec<crate::native_form_environment::RawFormTerm>,
+        roots: Vec<OrderingInput>,
     ) {
         self.ordering_inputs = Some((roots, std::sync::OnceLock::new()));
     }
@@ -271,14 +295,12 @@ impl<'a> Resolver<'a> {
         raw: &crate::native_form_environment::RawFormTerm,
     ) -> Result<()> {
         if let Some((roots, validation)) = &self.ordering_inputs {
-            validation
-                .get_or_init(|| {
-                    for root in roots {
-                        crate::term_order::RootTermOrder::new(root.arena(), root.id())?;
-                    }
-                    Ok(())
-                })
-                .clone()
+            validation.get_or_init(|| {
+                for root in roots {
+                    root.validate()?;
+                }
+                Ok(())
+            }).clone()
         } else {
             crate::term_order::TermOrderArena::new(raw.arena())?;
             Ok(())

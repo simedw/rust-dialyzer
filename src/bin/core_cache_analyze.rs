@@ -18,7 +18,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 // about a third of CPU time under that load.
 #[cfg_attr(not(dialyzer_tsan), global_allocator)]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-use std::time::Instant;
+use std::{io::Write, time::Instant};
 
 fn load(manifest: &Value) -> Result<CoreProgram, String> {
     let files = manifest["module_files"]
@@ -87,12 +87,13 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
         "analysis_seconds": analysis_seconds,
     });
     let outcome = match result {
-        Ok(Ok(output)) => json!({
-            "status": "ok",
-            "public_warning_count": output["public_warning_count"],
-            "warnings": output["warnings"],
-            "signatures": output["signatures"],
-        }),
+        Ok(Ok(mut output)) => {
+            let mut outcome = json!({"status": "ok"});
+            for key in ["public_warning_count", "warnings", "signatures"] {
+                outcome[key] = output[key].take();
+            }
+            outcome
+        }
         Ok(Err(error)) => json!({"status": "error", "stage": "analysis", "detail": error}),
         Err(payload) => json!({
             "status": "panic",
@@ -105,10 +106,13 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
         }),
     };
     let mut merged = base;
+    let Value::Object(outcome) = outcome else {
+        unreachable!("analysis outcome is an object")
+    };
     merged
         .as_object_mut()
         .expect("object")
-        .extend(outcome.as_object().expect("object").clone());
+        .extend(outcome);
     merged
 }
 
@@ -141,6 +145,9 @@ fn main() {
         .join()
         .expect("analysis thread panicked outside catch_unwind");
     let ok = output["status"] == "ok";
-    println!("{output}");
+    let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
+    serde_json::to_writer(&mut stdout, &output).expect("write analysis result");
+    stdout.write_all(b"\n").expect("write analysis newline");
+    stdout.flush().expect("flush analysis result");
     std::process::exit(if ok { 0 } else { 1 });
 }
