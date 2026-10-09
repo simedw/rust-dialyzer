@@ -2,6 +2,8 @@
 
 Last updated 2026-10-09. `main` at `4965204` (four parallel perf branches merged: setup, types, solver, refine). `perf-analysis` is still at `c164bf8`.
 
+Later investigation from `ad54597`: [fresh-cache head-to-head measurements](../reports/head-to-head-2026-10-09/summary.json) and [the route to 2x](../reports/two-x-investigation-2026-10-09/findings.md). These benchmarks report warnings for every dependency module, unlike the earlier Phoenix project-only timings below. Local analyzer changes remove about 27%/32% of Phoenix/Elixir instructions and pass the full normal/fast-path parity suites. The 2x fresh-cache target remains unmet; the compact exporter and native-Core transport probe are isolated experiments.
+
 ## Goal
 
 A Rust reimplementation of OTP 28 Dialyzer for Elixir projects that is much faster than `mix dialyzer` (dialyxir) and reports **exactly** the same warnings. The order of warnings doesn't matter. The current focus is the **full from-scratch run** (no PLT), because that is where Rust can gain most over OTP.
