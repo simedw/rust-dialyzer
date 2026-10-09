@@ -118,6 +118,16 @@ impl CoreProgram {
     }
 }
 
+/// A path formatted only when an error message needs it; validation runs
+/// over every term and node, and eager path strings dominated its cost.
+#[derive(Clone, Copy)]
+struct Lazy<F>(F);
+impl<F: Fn(&mut std::fmt::Formatter<'_>) -> std::fmt::Result> std::fmt::Display for Lazy<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (self.0)(f)
+    }
+}
+
 fn checked(id: usize, before: usize, path: impl std::fmt::Display) -> Result<()> {
     if id >= before {
         Err(format!(
@@ -130,7 +140,7 @@ fn checked(id: usize, before: usize, path: impl std::fmt::Display) -> Result<()>
 impl CoreModule {
     pub fn validate(&self, path: &str, _version: CoreVersion) -> Result<()> {
         for (i, t) in self.terms.iter().enumerate() {
-            let at = format!("{path}.terms[{i}]");
+            let at = Lazy(move |f: &mut std::fmt::Formatter<'_>| write!(f, "{path}.terms[{i}]"));
             match t {
                 ErlangTerm::Tuple(v) => {
                     for (j, id) in v.iter().enumerate() {
@@ -180,7 +190,7 @@ impl CoreModule {
         }
         for (i, t) in self.terms.iter().enumerate() {
             if let ErlangTerm::Map(pairs) = t {
-                let at = format!("{path}.terms[{i}].iterator_order");
+                let at = Lazy(move |f: &mut std::fmt::Formatter<'_>| write!(f, "{path}.terms[{i}].iterator_order"));
                 let order = self
                     .map_iterator_orders
                     .get(&TermId(i))
@@ -205,10 +215,10 @@ impl CoreModule {
         proper_list(
             self.source_forms,
             &self.terms,
-            &format!("{path}.source_forms"),
+            format_args!("{path}.source_forms"),
         )?;
         for (i, (form, map)) in self.contract_variable_maps.iter().enumerate() {
-            let at = format!("{path}.contract_variable_maps[{i}]");
+            let at = Lazy(move |f: &mut std::fmt::Formatter<'_>| write!(f, "{path}.contract_variable_maps[{i}]"));
             checked(form.0, self.terms.len(), &at)?;
             checked(map.0, self.terms.len(), &at)?;
             let ErlangTerm::Tuple(fields) = &self.terms[form.0] else {
@@ -237,7 +247,7 @@ impl CoreModule {
             }
         }
         for (i, node) in self.nodes.iter().enumerate() {
-            let at = format!("{path}.nodes[{i}]");
+            let at = Lazy(move |f: &mut std::fmt::Formatter<'_>| write!(f, "{path}.nodes[{i}]"));
             if node.id.0 != i {
                 return Err(format!("{at}: node ID differs from table position"));
             }
@@ -246,7 +256,7 @@ impl CoreModule {
                 self.terms.len(),
                 format_args!("{at}.annotations"),
             )?;
-            proper_list(node.annotations, &self.terms, &format!("{at}.annotations"))?;
+            proper_list(node.annotations, &self.terms, format_args!("{at}.annotations"))?;
             let groups = node.expr.wire_groups();
             for (g, ids) in groups.iter().enumerate() {
                 for (j, id) in ids.iter().enumerate() {
