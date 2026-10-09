@@ -1,6 +1,6 @@
 # Handover: rust-dialyzer performance work
 
-Last updated 2026-10-09. `main` = `perf-analysis` at `e3ed138` (plus the commit adding this file).
+Last updated 2026-10-09. `main` at `4965204` (four parallel perf branches merged: setup, types, solver, refine). `perf-analysis` is still at `c164bf8`.
 
 ## Goal
 
@@ -10,24 +10,25 @@ A Rust reimplementation of OTP 28 Dialyzer for Elixir projects that is much fast
 
 ## Where we are
 
-Phoenix scenario: 600 modules from scratch. That is the 93 Phoenix modules plus the 507 OTP/Elixir/deps modules they reach, with no PLT. Measured back to back on 2026-10-09 at load 13–16, 14 cores, 36 GB RAM:
+Phoenix scenario: 600 modules from scratch. That is the 93 Phoenix modules plus the 507 OTP/Elixir/deps modules they reach, with no PLT. Measured on 2026-10-09, 14 cores, 36 GB RAM:
 
-| | Wall | CPU (user+sys) | Instructions |
-|---|---:|---:|---:|
-| OTP dialyzer (`run_dialyzer.exs build`, 14 schedulers) | 17.0–17.4 s | ~83 s | 0.89 T |
-| Rust `core_cache_analyze` @ e3ed138 | **12.1–12.5 s** | **~69 s** | **0.68 T** |
+| | Wall | CPU (user+sys) | Instructions | Peak memory |
+|---|---:|---:|---:|---:|
+| OTP dialyzer (`run_dialyzer.exs build`, 14 schedulers), load 13–16 | 17.0–17.4 s | ~83 s | 0.89 T | |
+| Rust @ e3ed138, interleaved, load 14–17 | 12.7–13.9 s | ~75 s | 0.68 T | 15.0 GB |
+| Rust @ 4965204, interleaved, load 14–17 | **8.1–8.4 s** | **~59 s** | **0.51 T** | **10.9 GB** |
 
 Caveat: OTP's time includes compiling beams to Core. Rust reads a prebuilt Core cache instead. A cold cache build for 1,082 modules takes about 6.7 s; a warm cache check takes about 0.2 s.
 
-Parity at e3ed138, all exact:
+Parity at 4965204, all exact (full verify needed a re-run, see known issue 1):
 - **Phoenix:** 199/199 warnings, 1544/1544 signatures.
 - **Full 1,082 modules:** 400/400 warnings, 42,246/42,246 signatures.
 - **Subset:** 7,433 warnings and 7,117 signatures, both parallel and sequential.
 - **Unit tests:** 248 pass.
 
-Peak memory is 14.9 GB on Phoenix and 19.6 GB on the full run.
+Peak memory is 10.9 GB on Phoenix and 14.0 GB on the full run (1.075 T instructions, was 1.33 T). Verify mode on the full run peaks at 28–36 GB, on every branch including the old baseline; it is close to the machine's limit.
 
-Timeline on Phoenix: start of session about 44 s wall (6.6 T instructions on the full run). After micro-optimisation and parallelism, about 20 s and 1.13 T. After the type and refinement redesign, 12 s and 0.68 T.
+Timeline on Phoenix: start of session about 44 s wall (6.6 T instructions on the full run). After micro-optimisation and parallelism, about 20 s and 1.13 T. After the type and refinement redesign, 12 s and 0.68 T. After the four parallel branches below, 8.3 s and 0.51 T.
 
 ## Architecture in one paragraph
 
@@ -57,6 +58,12 @@ OTP compiles each beam's debug_info to Core Erlang. `prototypes/core_cache/core_
    - Guard scopes are shared, and body expressions are borrowed instead of copied.
    - Letrec refresh is incremental.
    - About −10%.
+
+10. **Four parallel branches (2026-10-09)**, merged one at a time with the full suite after each. Phoenix instructions measured alone against e3ed138; together −26%.
+    - **Setup** (`1eee93c`, −4.6%, setup wall ~5 s → ~2.7 s): parallel Core validation, per-module closure dependencies and call-graph edges, parallel module tables and contract forms, shared resolver cache keys, pipeline setup overlapped with the setup branches, literal arenas built once in publication.
+    - **Types** (`501173a`, −3.7%, peak −25%): literal comparison arenas hold only terms reachable from their roots, smaller term-order nodes, per-thread order-key memo. Plus interner stress tests and a `dialyzer_tsan` cfg (see known issue 1).
+    - **Solver** (`3dc0f87`, −9.5%): dense masks, bitset flags, shared dependency slices, integer dependency unions, boxed generation frames, sorted key sets, lazy binding map, per-thread constraint order-key memo.
+    - **Refine** (`4965204`, −5.5%): early exits in opaque case warnings, visited-set operand checks, clause underapproximation memo, in-place binder, per-thread `opacity_conflict` memo, boxed body frames.
 
 ## How to build and benchmark
 
@@ -113,33 +120,26 @@ Useful env vars:
 
 ## Known issues and caveats
 
-1. **One unexplained panic.** It happened once, in 1 of about 34 verify-mode runs, on the step-4 interning binary (`b2af693`): a std BTree `navigate.rs:534` unwrap on `None` in a worker thread. It hasn't reproduced since (12 clean verify runs at `087169e`, all with identical output). A latent race in the new lock-free type table (`src/lattice.rs` interner, the `src/atom.rs` pattern) can't be ruled out. **Run ThreadSanitizer or Miri on the interner before relying on this in production.**
+1. **One unexplained panic, seen twice.** A std BTree `navigate.rs:534` unwrap on `None` in a worker thread. First on `b2af693` (1 of ~34 verify runs), then on 4965204 in the full verify run of the parity suite (peak 27.7 GB, no backtrace). Two re-runs with `RUST_BACKTRACE=1` passed. Both sightings were in verify mode on large runs, where memory is near the machine's 36 GB. That panic means a BTreeMap's length disagrees with its nodes: memory corruption, a data race, or possibly an inconsistent `Ord` during a bulk build or `split_off`. The interner and atom table were cleared on 2026-10-09: review, 12-thread stress tests, and ThreadSanitizer (stable 1.92 with `RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Zsanitizer=thread -Cunsafe-allow-abi-mismatch=sanitizer"`, `--cfg dialyzer_tsan` to drop mimalloc), with 0 reports on the subset analysis. Not audited: `im`, mimalloc, the per-thread memo `get`, and `Ord` impls on BTree keys. Always run with `RUST_BACKTRACE=1` so the next sighting has a stack.
 2. **Closure-capture shortcut.** `capture_state()` (`src/constraints/generation_state.rs`) returns a constant stand-in unless `RUST_DIALYZER_EXACT_CAPTURE=1`. All oracles match with it, but `VERIFY_FASTPATH` doesn't cover it.
 3. **Probe in the benchmark data.** The Phoenix copy at `.cache/phase0/phoenix/deps/plug/lib/plug/conn.ex` still contains a `__phase0_probe__` edit. All oracles and caches were built from that edited copy, so they are consistent with each other. Removing the edit means rebuilding the Core cache and the oracles.
 4. **Compiler warnings.** Two unused imports (`DataflowKey`, `BTreeMap`) produce warnings after the merge.
+5. **Intermediate commits.** On the four 2026-10-09 branches, only each branch tip (and some first commits) ran the full parity suite; every commit compiles, and was checked on Phoenix by its agent.
 
 ## Next tasks, roughly in priority order
 
-1. **Race check of the interner** (issue 1 above). ThreadSanitizer needs a nightly toolchain with `-Zsanitizer=thread`; alternatively, use Miri on the interner unit tests or a loom-style test.
-2. **Profile the new baseline** before choosing the next targets; the profile has shifted. Last known large items, at about 0.79 T:
-   - `memmove` about 12%;
-   - malloc/free about 6–7%;
-   - `TermOrderArena::append_core_term` 3.7% (closure-capture terms for ordering);
-   - `DataflowNodes::native_subtrees` 2.6%;
-   - `ConstraintTree::solve` self 2.5%.
-3. **Refinement leftovers** (from the `perf-refinement` agent):
-   - stop cloning the whole `BinderState` per clause or guard visit;
-   - cut `collect`/`Vec` churn in `evaluate` and `finish_collection`;
-   - skip `mark_fresh` writes of `any` for pattern variables on clauses that fail to match;
-   - `DataflowMap` is still about 8% of refinement (trie get, inserts, dropping discarded clause maps).
-4. **Solver bookkeeping:** dense per-SCC variable ids plus bitsets for flags and restart, and sorted vecs for masks and updated/affected sets. Estimated ~5%.
-5. **Collapse the constraint pipeline stages.** The native arena, the prepared form and the solver tree each copy the constraints. Collapsing them is estimated at 3–12%.
-6. **Inside the type nodes:** take reference counting out of the per-family storage, and add a per-thread cache in front of the interner (each a small %).
-7. **Wall time.** The critical path is a few giant SCCs and modules analysed on one core each, e.g. `elixir_parser:yeccpars2_612/7` (643 functions, about 1 s × 3 iterations), `cow_http_hd:langtag_region/3`, `erl_parse`, `erl_eval:expr/2`. Making those single units cheaper is the main wall-time lever left.
-8. **Core cache cost.** A fair end-to-end comparison should include building the Core cache, which takes about 6.7 s cold for 1,082 modules on one BEAM VM. Consider making it faster or incremental.
-9. **Later product work:**
-   - a warm/incremental mode with cached library layers, dialyxir-style, for the everyday case;
-   - packaging as a `mix` task.
+1. **Chase the BTree panic** (known issue 1). Run verify mode with `RUST_BACKTRACE=1` until it reproduces; audit `Ord` impls on BTree keys and the per-thread memo `get`.
+2. **Profile the new baseline.** Leftover ideas from the 2026-10-09 agents:
+   - **Refinement:** `FunctionName` strings in `BinderState::current_fun` dominate binder clones (~2.8% of refinement); `LabelTrie::insert` `make_mut` copying (~3%); `LetrecTypes::make_mut` copies a whole BTreeMap (~1%); guard leaves clone map and state through `GuardBound`.
+   - **Solver:** `State.cache` by dense scope id; `CaseContext` cloned per clause frame only for error recovery; `NativeConstraintArena::group` VecDeque and collects. Remaining solver cost is mostly lattice work (`substitute`, `unify_bindings`, binding-trie `make_mut`).
+   - **Types:** a native order key cached on the type node itself instead of two per-thread memos; removing refcounting from per-family storage (large refactor, small gain).
+   - **Setup:** the critical path is the call-graph branch (~1.6 s); intern `SourceDigraph` vertices to integer ids. `Program::build_with_contracts` (~0.55 s) is sequential and needs id renumbering to parallelise.
+3. **Collapse the constraint pipeline stages.** The native arena, the prepared form and the solver tree each copy the constraints. Estimated at 3–12%.
+4. **Wall time.** The critical path is a few giant SCCs and modules analysed on one core each, e.g. `elixir_parser:yeccpars2_612/7` (643 functions, about 1 s × 3 iterations), `cow_http_hd:langtag_region/3`, `erl_parse`, `erl_eval:expr/2`.
+5. **Core cache cost.** A fair end-to-end comparison should include building the Core cache, about 6.7 s cold for 1,082 modules on one BEAM VM.
+6. **Later product work:** a warm/incremental mode with cached library layers, dialyxir-style; packaging as a `mix` task.
+
+**Running parallel agents:** give each its own files; have them check candidates on Phoenix only and run the full `parity.sh` only before committing (batching allowed), holding the lock only for the analyzer run. Background subagents die if the parent session restarts.
 
 ## Research reports (inputs for tasks 2–6)
 
@@ -148,7 +148,8 @@ The three design reviews from 2026-10-09 (two Opus subagents and a Codex `gpt-6-
 ## Housekeeping
 
 - **Branches fully contained in `main`, safe to delete:**
-  - `perf-analysis` (identical to main);
+  - `perf-analysis` (at `c164bf8`);
+  - `worktree-agent-a42e86a81240b6e16`, `worktree-agent-af274a05b242a86ee`, `worktree-agent-aa5264636c58cb6a6`, `worktree-agent-a5380d2e8425eb4a1` (the four 2026-10-09 branches; their worktrees are under `.claude/worktrees/`);
   - `perf-order-keys` and `perf-refinement`;
   - `worktree-agent-a097077f7514985fe` and `worktree-agent-a9e3aa94882594e68`;
   - `remove-firefly-frontend`.
