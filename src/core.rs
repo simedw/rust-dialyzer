@@ -56,13 +56,13 @@ pub enum ErlangTerm {
     },
     Map(Vec<(TermId, TermId)>),
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoreNode {
     pub id: NodeId,
     pub annotations: TermId,
     pub expr: CoreExpr,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CoreExpr {
     Literal(TermId),
     Var(TermId),
@@ -292,7 +292,7 @@ pub struct CompilerProfile {
     pub core_options: Vec<String>,
     pub term_map_order: TermMapOrder,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoreModule {
     pub name: String,
     pub source_forms: TermId,

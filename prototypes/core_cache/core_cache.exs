@@ -15,6 +15,7 @@
   OptionParser.parse(System.argv(), strict: [jobs: :integer])
 
 Code.require_file("core_export.exs", Path.join(repo, "scripts"))
+Code.require_file("core_native_export.exs", Path.join(repo, "scripts"))
 
 defmodule CoreCache do
   @options [:no_copt, :to_core, :binary, :return_errors, :no_inline,
@@ -29,8 +30,8 @@ defmodule CoreCache do
     if File.exists?(core_file) and File.exists?(atoms_file) do
       %{beam: path, core: core_file, atoms: read_atoms(atoms_file), compiled: false}
     else
-      {:core_module_v1, _name, _forms, _root, _maps, terms, _nodes} = exported = compile(bytes)
-      atoms = for {:atom, a} <- terms, do: Atom.to_string(a)
+      {exported, atoms} = compile(bytes)
+      atoms = Enum.map(atoms, &Atom.to_string/1)
       write_atomically(core_file, :erlang.term_to_binary(exported))
       write_atomically(atoms_file, :erlang.term_to_binary(atoms))
       %{beam: path, core: core_file, atoms: atoms, compiled: true}
@@ -41,7 +42,7 @@ defmodule CoreCache do
     {:ok, {name, [debug_info: {:debug_info_v1, backend, metadata}, abstract_code: {:raw_abstract_v1, forms}]}} =
       :beam_lib.chunks(bytes, [:debug_info, :abstract_code])
     {:ok, unclean} = backend.debug_info(:core_v1, name, metadata, @options)
-    CoreExport.build_module(name, forms, :dialyzer_clean_core.clean(unclean), :etf)
+    NativeCoreTransport.build(name, forms, :dialyzer_clean_core.clean(unclean))
   end
 
   defp read_atoms(file), do: file |> File.read!() |> :erlang.binary_to_term()
@@ -77,9 +78,9 @@ canonical_profile = profile
   |> Enum.map(fn {key, value} -> {Atom.to_string(key), value} end)
   |> Enum.sort_by(&elem(&1, 0))
 profile_hash = :crypto.hash(:sha256,
-  :erlang.term_to_binary({"compact-source-atoms-v1", canonical_profile}))
+  :erlang.term_to_binary({"native-core-v1-flat-fallback-depth192", canonical_profile}))
   |> Base.encode16(case: :lower) |> binary_part(0, 16)
-profile_key = "compact-source-atoms-v1-" <> profile_hash
+profile_key = "native-core-v1-flat-fallback-depth192-" <> profile_hash
 dir = Path.join(cache_dir, profile_key)
 File.mkdir_p!(dir)
 beams = beam_list |> File.read!() |> String.split("\n", trim: true)

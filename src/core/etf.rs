@@ -206,7 +206,7 @@ fn erlang_term(entry: &Term, id: usize, orders: &mut BTreeMap<TermId, Vec<usize>
 
 /// Decodes one cached module. Structural validation happens in `build_node` and
 /// later in `CoreProgram::from_modules`.
-pub fn module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
+fn flat_module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
     let mut reader = Reader { bytes, at: 0 };
     if reader.u8()? != 131 {
         return Err("Core cache: missing external term version byte".into());
@@ -281,4 +281,17 @@ pub fn module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
         map_iterator_orders,
         contract_variable_maps,
     })
+}
+
+mod native;
+pub fn module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
+    let mut reader = Reader { bytes, at: 0 };
+    if reader.u8()? == 131 {
+        if reader.native_tuple().is_ok() {
+            if let Ok("native_core_module_v1") = reader.native_atom() {
+                return native::module(bytes);
+            }
+        }
+    }
+    flat_module_from_etf(bytes)
 }
