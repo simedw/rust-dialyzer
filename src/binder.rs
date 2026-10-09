@@ -128,36 +128,67 @@ impl Binder<'_, '_, '_> {
         state: &BinderState<W>,
         direction: Direction,
     ) -> Result<Bound<W>, BindError> {
-        self.sequence(pats, types, map.clone(), state.clone(), direction, 0)
+        self.bind_owned(pats, types, map.clone(), state, direction)
     }
-    fn sequence<W: Clone + PartialEq + From<OpaqueMatch>>(
+    /// `bind`, consuming `map` (dropped on failure).
+    pub fn bind_owned<W: Clone + PartialEq + From<OpaqueMatch>>(
         &mut self,
         pats: &[PatternRef],
         types: &[Type],
         mut map: DataflowMap,
-        mut state: BinderState<W>,
+        state: &BinderState<W>,
+        direction: Direction,
+    ) -> Result<Bound<W>, BindError> {
+        let mut state = state.clone();
+        let mut types_out = Vec::with_capacity(pats.len());
+        self.sequence(pats, types, &mut map, &mut state, direction, 0, &mut types_out)?;
+        Ok(Bound {
+            map,
+            types: types_out,
+            state,
+        })
+    }
+    /// Binds `pats` to `types` in order, updating `map` and `state` in place
+    /// and appending one type per pattern to `output`. On error, `map` and
+    /// `state` hold partial updates; callers discard them, as they discarded
+    /// the by-value results before.
+    #[allow(clippy::too_many_arguments)]
+    fn sequence<W: Clone + PartialEq + From<OpaqueMatch>>(
+        &mut self,
+        pats: &[PatternRef],
+        types: &[Type],
+        map: &mut DataflowMap,
+        state: &mut BinderState<W>,
         dir: Direction,
         depth: usize,
-    ) -> Result<Bound<W>, BindError> {
+        output: &mut Vec<Type>,
+    ) -> Result<(), BindError> {
         if depth > 128 {
             return Err(BindError::ResourceLimit);
         }
-        let mut output = Vec::new();
         for (index, &pat) in pats.iter().enumerate() {
             let actual = types.get(index).ok_or(LatticeError::FunctionClause)?;
-            let bound = self.one(pat, actual, map, state, dir, depth + 1)?;
-            map = bound.map;
-            state = bound.state;
-            output.extend(bound.types)
+            output.push(self.one(pat, actual, map, state, dir, depth + 1)?);
         }
         if types.len() > pats.len() {
             return Err(LatticeError::FunctionClause.into());
         }
-        Ok(Bound {
-            map,
-            types: output,
-            state,
-        })
+        Ok(())
+    }
+    /// `sequence` of a single pattern, returning its type.
+    fn single<W: Clone + PartialEq + From<OpaqueMatch>>(
+        &mut self,
+        pat: PatternRef,
+        actual: Type,
+        map: &mut DataflowMap,
+        state: &mut BinderState<W>,
+        dir: Direction,
+        depth: usize,
+    ) -> Result<Type, BindError> {
+        if depth > 128 {
+            return Err(BindError::ResourceLimit);
+        }
+        self.one(pat, &actual, map, state, dir, depth + 1)
     }
     fn failure(&self, pat: PatternRef, actual: &Type, kind: FailureKind) -> BindError {
         match self.patterns.has_record_annotation(pat) {
@@ -386,11 +417,11 @@ impl Binder<'_, '_, '_> {
         &mut self,
         pat: PatternRef,
         actual: &Type,
-        mut map: DataflowMap,
-        mut state: BinderState<W>,
+        map: &mut DataflowMap,
+        state: &mut BinderState<W>,
         dir: Direction,
         depth: usize,
-    ) -> Result<Bound<W>, BindError> {
+    ) -> Result<Type, BindError> {
         let out = match self.patterns.shape(pat)? {
             Shape::Alias { variable, pattern } => {
                 let pattern = self.patterns.refold(pattern)?;
@@ -406,34 +437,16 @@ impl Binder<'_, '_, '_> {
                     }
                     _ => {}
                 }
-                let b = self.sequence(
-                    &[pattern],
-                    std::slice::from_ref(actual),
-                    map,
-                    state,
-                    dir,
-                    depth,
-                )?;
-                map = b.map;
-                state = b.state;
-                let typ = b.types[0].clone();
+                let typ = self.single(pattern, actual.clone(), map, state, dir, depth)?;
                 map.enter_type(key, typ.clone());
                 typ
             }
             Shape::Literal(lit) => {
                 let expanded = self.patterns.refold(pat)?;
                 if expanded != pat {
-                    let b = self.sequence(
-                        &[expanded],
-                        std::slice::from_ref(actual),
-                        map,
-                        state,
-                        dir,
-                        depth,
-                    )?;
-                    return Ok(b);
+                    return self.single(expanded, actual.clone(), map, state, dir, depth);
                 }
-                self.checked(pat, &self.patterns.literal_type(lit)?, actual, &mut state)?
+                self.checked(pat, &self.patterns.literal_type(lit)?, actual, state)?
             }
             Shape::Variable { key, .. } => {
                 let expected = state
@@ -441,37 +454,36 @@ impl Binder<'_, '_, '_> {
                     .get(&key)
                     .cloned()
                     .unwrap_or_else(|| map.lookup(key));
-                let typ = self.checked(pat, &expected, actual, &mut state)?;
+                let typ = self.checked(pat, &expected, actual, state)?;
                 map.enter_type(key, typ.clone());
                 typ
             }
             Shape::Cons { head, tail } => {
-                let typ =
-                    self.checked(pat, &Type::builtin(BuiltinType::Cons)?, actual, &mut state)?;
-                let args = vec![
-                    get_type(&typ, TypeGetter::ConsHead)?,
-                    get_type(&typ, TypeGetter::ConsTail)?,
-                ];
-                let b = self.sequence(&[head, tail], &args, map, state, dir, depth)?;
-                map = b.map;
-                state = b.state;
-                Type::cons(b.types[0].clone(), b.types[1].clone())?
+                let typ = self.checked(pat, &Type::builtin(BuiltinType::Cons)?, actual, state)?;
+                let head_type = get_type(&typ, TypeGetter::ConsHead)?;
+                let tail_type = get_type(&typ, TypeGetter::ConsTail)?;
+                if depth > 128 {
+                    return Err(BindError::ResourceLimit);
+                }
+                let head = self.one(head, &head_type, map, state, dir, depth + 1)?;
+                let tail = self.one(tail, &tail_type, map, state, dir, depth + 1)?;
+                Type::cons(head, tail)?
             }
             Shape::Values(xs) => {
-                let b = self.sequence(
+                let mut types = Vec::with_capacity(xs.len());
+                self.sequence(
                     &xs,
                     &get_types(actual, TypeGetter::ToTypeList)?,
                     map,
                     state,
                     dir,
                     depth,
+                    &mut types,
                 )?;
-                map = b.map;
-                state = b.state;
-                Type::product(b.types)
+                Type::product(types)
             }
             Shape::Map(pairs) => {
-                let typ = self.checked(pat, &Type::map_any(), actual, &mut state)?;
+                let typ = self.checked(pat, &Type::map_any(), actual, state)?;
                 if dir == Direction::Reverse {
                     typ
                 } else {
@@ -490,12 +502,9 @@ impl Binder<'_, '_, '_> {
                         {
                             return Err(BindError::Boundary("map pattern operation is not exact (native badmatch payload pending)".into()));
                         }
-                        let key_type = self.lookup(key, &map, &state)?;
+                        let key_type = self.lookup(key, map, state)?;
                         let domain = typ.map_get(&key_type)?;
-                        let b = self.sequence(&[value], &[domain], map, state, dir, depth)?;
-                        map = b.map;
-                        state = b.state;
-                        let val = b.types[0].clone();
+                        let val = self.single(value, domain, map, state, dir, depth)?;
                         if key_type.predicate(TypePredicate::Singleton)? {
                             constraints.insert(0, (key_type, val))
                         }
@@ -521,24 +530,28 @@ impl Binder<'_, '_, '_> {
                 } else {
                     Type::tuple_arity(xs.len())
                 };
-                let typ = self.checked(pat, &prototype, actual, &mut state)?;
+                let typ = self.checked(pat, &prototype, actual, state)?;
                 let alternatives = get_types(&typ, TypeGetter::TupleSubtypes)?;
                 let scope = map.begin_join();
                 let mut maps = Vec::new();
                 let mut tuple_types = Vec::new();
                 for alternative in alternatives {
+                    let mut branch = scope.branch();
+                    let mut branch_state = state.clone();
+                    let mut types = Vec::with_capacity(xs.len());
                     match self.sequence(
                         &xs,
                         &get_types(&alternative, TypeGetter::TupleArgs)?,
-                        scope.branch(),
-                        state.clone(),
+                        &mut branch,
+                        &mut branch_state,
                         dir,
                         depth,
+                        &mut types,
                     ) {
-                        Ok(b) => {
-                            maps.push(b.map);
-                            state = b.state;
-                            tuple_types.push(Type::tuple(b.types)?)
+                        Ok(()) => {
+                            maps.push(branch);
+                            *state = branch_state;
+                            tuple_types.push(Type::tuple(types)?)
                         }
                         Err(BindError::Failure(_)) => {}
                         Err(e) => return Err(e),
@@ -555,7 +568,7 @@ impl Binder<'_, '_, '_> {
                         },
                     ));
                 }
-                map = scope.finish(&maps)?;
+                *map = scope.finish(&maps)?;
                 Type::supremum(&tuple_types)?
             }
             Shape::Binary(xs) => {
@@ -566,11 +579,9 @@ impl Binder<'_, '_, '_> {
                         pat,
                         &Type::builtin(BuiltinType::Bitstring)?,
                         actual,
-                        &mut state,
+                        state,
                     )?;
-                    let (b, segments) = self.binary(&xs, bin, map, state, depth)?;
-                    map = b.map;
-                    state = b.state;
+                    let segments = self.binary(&xs, bin, map, state, depth)?;
                     Type::bitstr_concat_types(&segments)?
                 }
             }
@@ -581,20 +592,16 @@ impl Binder<'_, '_, '_> {
                 return Err(self.failure(pat, actual, FailureKind::Bind));
             }
         };
-        Ok(Bound {
-            map,
-            types: vec![out],
-            state,
-        })
+        Ok(out)
     }
     fn binary<W: Clone + PartialEq + From<OpaqueMatch>>(
         &mut self,
         segments: &[PatternRef],
         mut bin: Type,
-        mut map: DataflowMap,
-        mut state: BinderState<W>,
+        map: &mut DataflowMap,
+        state: &mut BinderState<W>,
         depth: usize,
-    ) -> Result<(Bound<W>, Vec<Type>), BindError> {
+    ) -> Result<Vec<Type>, BindError> {
         let mut output = Vec::new();
         for (index, &seg) in segments.iter().enumerate() {
             let Shape::Segment {
@@ -621,11 +628,8 @@ impl Binder<'_, '_, '_> {
                     ));
                 }
                 let domain = bitstring(self.integer(unit_node)?, BigInt::zero())?.meet(&bin)?;
-                let b =
-                    self.sequence(&[value], &[domain], map, state, Direction::Forward, depth)?;
-                map = b.map;
-                state = b.state;
-                output.push(b.types[0].structural()?);
+                let typ = self.single(value, domain, map, state, Direction::Forward, depth)?;
+                output.push(typ.structural()?);
                 bin = bitstring(BigInt::zero(), BigInt::zero())?;
                 continue;
             }
@@ -635,16 +639,14 @@ impl Binder<'_, '_, '_> {
                         "UTF size assertion payload pending".into(),
                     ));
                 }
-                let b = self.sequence(
-                    &[value],
-                    &[Type::all_integers()],
+                self.single(
+                    value,
+                    Type::all_integers(),
                     map,
                     state,
                     Direction::Forward,
                     depth,
                 )?;
-                map = b.map;
-                state = b.state;
                 let t = Type::binary();
                 bin = t.bitstr_match(&bin)?;
                 output.push(t);
@@ -655,17 +657,14 @@ impl Binder<'_, '_, '_> {
             {
                 return Err(self.failure(seg, &bin, FailureKind::Bind));
             }
-            let b = self.sequence(
-                &[size],
-                &[Type::builtin(BuiltinType::NonNegativeInteger)?],
+            let size_type = &self.single(
+                size,
+                Type::builtin(BuiltinType::NonNegativeInteger)?,
                 map,
                 state,
                 Direction::Forward,
                 depth,
             )?;
-            map = b.map;
-            state = b.state;
-            let size_type = &b.types[0];
             let unit = self.integer(unit_node)?;
             let TypeValue::Integers(values) = size_type.get(TypeGetter::NumberValues)? else {
                 return Err(LatticeError::FunctionClause.into());
@@ -723,9 +722,7 @@ impl Binder<'_, '_, '_> {
                     ));
                 }
             };
-            let b = self.sequence(&[value], &[domain], map, state, Direction::Forward, depth)?;
-            map = b.map;
-            state = b.state;
+            self.single(value, domain, map, state, Direction::Forward, depth)?;
             let remaining = seg_type.bitstr_match(&bin)?;
             if remaining.is_none() {
                 return Err(self.failure(seg, &bin, FailureKind::Bind));
@@ -733,14 +730,7 @@ impl Binder<'_, '_, '_> {
             bin = remaining;
             output.push(seg_type)
         }
-        Ok((
-            Bound {
-                map,
-                types: vec![],
-                state,
-            },
-            output,
-        ))
+        Ok(output)
     }
     fn signed(&self, flags: PatternRef) -> Result<bool, BindError> {
         let LiteralRef::Term { module, term } = self.patterns.literal(flags)? else {

@@ -335,7 +335,7 @@ impl BodyFlow<'_, '_, '_> {
             let bound = match (Binder {
                 patterns: self.patterns,
             })
-            .bind(&references, &actual, &map, state, Direction::Forward)
+            .bind_owned(&references, &actual, map, state, Direction::Forward)
             {
                 Ok(bound) => bound,
                 Err(BindError::Failure(f)) => {
