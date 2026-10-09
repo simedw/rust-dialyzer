@@ -537,24 +537,43 @@ impl ConstraintTree {
                             .iter()
                             .chain(d.evaluated_maps.iter().rev())
                             .collect();
-                        let keys = if d.newly_failed {
-                            let mut keys: BTreeSet<_> = maps[0].keys().cloned().collect();
-                            for map in &maps[1..] {
-                                keys.retain(|k| map.contains_key(k));
+                        let mask = &self.nodes[d.id.0].masks;
+                        let keys: Vec<_> = if d.newly_failed {
+                            // Only labels in the mask survive the filter, so
+                            // intersect the branch maps over the mask instead
+                            // of over every SCC binding.
+                            let keys = mask
+                                .iter()
+                                .filter(|(_, indices)| d.survived.is_subset(indices))
+                                .map(|(v, _)| BindingKey::Label(v.clone()))
+                                .filter(|k| maps.iter().all(|map| map.contains_key(k)))
+                                .collect();
+                            if crate::lattice::verify_fast_paths() {
+                                let mut old: BTreeSet<_> = maps[0].keys().cloned().collect();
+                                for map in &maps[1..] {
+                                    old.retain(|k| map.contains_key(k));
+                                }
+                                let old: Vec<_> = old
+                                    .into_iter()
+                                    .filter(|v| {
+                                        v.label()
+                                            .and_then(|v| mask.get(v))
+                                            .is_some_and(|indices| d.survived.is_subset(indices))
+                                    })
+                                    .collect();
+                                assert_eq!(keys, old, "disjunction key intersection fast path");
                             }
                             keys
                         } else {
                             d.updated
+                                .into_iter()
+                                .filter(|v| {
+                                    v.label()
+                                        .and_then(|v| mask.get(v))
+                                        .is_some_and(|indices| d.survived.is_subset(indices))
+                                })
+                                .collect()
                         };
-                        let mask = &self.nodes[d.id.0].masks;
-                        let keys: Vec<_> = keys
-                            .into_iter()
-                            .filter(|v| {
-                                v.label()
-                                    .and_then(|v| mask.get(v))
-                                    .is_some_and(|indices| d.survived.is_subset(indices))
-                            })
-                            .collect();
                         let mut map = d.map.clone();
                         let mut updated = BTreeSet::new();
                         for key in keys {

@@ -94,6 +94,11 @@ impl SccAnalyzer<'_> {
         output: GenerationOutput,
     ) -> Result<SccAnalysis, AnalyzeSccError> {
         let mut timings = crate::phase_timings::PhaseTimings::detail("scc_components");
+        timings.label(|| {
+            ordered_mfas.first().map_or_else(String::new, |mfa| {
+                format!("{}:{}/{} n={}", mfa.module, mfa.function, mfa.arity, ordered_mfas.len())
+            })
+        });
         let mut entries = Vec::with_capacity(ordered_mfas.len());
         for mfa in ordered_mfas {
             entries.push(self.nodes.definition(mfa).map_err(|error| match error {
