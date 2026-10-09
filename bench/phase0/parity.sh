@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 B=${1:-target/perf/release/core_cache_analyze}; O=${2:-/tmp/parity}; mkdir -p "$O"
 S=.cache/phase0/phoenix-scenario; P=.cache/phase0/rust-cone/out/prior-library.json
-L() { lockf /tmp/rust-dialyzer-run.lock "$@"; }
+L() { lockf -k /tmp/rust-dialyzer-run.lock "$@"; }
 echo "== phoenix"
 L /usr/bin/time -l "$B" $P $S/manifest.json $S/options.json > "$O/p.json" 2> "$O/p.err"
 grep -E "real|instructions retired|peak memory" "$O/p.err"

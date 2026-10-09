@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interleave two fresh-cache Rust variants under rust-dialyzer-run.lock.
+"""Interleave two fresh-cache Rust variants under lockf -k rust-dialyzer-run.lock.
 
 ab_rust.py CONFIG_JSON OUTPUT_DIR [--repetitions N] [--project phoenix|elixir]
 CONFIG_JSON names baseline/candidate binary and cache_script, inventory, reference.
@@ -7,6 +7,7 @@ Each process reports macOS time counters. Every warning and named signature is c
 """
 import argparse
 import collections
+import errno
 import hashlib
 import json
 import os
@@ -104,7 +105,16 @@ for repeat in range(1, args.repetitions + 1):
             (out / 'measurements.json').write_text(json.dumps(rows, indent=2) + '\n')
             print(json.dumps(row), flush=True)
             if not args.keep_caches:
-                shutil.rmtree(directory / 'cache')
+                cache_path = directory / 'cache'
+                for attempt in range(3):
+                    try:
+                        shutil.rmtree(cache_path)
+                        break
+                    except FileNotFoundError:
+                        break
+                    except OSError as error:
+                        if error.errno != errno.ENOTEMPTY or attempt == 2:
+                            raise
 
 summary = {}
 for project in projects:

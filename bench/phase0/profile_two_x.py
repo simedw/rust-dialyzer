@@ -2,7 +2,7 @@
 """Capture stage timings and an optional macOS CPU sample under the run lock.
 
 profile_two_x.py BINARY MANIFEST OPTIONS OUT_DIR [--sample]
-Run with lockf /tmp/rust-dialyzer-run.lock. Outputs remain in OUT_DIR.
+Run with lockf -k /tmp/rust-dialyzer-run.lock. Outputs remain in OUT_DIR.
 """
 import collections
 import json
