@@ -105,6 +105,9 @@ pub struct CorePhases<'a> {
     folded_nodes: DataflowNodes<'a>,
     guard_literals: GuardLiterals<'a>,
     letrec: BTreeMap<ModuleId, crate::letrec_types::LetrecLinks>,
+    /// Each module's initial binder state; it depends only on the module, so
+    /// it is built on first use and shared by every refinement run.
+    binder_states: Vec<std::sync::OnceLock<Result<BinderState<AnalysisWarning>, ModuleBinderError>>>,
     function_names: BTreeMap<CoreLabel, Mfa>,
     core_captures: CoreCaptureStore<'a>,
     scc_memo: std::sync::Mutex<BTreeMap<Vec<Mfa>, std::sync::Arc<SccMemo>>>,
@@ -144,6 +147,9 @@ impl<'a> CorePhases<'a> {
             folded_nodes,
             guard_literals,
             letrec: BTreeMap::new(),
+            binder_states: (0..inputs.nodes.core().modules.len())
+                .map(|_| std::sync::OnceLock::new())
+                .collect(),
             function_names: index_function_names(&inputs.graph.named_labels),
             core_captures: CoreCaptureStore::new(inputs.nodes.core(), inputs.nodes.labels()),
             scc_memo: Default::default(),
@@ -223,7 +229,8 @@ impl<'a> CorePhases<'a> {
         ModuleBodies { nodes: self.nodes, program: self.program, graph: self.graph,
             definitions: self.definitions, folded: self.folded, bifs: self.bifs,
             world: &self.world, folded_nodes: &self.folded_nodes,
-            guard_literals: &self.guard_literals, letrec: &self.letrec }
+            guard_literals: &self.guard_literals, letrec: &self.letrec,
+            binder_states: &self.binder_states }
     }
 
 }
@@ -239,6 +246,7 @@ pub struct ModuleBodies<'phase, 'input> {
     folded_nodes: &'phase DataflowNodes<'input>,
     guard_literals: &'phase GuardLiterals<'input>,
     letrec: &'phase BTreeMap<ModuleId, crate::letrec_types::LetrecLinks>,
+    binder_states: &'phase [std::sync::OnceLock<Result<BinderState<AnalysisWarning>, ModuleBinderError>>],
 }
 impl ModuleBodies<'_, '_> {
     fn module_body(
@@ -272,13 +280,23 @@ impl ModuleBodies<'_, '_> {
             registry: self.bifs,
         };
         let mut patterns = Patterns::new(self.nodes);
-        let initial = BinderState::<AnalysisWarning>::for_module(
-            self.nodes.core(),
-            self.definitions,
-            module,
-            false,
-        )
-        .map_err(CorePhaseError::Metadata)?;
+        let build = || {
+            BinderState::<AnalysisWarning>::for_module(
+                self.nodes.core(),
+                self.definitions,
+                module,
+                false,
+            )
+        };
+        let built;
+        let initial = match self.binder_states.get(module.0) {
+            Some(cell) => cell.get_or_init(build).as_ref(),
+            None => {
+                built = build();
+                built.as_ref()
+            }
+        }
+        .map_err(|error| CorePhaseError::Metadata(error.clone()))?;
         let empty_letrec = crate::letrec_types::LetrecLinks::default();
         let letrec = self.letrec.get(&module).unwrap_or(&empty_letrec);
         let mut flow = BodyFlow {
@@ -291,7 +309,7 @@ impl ModuleBodies<'_, '_> {
         };
         timings.mark("prepare_module_body");
         let mut bound = flow
-            .analyze_module(&initial, warnings)
+            .analyze_module(initial, warnings)
             .map_err(|error| CorePhaseError::Body(Box::new(error)))?;
         timings.mark("analyze_module");
         if warnings {

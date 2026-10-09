@@ -117,7 +117,7 @@ fn original_for_module<W: std::fmt::Debug>(
         })
         .collect::<BTreeMap<_, _>>();
     Ok(BinderState {
-        module: source.name.clone(),
+        module: source.name.as_str().into(),
         current_fun: WarningFunction::Undefined,
         translated_files: translated_files.into(),
         letrec: BTreeMap::new().into(),

@@ -84,7 +84,46 @@ impl From<LatticeError> for StateError {
         Self::Lattice(e)
     }
 }
-pub(crate) struct SignatureGeneration;
+/// Identifies the function signatures at one point of a run. Each change
+/// makes a new generation linked to the one it replaced, recording the
+/// function whose signature changed.
+#[derive(Default)]
+pub(crate) struct SignatureGeneration {
+    previous: Option<(std::sync::Arc<SignatureGeneration>, FunctionKey)>,
+}
+impl SignatureGeneration {
+    /// The functions whose signatures changed between `earlier` and `self`,
+    /// newest first, or `None` when `earlier` is not an ancestor within
+    /// `limit` changes.
+    pub(crate) fn changed_since(
+        &self,
+        earlier: &std::sync::Arc<SignatureGeneration>,
+        limit: usize,
+    ) -> Option<Vec<FunctionKey>> {
+        let mut changed = Vec::new();
+        let mut generation = self;
+        while !std::ptr::eq(generation, std::sync::Arc::as_ptr(earlier)) {
+            if changed.len() == limit {
+                return None;
+            }
+            let (previous, key) = generation.previous.as_ref()?;
+            changed.push(*key);
+            generation = previous;
+        }
+        Some(changed)
+    }
+}
+impl Drop for SignatureGeneration {
+    /// Unlinks iteratively so dropping a long history cannot overflow the stack.
+    fn drop(&mut self) {
+        let mut next = self.previous.take();
+        while let Some((generation, _)) = next {
+            next = std::sync::Arc::try_unwrap(generation)
+                .ok()
+                .and_then(|mut generation| generation.previous.take());
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct FunctionState {
@@ -157,7 +196,7 @@ impl FunctionState {
             .filter(|k| *k != FunctionKey::Top && defs[k].escaping && defs[k].name.is_some())
             .collect();
         Self {
-            signature_generation: std::sync::Arc::new(SignatureGeneration),
+            signature_generation: std::sync::Arc::default(),
             definitions: defs,
             entries,
             environments: envs,
@@ -170,6 +209,12 @@ impl FunctionState {
     }
     pub(crate) fn signature_generation(&self) -> &std::sync::Arc<SignatureGeneration> {
         &self.signature_generation
+    }
+    fn change_signature(&mut self, key: FunctionKey) {
+        let previous = self.signature_generation.clone();
+        self.signature_generation = std::sync::Arc::new(SignatureGeneration {
+            previous: Some((previous, key)),
+        });
     }
     pub fn definitions(&self) -> &BTreeMap<FunctionKey, FunctionDefinition> {
         &self.definitions
@@ -260,7 +305,7 @@ impl FunctionState {
             return Ok(false);
         }
         let result = sig.result.clone();
-        self.signature_generation = std::sync::Arc::new(SignatureGeneration);
+        self.change_signature(key);
         self.entries.insert(
             key,
             Entry::new(
@@ -306,7 +351,7 @@ impl FunctionState {
         }
         let args = old.arguments.clone();
         let callers = definition.callers.clone();
-        self.signature_generation = std::sync::Arc::new(SignatureGeneration);
+        self.change_signature(key);
         self.entries.insert(
             key,
             Entry::new(

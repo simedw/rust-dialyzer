@@ -86,18 +86,23 @@ impl<W> BinderState<W> {
                 if pair.len() == 2
                     && matches!(&source.terms[pair[0].0], ErlangTerm::Atom(tag) if tag == "file")
                 {
-                    translated_files.entry((module, pair[1])).or_insert(
-                        filename(source, pair[1]).map_err(|cause| ModuleBinderError::Filename {
-                            module,
-                            term: pair[1],
-                            cause,
-                        })?,
-                    );
+                    // Repeated annotations share the term, so the first parse decides.
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        translated_files.entry((module, pair[1]))
+                    {
+                        entry.insert(filename(source, pair[1]).map_err(|cause| {
+                            ModuleBinderError::Filename {
+                                module,
+                                term: pair[1],
+                                cause,
+                            }
+                        })?);
+                    }
                 }
             }
         }
         Ok(Self {
-            module: source.name.clone(),
+            module: source.name.as_str().into(),
             current_fun: WarningFunction::Undefined,
             translated_files: translated_files.into(),
             letrec: BTreeMap::new().into(),

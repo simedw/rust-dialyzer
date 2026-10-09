@@ -13,7 +13,7 @@ use crate::{
     guard_ops::{GuardEval, eval_intersection},
     guard_producer::{GuardProducer, ProducerError},
 };
-use std::{cell::Cell, collections::BTreeMap, io::Write, sync::OnceLock, time::Instant};
+use std::{cell::Cell, io::Write, sync::OnceLock, time::Instant};
 
 thread_local! { static GUARD_VISITS: Cell<u64> = const { Cell::new(0) }; }
 /// Deepest guard expression analyzed before giving up. Generated code (cowlib's
@@ -108,7 +108,49 @@ pub struct GuardBound<W> {
     pub value: Type,
     pub state: BinderState<W>,
 }
-pub type GuardEnvironment = BTreeMap<DataflowKey, NodeRef>;
+/// Guard `let` bindings in scope. A binding shadows earlier bindings of the
+/// same variable; extending a scope shares its parent instead of copying it.
+#[derive(Clone, Debug, Default)]
+pub struct GuardEnvironment {
+    head: Option<std::sync::Arc<EnvironmentBinding>>,
+}
+#[derive(Debug)]
+struct EnvironmentBinding {
+    key: DataflowKey,
+    expression: NodeRef,
+    parent: Option<std::sync::Arc<EnvironmentBinding>>,
+}
+impl GuardEnvironment {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn bindings(&self) -> impl Iterator<Item = &EnvironmentBinding> {
+        std::iter::successors(self.head.as_deref(), |binding| binding.parent.as_deref())
+    }
+    pub fn insert(&mut self, key: DataflowKey, expression: NodeRef) {
+        let parent = self.head.take();
+        self.head = Some(std::sync::Arc::new(EnvironmentBinding {
+            key,
+            expression,
+            parent,
+        }));
+    }
+    pub fn get(&self, key: &DataflowKey) -> Option<&NodeRef> {
+        self.bindings()
+            .find(|binding| binding.key == *key)
+            .map(|binding| &binding.expression)
+    }
+    /// The number of distinct variables bound.
+    pub fn len(&self) -> usize {
+        self.bindings()
+            .map(|binding| binding.key)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.head.is_none()
+    }
+}
 pub struct GuardControl<'a, 'b, 'c> {
     pub nodes: &'a DataflowNodes<'b>,
     pub producer: &'a GuardProducer<'a, 'b, 'c>,
@@ -130,7 +172,7 @@ impl GuardControl<'_, '_, '_> {
         state: &BinderState<W>,
     ) -> Result<GuardBound<W>, GuardError> {
         let _trace = guard_trace_enabled().then(|| {
-            guard_trace_record(serde_json::json!({"event":"start","module":state.module,"function":format!("{:?}",state.current_fun),"module_id":node.module.0,"node":node.node,"mode":format!("{eval:?}"),"bindings":map.types().len(),"environment":env.len(),"warning_mode":state.warnings.warning_mode}));
+            guard_trace_record(serde_json::json!({"event":"start","module":&*state.module,"function":format!("{:?}",state.current_fun),"module_id":node.module.0,"node":node.node,"mode":format!("{eval:?}"),"bindings":map.types().len(),"environment":env.len(),"warning_mode":state.warnings.warning_mode}));
             GuardTrace { node, started:Instant::now(), visits:GUARD_VISITS.with(Cell::get) }
         });
         self.visit(node, map, env, eval, state, 0)

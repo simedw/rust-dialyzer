@@ -38,7 +38,7 @@ fn run(row: Value) -> Result<Value, String> {
             }
         }
         let state: BinderState = BinderState {
-            module: module.name.clone(),
+            module: module.name.as_str().into(),
             current_fun: WarningFunction::Named(FunctionName {
                 module: module.name.clone(),
                 name: "fixture".into(),

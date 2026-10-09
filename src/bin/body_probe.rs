@@ -114,7 +114,7 @@ fn run(row: &Value) -> Result<Value, String> {
         )?;
     }
     let mut state = BinderState::<Warning> {
-        module: m.name.clone(),
+        module: m.name.as_str().into(),
         current_fun: WarningFunction::Named(FunctionName {
             module: m.name.clone(),
             name: "entry".into(),

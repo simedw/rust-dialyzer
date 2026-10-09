@@ -94,7 +94,7 @@ pub struct BinderRecord {
 }
 #[derive(Clone, Debug)]
 pub struct BinderState<W = OpaqueMatch> {
-    pub module: String,
+    pub module: std::sync::Arc<str>,
     pub current_fun: WarningFunction,
     pub translated_files: Arc<BTreeMap<(crate::program::ModuleId, crate::core::TermId), String>>,
     pub letrec: crate::letrec_types::LetrecTypes,

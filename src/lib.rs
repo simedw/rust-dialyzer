@@ -45,6 +45,7 @@ pub mod emission;
 pub mod behaviours;
 
 pub mod dataflow_map;
+pub mod dataflow_trie;
 
 pub mod labels;
 
