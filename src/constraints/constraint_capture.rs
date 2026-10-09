@@ -8,7 +8,6 @@ use crate::{
     lattice::{NativeValue, Type, VariableId},
     term_order::{CaptureEnvironment, CaptureId, CaptureTerm, CapturedFunction},
 };
-use std::collections::BTreeSet;
 
 fn push(terms: &mut Vec<CaptureTerm>, term: CaptureTerm) -> CaptureId {
     let id = CaptureId(terms.len());
@@ -99,7 +98,7 @@ pub fn type_variable(terms: &mut Vec<CaptureTerm>, value: &VariableId) -> Captur
         },
     )
 }
-fn dependencies(terms: &mut Vec<CaptureTerm>, values: &BTreeSet<VariableId>) -> CaptureId {
+fn dependencies(terms: &mut Vec<CaptureTerm>, values: &[VariableId]) -> CaptureId {
     let items = values.iter().map(|v| variable(terms, v)).collect();
     proper_list(terms, items)
 }
