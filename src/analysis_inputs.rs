@@ -88,16 +88,16 @@ impl PreparedRecords {
             .filter(|((module, _, _), _)| modules.contains(module))
             .map(|(key, record)| (key.clone(), record.prototype.clone()))
             .collect();
-        let tables = modules
-            .into_iter()
-            .map(|module| {
-                let table = definitions
-                    .module_table(module)
-                    .ok_or_else(|| format!("prepared module {} has no record table", module.0))?;
-                CaptureEnvironment::literal_roots(table.arena(), &[table.root()])
-                    .map(|capture| (module, capture))
-            })
-            .collect::<Result<_, _>>()?;
+        let modules = modules.into_iter().collect::<Vec<_>>();
+        let tables = crate::ordered_parallel::setup_map(&modules, |&module| {
+            let table = definitions
+                .module_table(module)
+                .ok_or_else(|| format!("prepared module {} has no record table", module.0))?;
+            CaptureEnvironment::literal_roots(table.arena(), &[table.root()])
+                .map(|capture| (module, capture))
+        })
+        .into_iter()
+        .collect::<Result<_, _>>()?;
         Ok(Self { prototypes, tables })
     }
 }

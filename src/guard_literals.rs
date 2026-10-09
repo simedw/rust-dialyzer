@@ -19,47 +19,39 @@ pub struct GuardLiterals<'a> {
 }
 impl<'a> GuardLiterals<'a> {
     pub fn new(folded: &'a FoldedCore) -> Result<Self, String> {
-        let orders = folded
-            .program
-            .modules
-            .iter()
-            .map(|module| {
-                TermOrderArena::new(&ErlangTerms {
-                    root: module.source_forms,
-                    terms: module.terms.clone(),
+        let orders = crate::ordered_parallel::setup_map(&folded.program.modules, |module| {
+            TermOrderArena::new(&ErlangTerms {
+                root: module.source_forms,
+                terms: module.terms.clone(),
+            })
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+        let raw_literals = crate::ordered_parallel::setup_map(&folded.program.modules, |module| {
+            let mut terms = module.terms.clone();
+            let tag = TermId(terms.len());
+            terms.push(ErlangTerm::Atom("c_literal".into()));
+            let roots = module
+                .nodes
+                .iter()
+                .map(|node| {
+                    if let CoreExpr::Literal(value) = node.expr {
+                        let id = TermId(terms.len());
+                        terms.push(ErlangTerm::Tuple(vec![tag, node.annotations, value]));
+                        Some(id)
+                    } else {
+                        None
+                    }
                 })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let raw_literals = folded
-            .program
-            .modules
-            .iter()
-            .map(|module| {
-                let mut terms = module.terms.clone();
-                let tag = TermId(terms.len());
-                terms.push(ErlangTerm::Atom("c_literal".into()));
-                let roots = module
-                    .nodes
-                    .iter()
-                    .map(|node| {
-                        if let CoreExpr::Literal(value) = node.expr {
-                            let id = TermId(terms.len());
-                            terms.push(ErlangTerm::Tuple(vec![tag, node.annotations, value]));
-                            Some(id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                (
-                    std::sync::Arc::new(ErlangTerms {
-                        root: module.source_forms,
-                        terms,
-                    }),
-                    roots,
-                )
-            })
-            .collect();
+                .collect();
+            (
+                std::sync::Arc::new(ErlangTerms {
+                    root: module.source_forms,
+                    terms,
+                }),
+                roots,
+            )
+        });
         Ok(Self {
             folded,
             orders,

@@ -147,6 +147,41 @@ pub fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -
     results.into_iter().map(|r| r.expect("every item analyzed")).collect()
 }
 
+/// `RUST_DIALYZER_SEQUENTIAL=1` keeps setup and analysis on one thread.
+pub fn sequential() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RUST_DIALYZER_SEQUENTIAL").is_some_and(|v| v == "1"))
+}
+
+/// `parallel_map`, or a plain ordered map when `sequential()`.
+pub fn setup_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    if sequential() {
+        items.iter().map(f).collect()
+    } else {
+        parallel_map(items, f)
+    }
+}
+
+/// Runs `a` on the calling thread while `b` runs on a worker. When
+/// `sequential()`, runs `a` and then `b`.
+pub fn join<A, B: Send>(a: impl FnOnce() -> A, b: impl FnOnce() -> B + Send) -> (A, B) {
+    if sequential() {
+        let a = a();
+        return (a, b());
+    }
+    std::thread::scope(|scope| {
+        let handle = std::thread::Builder::new()
+            .stack_size(WORKER_STACK_BYTES)
+            .spawn_scoped(scope, b)
+            .expect("spawn setup worker");
+        let a = a();
+        match handle.join() {
+            Ok(b) => (a, b),
+            Err(payload) => resume_unwind(payload),
+        }
+    })
+}
+
 /// What a dependency-scheduled job produced.
 pub enum Attempt<R> {
     Done(R),

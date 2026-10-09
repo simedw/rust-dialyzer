@@ -216,6 +216,14 @@ impl Program {
             named: BTreeMap::new(),
             function_nodes: Vec::new(),
         };
+        let mut origins = crate::ordered_parallel::setup_map(&core.modules, |module| {
+            module
+                .nodes
+                .iter()
+                .map(|node| source_origin(module, node.annotations))
+                .collect::<Result<Vec<_>>>()
+        })
+        .into_iter();
         for (i, module) in core.modules.iter().enumerate() {
             let mid = ModuleId(i);
             let mut identities = BTreeMap::new();
@@ -283,13 +291,9 @@ impl Program {
                 }
             }
             index.function_nodes.push(function_nodes);
-            index.origins.push(
-                module
-                    .nodes
-                    .iter()
-                    .map(|node| source_origin(module, node.annotations))
-                    .collect::<Result<Vec<_>>>()?,
-            );
+            index
+                .origins
+                .push(origins.next().expect("origins for every module")?);
             index.index_metadata(mid, module)?;
         }
         for (i, module) in core.modules.iter().enumerate() {

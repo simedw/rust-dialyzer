@@ -126,9 +126,7 @@ impl<'a> DataflowNodes<'a> {
         &self.literals
     }
     pub fn build(core: &'a CoreProgram, labels: &'a Labels) -> Result<Self, String> {
-        let mut literals = Vec::new();
-        let mut contains_map = Vec::new();
-        for module in &core.modules {
+        let modules = crate::ordered_parallel::setup_map(&core.modules, |module| {
             let mut maps: Vec<bool> = Vec::with_capacity(module.terms.len());
             for term in &module.terms {
                 let value = match term {
@@ -149,16 +147,21 @@ impl<'a> DataflowNodes<'a> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            literals.push(
-                LiteralTypes::build_roots(
-                    &ErlangTerms {
-                        root: module.source_forms,
-                        terms: module.terms.clone(),
-                    },
-                    &roots,
-                )
-                .map_err(|error| format!("module {}: {error}", module.name))?,
-            );
+            let literals = LiteralTypes::build_roots(
+                &ErlangTerms {
+                    root: module.source_forms,
+                    terms: module.terms.clone(),
+                },
+                &roots,
+            )
+            .map_err(|error| format!("module {}: {error}", module.name))?;
+            Ok::<_, String>((literals, maps))
+        });
+        let mut literals = Vec::with_capacity(modules.len());
+        let mut contains_map = Vec::with_capacity(modules.len());
+        for module in modules {
+            let (module_literals, maps) = module?;
+            literals.push(module_literals);
             contains_map.push(maps);
         }
         Ok(Self {

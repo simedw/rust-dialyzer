@@ -120,8 +120,15 @@ pub(crate) fn locations(
     core: &CoreProgram,
     program: &Program,
 ) -> Result<BTreeMap<usize, RawFormTerm>> {
-    let mut output = BTreeMap::new();
-    for (module, source) in core.modules.iter().enumerate() {
+    let mut by_module = vec![Vec::new(); core.modules.len()];
+    for (index, meta) in program.metadata.iter().enumerate() {
+        if let Some(entries) = by_module.get_mut(meta.module.0) {
+            entries.push(index);
+        }
+    }
+    let modules = core.modules.iter().zip(&by_module).collect::<Vec<_>>();
+    let located = crate::ordered_parallel::setup_map(&modules, |(source, metadata)| {
+        let mut output = Vec::with_capacity(metadata.len());
         let arena = Arc::new(ErlangTerms {
             root: TermId(0),
             terms: source.terms.clone(),
@@ -130,12 +137,8 @@ pub(crate) fn locations(
         let mut b = ReasonBuilder::new();
         let file = b.string("nofile");
         let mut file = b.finish(file);
-        for (index, meta) in program
-            .metadata
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.module == ModuleId(module))
-        {
+        for &index in metadata.iter() {
+            let meta = &program.metadata[index];
             if matches!(&meta.kind,MetadataKind::Other(s) if s=="file") {
                 let value = raw(meta.raw)?;
                 if let Some(items) = crate::declaration_key::proper_list(&value)
@@ -166,8 +169,13 @@ pub(crate) fn locations(
                 .map(|v| b.copy(v))
                 .unwrap_or_else(|| b.atom("undefined"));
             let root = b.tuple(vec![file, location]);
-            output.insert(index, b.finish(root));
+            output.push((index, b.finish(root)));
         }
+        Ok::<_, FormError>(output)
+    });
+    let mut output = BTreeMap::new();
+    for module in located {
+        output.extend(module?);
     }
     Ok(output)
 }
