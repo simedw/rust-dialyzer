@@ -24,9 +24,9 @@ struct Vertex<V> {
     outgoing: Direction<V>,
 }
 #[derive(Clone, Debug)]
-struct Physical {
+struct Physical<V> {
     layout: NativeAtomLayout,
-    vertices: NativeEtsSet<()>,
+    vertices: NativeEtsSet<V>,
     edges: NativeEtsSet<()>,
 }
 /// One graph owns adjacency; ETS tables retain only physical enumeration history.
@@ -34,7 +34,7 @@ struct Physical {
 pub struct SourceDigraph<V: RuntimeGraphKey> {
     vertices: BTreeMap<V, Vertex<V>>,
     edges: BTreeMap<NativeHashKey, (V, V)>,
-    physical: Option<Physical>,
+    physical: Option<Physical<V>>,
     acyclic: bool,
     next_edge: i64,
 }
@@ -54,7 +54,7 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
     }
     pub fn add_vertex(&mut self, v: V, confirmed: bool) -> Result<(), RuntimeHashError> {
         if let Some(p) = &mut self.physical {
-            p.vertices.insert(v.runtime_key()?, (), &p.layout)?;
+            p.vertices.insert(v.runtime_key()?, v.clone(), &p.layout)?;
         }
         self.vertices
             .entry(v)
@@ -148,25 +148,43 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
     pub fn edge(&self, id: &NativeHashKey) -> Option<&(V, V)> {
         self.edges.get(id)
     }
+    /// Every edge's endpoints, in no runtime order: for callers whose
+    /// result does not depend on the order (sets and maps of endpoints).
+    pub fn unordered_edges(&self) -> impl Iterator<Item = &(V, V)> {
+        self.edges.values()
+    }
+    /// Every vertex, in no runtime order (see `unordered_edges`).
+    pub fn unordered_vertices(&self) -> impl Iterator<Item = &V> {
+        self.vertices.keys()
+    }
     pub fn ordered_vertices(&self) -> Result<Vec<V>, RuntimeHashError> {
         let p = self
             .physical
             .as_ref()
             .ok_or(RuntimeHashError::UnavailableAtomLayout)?;
-        let lookup = self
+        // Each ETS row holds its vertex (runtime keys identify vertices), so
+        // no key-to-vertex index is built per enumeration.
+        let ordered = p
             .vertices
-            .keys()
-            .map(|v| Ok((v.runtime_key()?, v)))
-            .collect::<Result<BTreeMap<_, _>, RuntimeHashError>>()?;
-        p.vertices
-            .select_keys()
-            .iter()
-            .map(|key| {
-                lookup.get(key).map(|v| (*v).clone()).ok_or_else(|| {
-                    RuntimeHashError::Boundary("vertex ETS history inconsistent".into())
-                })
-            })
-            .collect()
+            .rows()
+            .into_iter()
+            .map(|(_, v)| v.clone())
+            .collect::<Vec<_>>();
+        if crate::lattice::verify_fast_paths() {
+            let lookup = self
+                .vertices
+                .keys()
+                .map(|v| Ok((v.runtime_key()?, v)))
+                .collect::<Result<BTreeMap<_, _>, RuntimeHashError>>()?;
+            let indexed = p
+                .vertices
+                .select_keys()
+                .iter()
+                .map(|key| lookup.get(key).map(|v| (*v).clone()))
+                .collect::<Option<Vec<_>>>();
+            assert!(indexed.as_ref() == Some(&ordered), "vertex ETS rows differ from the vertex index");
+        }
+        Ok(ordered)
     }
     pub fn ordered_edges(&self) -> Result<Vec<NativeHashKey>, RuntimeHashError> {
         Ok(self

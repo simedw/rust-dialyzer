@@ -249,7 +249,11 @@ impl PreparedDefinitions {
                 return Err(import_failure(FormError::ErrorReason(b.finish(root))));
             }
         }
-        let mut forms = Forms::build_deferred(core, program).map_err(import_failure)?;
+        let source_locations =
+            crate::temporary_contracts::locations(core, program).map_err(import_failure)?;
+        let mut forms =
+            Forms::build_deferred(core, program, &source_locations).map_err(import_failure)?;
+        timings.mark("forms");
         if program.target_contracts() == TargetContracts::Ignore {
             let names = core
                 .modules
@@ -323,6 +327,7 @@ impl PreparedDefinitions {
                 .filter(|d| d.exported && targets.contains(&d.name.module))
                 .map(|d| d.name.clone()),
         );
+        timings.mark("import");
         let library_arena = arena;
         let ErlangTerm::Map(entries) = &library_arena.terms[library_arena.root.0] else {
             return Err(fail("library type tables expected module map".into()));
@@ -369,143 +374,188 @@ impl PreparedDefinitions {
                 );
             }
         }
+        timings.mark("library_tables");
         let mut sites = BTreeMap::<usize, NativeFormSite>::new();
-        let mut locations = crate::temporary_contracts::LocationSnapshot::new(core, program);
-        for (i, module) in core.modules.iter().enumerate() {
-            let mid = ModuleId(i);
-            let mut b = ReasonBuilder::from_terms(module.terms.clone());
-            let mut own = Vec::new();
-            // One shared copy of the module's terms for all its aliases (this
-            // was copied per declaration).
-            let source_arena = Arc::new(crate::core::ErlangTerms {
-                root: module.source_forms,
-                terms: module.terms.clone(),
-            });
-            // This module's aliases by position; prior_aliases scanned every
-            // declaration of every module per alias.
-            let mut module_aliases: Vec<(usize, (String, usize))> = forms
-                .declarations
-                .values()
-                .filter(|d| d.name.module == module.name && d.kind == DeclarationKind::Alias)
-                .map(|d| (d.metadata, (d.name.name.clone(), d.name.arity)))
-                .collect();
-            module_aliases.sort();
-            for d in ordered_declarations(&forms, &module.name) {
-                let meta = &program.metadata[d.metadata];
-                let file = b.string(meta.origin.file.as_deref().unwrap_or("nofile"));
-                let loc = source_location(&mut b, &meta.origin);
-                let fl = b.tuple(vec![file, loc]);
-                let m = b.atom(&module.name);
-                let body = if d.kind == DeclarationKind::Alias && module.name != "erlang" {
-                    let raw = RawFormTerm::new(source_arena.clone(), forms.nodes[d.body.0].raw)
-                    .expect("source declaration");
-                    let defs: BTreeSet<(String, usize)> = module_aliases
-                        .iter()
-                        .take_while(|(metadata, _)| *metadata < d.metadata)
-                        .map(|(_, name)| name.clone())
-                        .collect();
-                    b.copy(&crate::native_form_preprocessing::massage(&raw, &defs))
-                } else {
-                    forms.nodes[d.body.0].raw
-                };
-                let params = d
-                    .parameters
+        // Each module's table, contract forms and definitions only read the
+        // forms built so far, so modules are prepared on all cores. Changes to
+        // `Forms` (deferred contract alternatives and the contracts) and the
+        // tables are applied in module order afterwards, which is the order
+        // the sequential loop made them in; the first failing module in
+        // module order is reported.
+        let mut module_metadata = vec![Vec::new(); core.modules.len()];
+        for (index, meta) in program.metadata.iter().enumerate() {
+            if let Some(entries) = module_metadata.get_mut(meta.module.0) {
+                entries.push(index);
+            }
+        }
+        struct ModuleTables {
+            table: ModuleTableHandle,
+            source: FormSourceArena,
+            contracts: Vec<crate::temporary_contracts::PendingContract>,
+            definitions: Vec<(TypeName, crate::native_form_environment::RawDefinition)>,
+            sites: Vec<(usize, NativeFormSite)>,
+        }
+        let shared_forms = &forms;
+        let indices = (0..core.modules.len()).collect::<Vec<_>>();
+        let prepared = crate::ordered_parallel::setup_map(
+            &indices,
+            |&i| -> Result<ModuleTables, PreparationFailure> {
+                let forms = shared_forms;
+                let module = &core.modules[i];
+                let mid = ModuleId(i);
+                let mut b = ReasonBuilder::from_terms(module.terms.clone());
+                let mut own = Vec::new();
+                // One shared copy of the module's terms for all its aliases (this
+                // was copied per declaration).
+                let source_arena = Arc::new(crate::core::ErlangTerms {
+                    root: module.source_forms,
+                    terms: module.terms.clone(),
+                });
+                let declarations = ordered_declarations(forms, &module.name);
+                // This module's aliases by position; prior_aliases scanned every
+                // declaration of every module per alias.
+                let mut module_aliases: Vec<(usize, (String, usize))> = declarations
                     .iter()
-                    .map(|v| match v {
-                        VariableId::Atom(v) => b.atom(v),
-                        VariableId::Integer(v) => b.integer(v),
+                    .filter(|d| d.kind == DeclarationKind::Alias)
+                    .map(|d| (d.metadata, (d.name.name.clone(), d.name.arity)))
+                    .collect();
+                module_aliases.sort();
+                for d in &declarations {
+                    let meta = &program.metadata[d.metadata];
+                    let file = b.string(meta.origin.file.as_deref().unwrap_or("nofile"));
+                    let loc = source_location(&mut b, &meta.origin);
+                    let fl = b.tuple(vec![file, loc]);
+                    let m = b.atom(&module.name);
+                    let body = if d.kind == DeclarationKind::Alias && module.name != "erlang" {
+                        let raw = RawFormTerm::new(source_arena.clone(), forms.nodes[d.body.0].raw)
+                            .expect("source declaration");
+                        let defs: BTreeSet<(String, usize)> = module_aliases
+                            .iter()
+                            .take_while(|(metadata, _)| *metadata < d.metadata)
+                            .map(|(_, name)| name.clone())
+                            .collect();
+                        b.copy(&crate::native_form_preprocessing::massage(&raw, &defs))
+                    } else {
+                        forms.nodes[d.body.0].raw
+                    };
+                    let params = d
+                        .parameters
+                        .iter()
+                        .map(|v| match v {
+                            VariableId::Atom(v) => b.atom(v),
+                            VariableId::Integer(v) => b.integer(v),
+                        })
+                        .collect();
+                    let params = b.list(params);
+                    let metadata = b.tuple(vec![m, fl, body, params]);
+                    let any = b.atom("any");
+                    let value = b.tuple(vec![metadata, any]);
+                    let tag = b.atom(match d.kind {
+                        DeclarationKind::Alias => "type",
+                        DeclarationKind::Opaque => "opaque",
+                        DeclarationKind::Nominal => "nominal",
+                    });
+                    let n = b.atom(&d.name.name);
+                    let arity = b.integer(d.name.arity);
+                    let key = b.tuple(vec![tag, n, arity]);
+                    own.push((key, value));
+                    let _ = file;
+                }
+                for record in module_records(forms, mid) {
+                    let meta = &program.metadata[record.metadata];
+                    let file = b.string(meta.origin.file.as_deref().unwrap_or("nofile"));
+                    let loc = source_location(&mut b, &meta.origin);
+                    let fl = b.tuple(vec![file, loc]);
+                    let mut fields = Vec::new();
+                    for field in &record.fields {
+                        let name = b.atom(&field.name);
+                        let form = match field.declared_type {
+                            Some(id) => forms.nodes[id.0].raw,
+                            None => generated_variable(&mut b),
+                        };
+                        let any = b.atom("any");
+                        fields.push(b.tuple(vec![name, form, any]));
+                    }
+                    let fields = b.list(fields);
+                    let arity = b.integer(record.fields.len());
+                    let variant = b.tuple(vec![arity, fields]);
+                    let variants = b.list(vec![variant]);
+                    let value = b.tuple(vec![fl, variants]);
+                    let tag = b.atom("record");
+                    let name = b.atom(&record.name);
+                    let key = b.tuple(vec![tag, name]);
+                    own.push((key, value));
+                }
+                let table = b.push(ErlangTerm::Map(own));
+                let raw = b.finish(table);
+                let table =
+                    ModuleTableHandle::at(raw.arena().clone(), table).map_err(import_failure)?;
+                let contracts = crate::temporary_contracts::prepare_module(
+                    core,
+                    program,
+                    mid,
+                    &module_metadata[i],
+                    &raw,
+                    &source_locations,
+                    None,
+                )
+                .map_err(import_failure)?;
+                let lazy = LazyFormEnvironment {
+                    arena: raw.arena().clone(),
+                    tables: BTreeMap::from([(module.name.clone(), raw.id())]),
+                };
+                let mut definitions = Vec::with_capacity(declarations.len());
+                for d in &declarations {
+                    definitions.push((
+                        d.name.clone(),
+                        lazy.declaration(&d.name)
+                            .expect("constructed declaration")
+                            .definition()
+                            .map_err(fail)?,
+                    ));
+                }
+                let sites = module_metadata[i]
+                    .iter()
+                    .map(|&index| {
+                        let meta = &program.metadata[index];
+                        let mut b = ReasonBuilder::new();
+                        let file = b.string(meta.origin.file.as_deref().unwrap_or("nofile"));
+                        let file = b.finish(file);
+                        (
+                            index,
+                            NativeFormSite {
+                                kind: NativeSiteKind::Spec,
+                                scope: TypeName {
+                                    module: module.name.clone(),
+                                    name: String::new(),
+                                    arity: 0,
+                                }
+                                .into(),
+                                file,
+                            },
+                        )
                     })
                     .collect();
-                let params = b.list(params);
-                let metadata = b.tuple(vec![m, fl, body, params]);
-                let any = b.atom("any");
-                let value = b.tuple(vec![metadata, any]);
-                let tag = b.atom(match d.kind {
-                    DeclarationKind::Alias => "type",
-                    DeclarationKind::Opaque => "opaque",
-                    DeclarationKind::Nominal => "nominal",
-                });
-                let n = b.atom(&d.name.name);
-                let arity = b.integer(d.name.arity);
-                let key = b.tuple(vec![tag, n, arity]);
-                own.push((key, value));
-                let _ = file;
-            }
-            for record in forms.records.values().filter(|r| r.module == mid) {
-                let meta = &program.metadata[record.metadata];
-                let file = b.string(meta.origin.file.as_deref().unwrap_or("nofile"));
-                let loc = source_location(&mut b, &meta.origin);
-                let fl = b.tuple(vec![file, loc]);
-                let mut fields = Vec::new();
-                for field in &record.fields {
-                    let name = b.atom(&field.name);
-                    let form = match field.declared_type {
-                        Some(id) => forms.nodes[id.0].raw,
-                        None => generated_variable(&mut b),
-                    };
-                    let any = b.atom("any");
-                    fields.push(b.tuple(vec![name, form, any]));
-                }
-                let fields = b.list(fields);
-                let arity = b.integer(record.fields.len());
-                let variant = b.tuple(vec![arity, fields]);
-                let variants = b.list(vec![variant]);
-                let value = b.tuple(vec![fl, variants]);
-                let tag = b.atom("record");
-                let name = b.atom(&record.name);
-                let key = b.tuple(vec![tag, name]);
-                own.push((key, value));
-            }
-            let table = b.push(ErlangTerm::Map(own));
-            let raw = b.finish(table);
-            let table =
-                ModuleTableHandle::at(raw.arena().clone(), table).map_err(import_failure)?;
-            crate::temporary_contracts::prepare(core, program, mid, &raw, &mut forms, &mut locations)
-                .map_err(import_failure)?;
-            tables.insert(module.name.clone(), table.clone());
-            sources.insert(
-                mid,
-                FormSourceArena {
-                    terms: raw.arena().clone(),
-                    iterator_orders: module.map_iterator_orders.clone(),
-                },
-            );
-            let lazy = LazyFormEnvironment {
-                arena: raw.arena().clone(),
-                tables: BTreeMap::from([(module.name.clone(), raw.id())]),
-            };
-            for d in ordered_declarations(&forms, &module.name) {
-                definitions.insert(
-                    d.name.clone(),
-                    lazy.declaration(&d.name)
-                        .expect("constructed declaration")
-                        .definition()
-                        .map_err(fail)?,
-                );
-            }
-            for (index, meta) in program
-                .metadata
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| m.module == mid)
-            {
-                let mut b = ReasonBuilder::new();
-                let file = b.string(meta.origin.file.as_deref().unwrap_or("nofile"));
-                let file = b.finish(file);
-                sites.insert(
-                    index,
-                    NativeFormSite {
-                        kind: NativeSiteKind::Spec,
-                        scope: TypeName {
-                            module: module.name.clone(),
-                            name: String::new(),
-                            arity: 0,
-                        }
-                        .into(),
-                        file,
+                Ok(ModuleTables {
+                    table,
+                    source: FormSourceArena {
+                        terms: raw.arena().clone(),
+                        iterator_orders: module.map_iterator_orders.clone(),
                     },
-                );
-            }
+                    contracts,
+                    definitions,
+                    sites,
+                })
+            },
+        );
+        for (i, prepared) in prepared.into_iter().enumerate() {
+            let prepared = prepared?;
+            let module = &core.modules[i];
+            crate::temporary_contracts::add(&mut forms, ModuleId(i), prepared.contracts);
+            tables.insert(module.name.clone(), prepared.table);
+            sources.insert(ModuleId(i), prepared.source);
+            definitions.extend(prepared.definitions);
+            sites.extend(prepared.sites);
         }
         timings.mark("forms_and_module_tables");
         let mut resolver = Resolver::new(&forms, &names);
@@ -586,7 +636,7 @@ impl PreparedDefinitions {
             let mut own_types = Vec::new();
             let mut records = Vec::new();
             resolver.replace_cache(FormCache::new());
-            for record in forms.records.values().filter(|r| r.module == mid) {
+            for record in module_records(&forms, mid) {
                 let mut site = sites[&record.metadata].clone();
                 site.kind = NativeSiteKind::Record;
                 site.scope = TypeName {
@@ -703,7 +753,7 @@ impl PreparedDefinitions {
         for (index, module) in core.modules.iter().enumerate() {
             let mid = ModuleId(index);
             resolver.replace_cache(FormCache::new());
-            for r in forms.records.values().filter(|r| r.module == mid) {
+            for r in module_records(&forms, mid) {
                 let mut site = sites[&r.metadata].clone();
                 site.kind = NativeSiteKind::Record;
                 site.scope = TypeName {
@@ -1093,12 +1143,52 @@ fn import_failure(error: impl Into<FormError>) -> PreparationFailure {
     }
 }
 
+/// `module`'s records in key order. Records are keyed by module first, so
+/// they are one range of the map.
+fn module_records(forms: &Forms, module: ModuleId) -> Vec<&crate::forms::Record> {
+    let records = forms
+        .records
+        .range((module, String::new())..)
+        .take_while(|((owner, _), _)| *owner == module)
+        .map(|(_, record)| record)
+        .filter(|record| record.module == module)
+        .collect::<Vec<_>>();
+    if crate::lattice::verify_fast_paths() {
+        let scanned = forms.records.values().filter(|r| r.module == module).collect::<Vec<_>>();
+        assert!(
+            records.len() == scanned.len()
+                && records.iter().zip(&scanned).all(|(a, b)| std::ptr::eq(*a, *b)),
+            "module record range for {module:?}"
+        );
+    }
+    records
+}
 fn ordered_declarations<'a>(forms: &'a Forms, module: &str) -> Vec<&'a crate::forms::Declaration> {
+    // Declarations are keyed by module first: one range of the map.
+    let start = TypeName {
+        module: module.to_owned(),
+        name: String::new(),
+        arity: 0,
+    };
     let mut entries = forms
         .declarations
-        .values()
+        .range(start..)
+        .take_while(|(name, _)| name.module == module)
+        .map(|(_, d)| d)
         .filter(|d| d.name.module == module)
         .collect::<Vec<_>>();
+    if crate::lattice::verify_fast_paths() {
+        let scanned = forms
+            .declarations
+            .values()
+            .filter(|d| d.name.module == module)
+            .collect::<Vec<_>>();
+        assert!(
+            entries.len() == scanned.len()
+                && entries.iter().zip(&scanned).all(|(a, b)| std::ptr::eq(*a, *b)),
+            "module declaration range for {module}"
+        );
+    }
     entries.sort_by_key(|d| {
         (
             match d.kind {

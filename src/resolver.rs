@@ -108,7 +108,18 @@ impl ModuleTableHandle {
 /// Persistent map: `named` snapshots the cache before resolving arguments and
 /// may restore it (as OTP threads its cache), so clones must be O(1) and
 /// inserts must not copy the whole table.
-type CachedTypes = im::OrdMap<(TypeName, Vec<Unfold>, i64), Vec<Cached>>;
+/// Keys and values are shared: the path copies after a snapshot clone every
+/// entry of the copied nodes, and deep-copying names and stacks dominated.
+type CacheKey = (TypeName, Vec<Unfold>, i64);
+type CachedTypes = im::OrdMap<std::sync::Arc<CacheKey>, std::sync::Arc<Vec<Cached>>>;
+fn push_cached(types: &mut CachedTypes, key: CacheKey, cached: Cached) {
+    match types.get_mut(&key) {
+        Some(values) => std::sync::Arc::make_mut(values).push(cached),
+        None => {
+            types.insert(std::sync::Arc::new(key), std::sync::Arc::new(vec![cached]));
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct FormCache {
@@ -135,7 +146,8 @@ impl FormCache {
     pub fn entries(&self) -> Vec<FormCacheEntry> {
         self.types
             .iter()
-            .flat_map(|((name, enclosing, depth), values)| {
+            .flat_map(|(key, values)| {
+                let (name, enclosing, depth) = &**key;
                 values.iter().map(|v| FormCacheEntry {
                     name: name.clone(),
                     enclosing: enclosing.clone(),
@@ -1077,15 +1089,15 @@ impl<'a> Resolver<'a> {
         };
         let cost = left - remainder;
         if cost >= 0 {
-            self.cache
-                .types
-                .entry(cache_key)
-                .or_insert_with(Vec::new)
-                .push(Cached {
+            push_cached(
+                &mut self.cache.types,
+                cache_key,
+                Cached {
                     arguments,
                     value: value.clone(),
                     cost,
-                })
+                },
+            );
         }
         Ok((value, remainder))
     }
@@ -1853,15 +1865,15 @@ impl FormCache {
                 });
             }
             let value = crate::type_exports::type_from_arena(&arena, value[0])?;
-            cache
-                .types
-                .entry((name, enclosing, depth))
-                .or_insert_with(Vec::new)
-                .push(Cached {
+            push_cached(
+                &mut cache.types,
+                (name, enclosing, depth),
+                Cached {
                     arguments,
                     value,
                     cost,
-                });
+                },
+            );
         }
         let ErlangTerm::Map(entries) = &terms[fields[2].0] else {
             return Err("native cache module map shape".into());

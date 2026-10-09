@@ -614,22 +614,34 @@ impl CoreProgram {
     }
     pub fn from_modules(context: &Value, modules: Vec<CoreModule>) -> Result<Self> {
         let mut program = Self::context(context)?;
-        for (index, module) in modules.into_iter().enumerate() {
-            let path = format!("$.modules[{index}]");
-            if program.modules.iter().any(|old| old.name == module.name) {
-                return Err(format!("{path}.name: duplicate module {}", module.name));
+        // Modules validate independently; check them on all cores, then
+        // report the first failure in module order as the sequential loop did.
+        let version = program.version;
+        let indices = (0..modules.len()).collect::<Vec<_>>();
+        let checked = crate::ordered_parallel::parallel_map(&indices, |&index| {
+            let module = &modules[index];
+            let mut kinds = BTreeMap::<&'static str, usize>::new();
+            for node in &module.nodes {
+                *kinds.entry(node.expr.kind()).or_insert(0) += 1;
             }
-            module.validate(&path, program.version)?;
+            (kinds, module.validate(&format!("$.modules[{index}]"), version))
+        });
+        let mut names = std::collections::HashSet::with_capacity(modules.len());
+        for (index, (module, (kinds, valid))) in modules.iter().zip(checked).enumerate() {
+            if !names.insert(module.name.as_str()) {
+                return Err(format!(
+                    "$.modules[{index}].name: duplicate module {}",
+                    module.name
+                ));
+            }
+            valid?;
             program.node_count += module.nodes.len();
             program.term_count += module.terms.len();
-            for node in &module.nodes {
-                *program
-                    .kinds
-                    .entry(node.expr.kind().to_owned())
-                    .or_insert(0) += 1;
+            for (kind, count) in kinds {
+                *program.kinds.entry(kind.to_owned()).or_insert(0) += count;
             }
-            program.modules.push(module);
         }
+        program.modules = modules;
         Ok(program)
     }
     pub fn inspect(&self) -> Inspection {

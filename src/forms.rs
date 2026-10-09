@@ -326,21 +326,26 @@ pub struct Inspection {
 
 impl Forms {
     pub fn build(core: &CoreProgram, program: &Program) -> Result<Self> {
-        Self::build_mode(core, program, false).map_err(|e| e.to_string())
+        let locations =
+            crate::temporary_contracts::locations(core, program).map_err(|e| e.to_string())?;
+        Self::build_mode(core, program, false, &locations).map_err(|e| e.to_string())
     }
+    /// `locations` is `temporary_contracts::locations(core, program)`, which
+    /// the caller computes first (it failed first here) and reuses.
     pub(crate) fn build_deferred(
         core: &CoreProgram,
         program: &Program,
+        locations: &BTreeMap<usize, crate::native_form_environment::RawFormTerm>,
     ) -> std::result::Result<Self, crate::form_error::FormError> {
-        Self::build_mode(core, program, true)
+        Self::build_mode(core, program, true, locations)
     }
     fn build_mode(
         core: &CoreProgram,
         program: &Program,
         deferred: bool,
+        locations: &BTreeMap<usize, crate::native_form_environment::RawFormTerm>,
     ) -> std::result::Result<Self, crate::form_error::FormError> {
         let mut result = Self::default();
-        let locations = crate::temporary_contracts::locations(core, program)?;
         let exports: BTreeSet<_> = program
             .metadata
             .iter()
@@ -348,23 +353,28 @@ impl Forms {
             .flat_map(|m| m.types.iter().cloned())
             .collect();
         let mut optional = Vec::new();
-        let arenas = core
-            .modules
-            .iter()
-            .map(|m| {
-                std::sync::Arc::new(crate::core::ErlangTerms {
-                    root: TermId(0),
-                    terms: m.terms.clone(),
+        // Term arenas of the modules whose raw forms are read here; copying
+        // every module's terms up front cost more than the reads.
+        let mut arenas: Vec<Option<std::sync::Arc<crate::core::ErlangTerms>>> =
+            vec![None; core.modules.len()];
+        let arena = |arenas: &mut Vec<Option<std::sync::Arc<crate::core::ErlangTerms>>>,
+                     module: usize| {
+            arenas[module]
+                .get_or_insert_with(|| {
+                    std::sync::Arc::new(crate::core::ErlangTerms {
+                        root: TermId(0),
+                        terms: core.modules[module].terms.clone(),
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .clone()
+        };
         for meta in program
             .metadata
             .iter()
             .filter(|m| matches!(m.kind, MetadataKind::OptionalCallbacks))
         {
             let raw = crate::native_form_environment::RawFormTerm::new(
-                arenas[meta.module.0].clone(),
+                arena(&mut arenas, meta.module.0),
                 meta.raw,
             )?;
             optional.extend(crate::declaration_key::optional_callbacks(
@@ -435,7 +445,7 @@ impl Forms {
                 }
                 MetadataKind::Spec | MetadataKind::Callback if !deferred => {
                     let raw = crate::native_form_environment::RawFormTerm::new(
-                        arenas[meta.module.0].clone(),
+                        arena(&mut arenas, meta.module.0),
                         meta.raw,
                     )?;
                     for (name, alternatives) in

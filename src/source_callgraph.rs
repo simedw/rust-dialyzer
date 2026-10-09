@@ -127,6 +127,17 @@ impl SourceCallGraph {
         deps: &ClosureDependencies,
         registry: &Registry,
     ) -> Result<Self, CallGraphError> {
+        Self::build_with_layout(nodes, program, deps, registry, None)
+    }
+    /// `build` followed by `attach_layout(layout)`, without first building
+    /// the graph that `attach_layout` replaces.
+    pub fn build_with_layout(
+        nodes: &DataflowNodes<'_>,
+        program: &Program,
+        deps: &ClosureDependencies,
+        registry: &Registry,
+        layout: Option<crate::native_runtime_hash::NativeAtomLayout>,
+    ) -> Result<Self, CallGraphError> {
         let core = nodes.core();
         let labels = nodes.labels();
         let mut vertices = Vec::with_capacity(program.functions.len());
@@ -149,8 +160,12 @@ impl SourceCallGraph {
             vertices.push(vertex);
         }
         let module_functions = module_function_index(program);
-        let mut modules = Vec::new();
-        for (index, m) in core.modules.iter().enumerate() {
+        // Each module's edges read only shared inputs; build them on all
+        // cores. The graph is then built from them in module order, and the
+        // first failing module in module order is reported.
+        let indices = (0..core.modules.len()).collect::<Vec<_>>();
+        let modules = crate::ordered_parallel::setup_map(&indices, |&index| -> Result<ModuleEdges, CallGraphError> {
+            let m = &core.modules[index];
             let module = ModuleId(index);
             let mut order = NativeDictOrder::<DependencyCaller>::default();
             let mut by_label = BTreeMap::new();
@@ -305,14 +320,16 @@ impl SourceCallGraph {
                 calls.reverse();
                 edges.extend(calls);
             }
-            modules.push(ModuleEdges {
+            Ok(ModuleEdges {
                 confirmed,
                 edges,
                 escaping,
                 self_recursive,
-            });
-        }
-        let graph = graph_from_modules(&modules, None)?;
+            })
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+        let graph = graph_from_modules(&modules, layout)?;
         Ok(Self {
             modules,
             named_labels,

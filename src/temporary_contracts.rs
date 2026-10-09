@@ -179,11 +179,15 @@ pub(crate) fn locations(
     }
     Ok(output)
 }
+/// Lazily computed `locations`. Preparation now computes them once up front
+/// and shares them with `Forms`; kept for its tests of `locations`.
+#[cfg(test)]
 pub(crate) struct LocationSnapshot<'a> {
     core: &'a CoreProgram,
     program: &'a Program,
     values: Option<BTreeMap<usize, RawFormTerm>>,
 }
+#[cfg(test)]
 impl<'a> LocationSnapshot<'a> {
     pub(crate) fn new(core: &'a CoreProgram, program: &'a Program) -> Self {
         Self { core, program, values: None }
@@ -195,26 +199,61 @@ impl<'a> LocationSnapshot<'a> {
         Ok(self.values.as_ref().expect("initialized locations"))
     }
 }
-pub(crate) fn prepare(
+/// A module's contract, read by `prepare_module`; `add` defers its
+/// alternatives and records it in `Forms`.
+pub(crate) struct PendingContract {
+    name: DeclarationKey,
+    callback: bool,
+    optional: bool,
+    alternatives: Vec<TermId>,
+    metadata: usize,
+    file_location: RawFormTerm,
+}
+/// Defers each contract's alternatives and appends the contracts, in order.
+pub(crate) fn add(forms: &mut Forms, module: ModuleId, pending: Vec<PendingContract>) {
+    for contract in pending {
+        let alternatives = contract
+            .alternatives
+            .into_iter()
+            .map(|id| forms.defer(module, id))
+            .collect();
+        forms.contracts.push(Contract {
+            name: contract.name,
+            callback: contract.callback,
+            optional: contract.optional,
+            alternatives,
+            metadata: contract.metadata,
+            file_location: contract.file_location,
+        });
+    }
+}
+/// Reads `module`'s specs and callbacks. Only reads shared state, so modules
+/// can be prepared concurrently; `add` then applies them in module order.
+/// `metadata` lists the module's metadata indices in order; `arena` is the
+/// module's terms when the caller already shares a copy.
+pub(crate) fn prepare_module(
     core: &CoreProgram,
     program: &Program,
     module: ModuleId,
+    metadata: &[usize],
     records: &RawFormTerm,
-    forms: &mut Forms,
-    locations: &mut LocationSnapshot<'_>,
-) -> Result<()> {
+    locations: &BTreeMap<usize, RawFormTerm>,
+    arena: Option<Arc<ErlangTerms>>,
+) -> Result<Vec<PendingContract>> {
     let source = &core.modules[module.0];
-    let arena = Arc::new(ErlangTerms {
-        root: TermId(0),
-        terms: source.terms.clone(),
+    let mut pending = Vec::new();
+    let arena = arena.unwrap_or_else(|| {
+        Arc::new(ErlangTerms {
+            root: TermId(0),
+            terms: source.terms.clone(),
+        })
     });
     let raw = |id| RawFormTerm::new(arena.clone(), id);
-    let locations = locations.get()?;
     let mut optional = Vec::new();
-    for meta in program
-        .metadata
+    for meta in metadata
         .iter()
-        .filter(|m| m.module == module && matches!(m.kind, MetadataKind::OptionalCallbacks))
+        .map(|&index| &program.metadata[index])
+        .filter(|m| matches!(m.kind, MetadataKind::OptionalCallbacks))
     {
         optional.extend(crate::declaration_key::optional_callbacks(
             &source.name,
@@ -223,9 +262,11 @@ pub(crate) fn prepare(
     }
     let mut specs = BTreeMap::<DeclarationKey, TemporaryContract>::new();
     let mut callbacks = BTreeMap::<DeclarationKey, TemporaryContract>::new();
-    for (metadata, meta) in program.metadata.iter().enumerate().filter(|(_, m)| {
-        m.module == module && matches!(m.kind, MetadataKind::Spec | MetadataKind::Callback)
-    }) {
+    for (metadata, meta) in metadata
+        .iter()
+        .map(|&index| (index, &program.metadata[index]))
+        .filter(|(_, m)| matches!(m.kind, MetadataKind::Spec | MetadataKind::Callback))
+    {
         for (key, alternatives) in
             crate::declaration_key::declarations(&source.name, &raw(meta.raw)?)?
         {
@@ -315,11 +356,7 @@ pub(crate) fn prepare(
                     flags: at(flags)?,
                 },
             );
-            let alternatives = alternatives
-                .into_iter()
-                .map(|id| forms.defer(module, id))
-                .collect();
-            forms.contracts.push(Contract {
+            pending.push(PendingContract {
                 name: key,
                 callback: matches!(meta.kind, MetadataKind::Callback),
                 optional: is_optional,
@@ -329,7 +366,7 @@ pub(crate) fn prepare(
             });
         }
     }
-    Ok(())
+    Ok(pending)
 }
 
 #[cfg(test)]
