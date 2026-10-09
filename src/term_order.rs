@@ -273,31 +273,33 @@ impl CaptureEnvironment {
                 },
                 Node::Runtime(kind, identity) => CaptureTerm::Runtime {
                     kind: *kind,
-                    identity: identity.clone(),
+                    identity: (**identity).clone(),
                 },
-                Node::Function(CapturedFunction::Local {
-                    module,
-                    new_index,
-                    old_uniq,
-                    arity,
-                    name,
-                    environment,
-                }) => CaptureTerm::Function(CapturedFunction::Local {
-                    module: module.clone(),
-                    new_index: *new_index,
-                    old_uniq: *old_uniq,
-                    arity: *arity,
-                    name: name.clone(),
-                    environment: environment.iter().map(|n| id(n.0)).collect(),
-                }),
-                Node::Function(CapturedFunction::External {
-                    module,
-                    function,
-                    arity,
-                }) => CaptureTerm::Function(CapturedFunction::External {
-                    module: module.clone(),
-                    function: function.clone(),
-                    arity: *arity,
+                Node::Function(fun) => CaptureTerm::Function(match &**fun {
+                    CapturedFunction::Local {
+                        module,
+                        new_index,
+                        old_uniq,
+                        arity,
+                        name,
+                        environment,
+                    } => CapturedFunction::Local {
+                        module: module.clone(),
+                        new_index: *new_index,
+                        old_uniq: *old_uniq,
+                        arity: *arity,
+                        name: name.clone(),
+                        environment: environment.iter().map(|n| id(n.0)).collect(),
+                    },
+                    CapturedFunction::External {
+                        module,
+                        function,
+                        arity,
+                    } => CapturedFunction::External {
+                        module: module.clone(),
+                        function: function.clone(),
+                        arity: *arity,
+                    },
                 }),
             });
         }
@@ -555,9 +557,10 @@ pub fn parse_captures(value: &serde_json::Value) -> Result<(TermOrderArena, Capt
 }
 type Id = usize;
 #[derive(Clone, Debug)]
+/// Rare variants are boxed to keep nodes small: arenas hold one per term.
 enum Node {
-    Function(CapturedFunction),
-    Runtime(RuntimeKind, RuntimeIdentity),
+    Function(Box<CapturedFunction>),
+    Runtime(RuntimeKind, Box<RuntimeIdentity>),
     Integer(BigInt),
     Float(f64),
     Atom(String),
@@ -680,27 +683,29 @@ impl TermOrderArena {
                 }
                 CanonicalKey::Bits(normalized, *bits)
             }
-            Node::Runtime(k, id) => CanonicalKey::Runtime(*k, id.clone()),
-            Node::Function(CapturedFunction::Local {
-                module,
-                new_index,
-                old_uniq,
-                environment,
-                ..
-            }) => CanonicalKey::LocalFunction(
-                module.clone(),
-                *new_index,
-                *old_uniq,
-                environment
-                    .iter()
-                    .map(|x| self.canonical_ids[x.0])
-                    .collect(),
-            ),
-            Node::Function(CapturedFunction::External {
-                module,
-                function,
-                arity,
-            }) => CanonicalKey::ExternalFunction(module.clone(), function.clone(), *arity),
+            Node::Runtime(k, id) => CanonicalKey::Runtime(*k, (**id).clone()),
+            Node::Function(fun) => match &**fun {
+                CapturedFunction::Local {
+                    module,
+                    new_index,
+                    old_uniq,
+                    environment,
+                    ..
+                } => CanonicalKey::LocalFunction(
+                    module.clone(),
+                    *new_index,
+                    *old_uniq,
+                    environment
+                        .iter()
+                        .map(|x| self.canonical_ids[x.0])
+                        .collect(),
+                ),
+                CapturedFunction::External {
+                    module,
+                    function,
+                    arity,
+                } => CanonicalKey::ExternalFunction(module.clone(), function.clone(), *arity),
+            },
         };
         if let Some(id) = self.intern.get(&key) {
             return *id;
@@ -828,13 +833,13 @@ impl TermOrderArena {
                             }
                         }
                     };
-                    Node::Function(fun)
+                    Node::Function(Box::new(fun))
                 }
                 CaptureTerm::Runtime { kind, identity } => {
                     if identity.scope.is_empty() || identity.object.is_empty() {
                         return Err("opaque runtime identities require a scope and object".into());
                     }
-                    Node::Runtime(*kind, identity.clone())
+                    Node::Runtime(*kind, Box::new(identity.clone()))
                 }
             };
             let id = out.append_capture(node);
@@ -949,7 +954,10 @@ impl TermOrderArena {
                 .ok_or_else(|| "term children must precede their parents".to_owned())
         };
         let node = match term {
-            ErlangTerm::Integer(n) => Node::Integer(n.parse().map_err(|_| "invalid integer")?),
+            ErlangTerm::Integer(n) => Node::Integer(match n.parse::<i64>() {
+                Ok(small) => BigInt::from(small),
+                Err(_) => n.parse().map_err(|_| "invalid integer")?,
+            }),
             ErlangTerm::Float(bits) => {
                 let n = f64::from_bits(*bits);
                 if !n.is_finite() {
@@ -961,11 +969,11 @@ impl TermOrderArena {
                 module,
                 function,
                 arity,
-            } => Node::Function(CapturedFunction::External {
+            } => Node::Function(Box::new(CapturedFunction::External {
                 module: module.clone(),
                 function: function.clone(),
                 arity: usize::from(*arity),
-            }),
+            })),
             ErlangTerm::Atom(n) => Node::Atom(n.clone()),
             ErlangTerm::Tuple(xs) => Node::Tuple(xs.iter().map(at).collect::<Result<_, _>>()?),
             ErlangTerm::Map(xs) => Node::Map(
@@ -1319,7 +1327,7 @@ fn compare(
                     | (Node::Function(_), Node::Runtime(RuntimeKind::Function, _)) => {
                         return Err("comparison reached opaque and known functions".into());
                     }
-                    (Node::Function(a), Node::Function(b)) => match (a, b) {
+                    (Node::Function(a), Node::Function(b)) => match (&**a, &**b) {
                         (
                             CapturedFunction::Local {
                                 module: am,
