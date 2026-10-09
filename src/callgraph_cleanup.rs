@@ -79,9 +79,11 @@ fn mfa_value(mfa: &Mfa) -> NativeValue {
 /// Source version2 sets enumeration of intermodule named call edges.
 pub fn non_local_calls(graph: &SourceCallGraph) -> Result<Vec<Call>> {
     let g = graph.source_graph();
+    // Collected into a map by key and then ordered by key, so the edges are
+    // read in no particular order (runtime order copies every edge key).
+    g.layout().map_err(CallGraphError::RuntimeOrdering)?;
     let mut by_key = BTreeMap::new();
-    for id in g.ordered_edges().map_err(CallGraphError::RuntimeOrdering)? {
-        let edge = g.edge(&id).ok_or("canonical graph edge missing")?;
+    for edge in g.unordered_edges() {
         if let (GraphVertex::Named { module: a, .. }, GraphVertex::Named { module: b, .. }) = edge
             && a != b
         {
@@ -95,6 +97,23 @@ pub fn non_local_calls(graph: &SourceCallGraph) -> Result<Vec<Call>> {
             ]);
             by_key.insert(key, edge.clone());
         }
+    }
+    if crate::lattice::verify_fast_paths() {
+        let mut ordered = BTreeMap::new();
+        for id in g.ordered_edges().map_err(CallGraphError::RuntimeOrdering)? {
+            let edge = g.edge(&id).ok_or("canonical graph edge missing")?;
+            if let (GraphVertex::Named { module: a, .. }, GraphVertex::Named { module: b, .. }) =
+                edge
+                && a != b
+            {
+                let key = NativeHashKey::Tuple(vec![
+                    edge.0.runtime_key().map_err(CallGraphError::RuntimeOrdering)?,
+                    edge.1.runtime_key().map_err(CallGraphError::RuntimeOrdering)?,
+                ]);
+                ordered.insert(key, edge.clone());
+            }
+        }
+        assert!(ordered == by_key, "non-local call edges");
     }
     crate::native_map_order::ordered_keys(
         g.layout().map_err(CallGraphError::RuntimeOrdering)?,
@@ -111,20 +130,17 @@ pub fn non_local_calls(graph: &SourceCallGraph) -> Result<Vec<Call>> {
 }
 pub fn module_dependencies(graph: &SourceCallGraph) -> Result<BTreeMap<String, BTreeSet<String>>> {
     let g = graph.source_graph();
+    // Maps of sets: vertices and edges are read in no particular order.
+    g.layout().map_err(CallGraphError::RuntimeOrdering)?;
     let mut result = BTreeMap::new();
-    for v in g
-        .ordered_vertices()
-        .map_err(CallGraphError::RuntimeOrdering)?
-    {
+    for v in g.unordered_vertices() {
         if let GraphVertex::Named { module, .. } = v {
-            result.entry(module).or_insert_with(BTreeSet::new);
+            result.entry(module.clone()).or_insert_with(BTreeSet::new);
         }
     }
-    for id in g.ordered_edges().map_err(CallGraphError::RuntimeOrdering)? {
-        if let Some((
-            GraphVertex::Named { module: from, .. },
-            GraphVertex::Named { module: to, .. },
-        )) = g.edge(&id)
+    for edge in g.unordered_edges() {
+        if let (GraphVertex::Named { module: from, .. }, GraphVertex::Named { module: to, .. }) =
+            edge
             && from != to
         {
             result
@@ -132,6 +148,26 @@ pub fn module_dependencies(graph: &SourceCallGraph) -> Result<BTreeMap<String, B
                 .ok_or("module vertex missing")?
                 .insert(from.clone());
         }
+    }
+    if crate::lattice::verify_fast_paths() {
+        let mut ordered = BTreeMap::new();
+        for v in g.ordered_vertices().map_err(CallGraphError::RuntimeOrdering)? {
+            if let GraphVertex::Named { module, .. } = v {
+                ordered.entry(module).or_insert_with(BTreeSet::new);
+            }
+        }
+        for id in g.ordered_edges().map_err(CallGraphError::RuntimeOrdering)? {
+            if let Some((
+                GraphVertex::Named { module: from, .. },
+                GraphVertex::Named { module: to, .. },
+            )) = g.edge(&id)
+                && from != to
+                && let Some(callers) = ordered.get_mut(to)
+            {
+                callers.insert(from.clone());
+            }
+        }
+        assert_eq!(ordered, result, "module call dependencies");
     }
     Ok(result)
 }

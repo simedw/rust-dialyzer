@@ -90,6 +90,29 @@ fn index_function_names(named_labels: &BTreeMap<GraphVertex, CoreLabel>) -> BTre
     names
 }
 
+/// The parts of `CorePhases` that read only the definitions, the folded Core
+/// and the labels. Failures surface in `CorePhases::with_prepared`, in the
+/// order `CorePhases::new` reported them.
+pub struct PreparedPhaseInputs<'a> {
+    records: Result<PreparedRecords, String>,
+    folded_nodes: Result<DataflowNodes<'a>, String>,
+    guard_literals: Result<GuardLiterals<'a>, String>,
+}
+impl<'a> PreparedPhaseInputs<'a> {
+    pub fn build(
+        definitions: &PreparedDefinitions,
+        folded: &'a FoldedCore,
+        labels: &'a crate::labels::Labels,
+        modules: usize,
+    ) -> Self {
+        Self {
+            records: PreparedRecords::for_modules(definitions, (0..modules).map(ModuleId)),
+            folded_nodes: DataflowNodes::build(&folded.program, labels),
+            guard_literals: GuardLiterals::new(folded),
+        }
+    }
+}
+
 pub struct CorePhases<'a> {
     pub nodes: &'a DataflowNodes<'a>,
     pub program: &'a Program,
@@ -123,14 +146,25 @@ impl<'a> CorePhases<'a> {
         library: &'a Store,
         solvers: SolverSelection,
     ) -> Result<Self, CorePhaseError> {
-        let records = PreparedRecords::for_modules(
+        let prepared = PreparedPhaseInputs::build(
             inputs.definitions,
-            (0..inputs.nodes.core().modules.len()).map(ModuleId),
-        )
-        .map_err(CorePhaseError::Boundary)?;
-        let folded_nodes = DataflowNodes::build(&inputs.folded.program, inputs.nodes.labels())
-            .map_err(CorePhaseError::Boundary)?;
-        let guard_literals = GuardLiterals::new(inputs.folded).map_err(CorePhaseError::Boundary)?;
+            inputs.folded,
+            inputs.nodes.labels(),
+            inputs.nodes.core().modules.len(),
+        );
+        Self::with_prepared(inputs, library, solvers, prepared)
+    }
+    /// `new` with the parts that need only definitions and the folded Core
+    /// built ahead, alongside other setup.
+    pub fn with_prepared(
+        inputs: CorePhaseInputs<'a>,
+        library: &'a Store,
+        solvers: SolverSelection,
+        prepared: PreparedPhaseInputs<'a>,
+    ) -> Result<Self, CorePhaseError> {
+        let records = prepared.records.map_err(CorePhaseError::Boundary)?;
+        let folded_nodes = prepared.folded_nodes.map_err(CorePhaseError::Boundary)?;
+        let guard_literals = prepared.guard_literals.map_err(CorePhaseError::Boundary)?;
         let world = CallWorld::from_library(library);
         let mut phases = Self {
             nodes: inputs.nodes,

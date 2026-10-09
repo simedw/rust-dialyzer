@@ -57,6 +57,8 @@ pub struct SourceSchedule<A: RuntimeReferenceAllocator> {
     allocator: A,
     epoch: u64,
     active: ActiveGraph,
+    /// The outcome of `finalize`, computed ahead by `prefinalize`.
+    prefinalized: Option<Result<Vec<OrderedScc>, ScheduleError<A::Error>>>,
 }
 impl<A: RuntimeReferenceAllocator> SourceSchedule<A> {
     pub fn new(
@@ -75,7 +77,15 @@ impl<A: RuntimeReferenceAllocator> SourceSchedule<A> {
             allocator,
             epoch: 0,
             active: ActiveGraph::Undefined,
+            prefinalized: None,
         })
+    }
+    /// Runs `finalize(graph)` now and keeps its outcome for the first
+    /// `finalize` call, which must be for the same graph. Finalizing reads only
+    /// the call graph, so setup does it while other preparation runs.
+    pub fn prefinalize(&mut self, graph: &SourceCallGraph) {
+        let outcome = self.condense(graph.source_graph());
+        self.prefinalized = Some(outcome);
     }
     pub fn runtime(&self) -> &GenerationRuntimeCaptures {
         &self.runtime
@@ -102,6 +112,9 @@ impl<A: RuntimeReferenceAllocator> SourceSchedule<A> {
         &mut self,
         graph: &SourceCallGraph,
     ) -> Result<Vec<OrderedScc>, ScheduleError<A::Error>> {
+        if let Some(outcome) = self.prefinalized.take() {
+            return outcome;
+        }
         self.condense(graph.source_graph())
     }
     pub fn reset_from_functions(
@@ -210,15 +223,27 @@ impl<A: RuntimeReferenceAllocator> SourceSchedule<A> {
                 ids.insert(v.clone(), index as u64 + 1);
             }
         }
+        // A map of sets: the edge order does not matter, so the edges are not
+        // enumerated in runtime order (which copies every edge key).
+        graph.layout()?;
         let mut outgoing = BTreeMap::<u64, BTreeSet<u64>>::new();
-        for edge in graph.ordered_edges()? {
-            if let Some((from, to)) = graph.edge(&edge) {
-                let from = ids[from];
-                let to = ids[to];
-                if from != to {
-                    outgoing.entry(from).or_default().insert(to);
+        for (from, to) in graph.unordered_edges() {
+            let from = ids[from];
+            let to = ids[to];
+            if from != to {
+                outgoing.entry(from).or_default().insert(to);
+            }
+        }
+        if crate::lattice::verify_fast_paths() {
+            let mut ordered = BTreeMap::<u64, BTreeSet<u64>>::new();
+            for edge in graph.ordered_edges()? {
+                if let Some((from, to)) = graph.edge(&edge)
+                    && ids[from] != ids[to]
+                {
+                    ordered.entry(ids[from]).or_default().insert(ids[to]);
                 }
             }
+            assert_eq!(ordered, outgoing, "condensation edges");
         }
         let mut condensed = SourceDigraph::new(Some(graph.layout()?.clone()), false);
         for (from, tos) in &outgoing {

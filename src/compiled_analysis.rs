@@ -6,7 +6,7 @@ use crate::{
     compiled_definitions::PreparedDefinitions,
     constraints::{analyze_scc::SolverSelection, closure_order::ClosureCodeProfile},
     core::CoreProgram,
-    core_phases::CorePhaseInputs,
+    core_phases::{CorePhaseInputs, PreparedPhaseInputs},
     core_pipeline::{self, CollectedAnalysis},
     dataflow_nodes::DataflowNodes,
     dependencies::{ImportPlan, PriorPlt, Store},
@@ -126,16 +126,27 @@ fn analyze_phases(
     );
     let labels = labels?;
     timings.mark("setup_independent");
-    let (definitions, (nodes, dependencies, graph, cleanup)) = join(
+    let scope = format!("rust-analysis/{}", layout.scope);
+    // Each branch also builds what the core pipeline needs from its results
+    // (the refinement inputs from the definitions, the first schedule from
+    // the cleaned call graph), so the pipeline starts on them right away.
+    let ((definitions, prepared_phases), (nodes, dependencies, graph, cleanup, schedule)) = join(
         || {
             let (Ok(prior), Ok(program)) = (&prior, &program) else {
-                return None;
+                return (None, None);
             };
-            Some(
-                prior
-                    .prepare_definitions(core, program)
-                    .map_err(|error| error.to_string()),
-            )
+            let definitions = prior
+                .prepare_definitions(core, program)
+                .map_err(|error| error.to_string());
+            let prepared = definitions.as_ref().ok().map(|definitions| {
+                let mut timings = PhaseTimings::new("setup_branch");
+                timings.label(|| "refinement_inputs".into());
+                let prepared =
+                    PreparedPhaseInputs::build(definitions, &folded, &labels, core.modules.len());
+                timings.mark("refinement_inputs");
+                prepared
+            });
+            (Some(definitions), prepared)
         },
         || {
             let mut timings = PhaseTimings::new("setup_branch");
@@ -151,12 +162,14 @@ fn analyze_phases(
             timings.mark("dataflow_and_dependencies");
             let mut graph = match (&nodes, &program, &dependencies) {
                 (Ok(nodes), Ok(program), Some(Ok(dependencies))) => Some(
-                    SourceCallGraph::build(nodes, program, dependencies, input.bifs)
-                        .and_then(|mut graph| {
-                            graph.attach_layout(layout.clone())?;
-                            Ok(graph)
-                        })
-                        .map_err(|error| error.to_string()),
+                    SourceCallGraph::build_with_layout(
+                        nodes,
+                        program,
+                        dependencies,
+                        input.bifs,
+                        Some(layout.clone()),
+                    )
+                    .map_err(|error| error.to_string()),
                 ),
                 _ => None,
             };
@@ -193,7 +206,19 @@ fn analyze_phases(
                 _ => None,
             };
             timings.mark("cleanup");
-            (nodes, dependencies, graph, cleanup)
+            let schedule = match (&nodes, &program, &graph, &cleanup) {
+                (Ok(nodes), Ok(program), Some(Ok(graph)), Some(Ok(_))) => {
+                    Some(core_pipeline::prepare_schedule(
+                        graph,
+                        program,
+                        nodes.labels().next_label,
+                        scope.clone(),
+                    ))
+                }
+                _ => None,
+            };
+            timings.mark("schedule");
+            (nodes, dependencies, graph, cleanup, schedule)
         },
     );
     timings.mark("setup_dependent");
@@ -227,9 +252,13 @@ fn analyze_phases(
     timings.mark("callback_preparation");
     // Module dependency publication does not read the analysis; it runs
     // alongside it.
+    let prepared = match (schedule, prepared_phases) {
+        (Some(schedule), Some(phases)) => Some(core_pipeline::PreparedPipeline { schedule, phases }),
+        _ => None,
+    };
     let (analysis, module_dependencies) = join(
         || {
-            core_pipeline::analyze(
+            core_pipeline::analyze_prepared(
                 CorePhaseInputs {
                     nodes: &nodes,
                     program: &program,
@@ -243,10 +272,11 @@ fn analyze_phases(
                 &library,
                 &callbacks,
                 layout,
-                format!("rust-analysis/{}", layout.scope),
+                scope,
                 input.solvers,
                 input.mode,
                 input.report_modules.as_ref(),
+                prepared,
             )
             .map_err(|error| format!("{error:?}"))
         },

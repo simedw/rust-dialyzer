@@ -4,12 +4,12 @@ use crate::{
     },
     contract_book::ContractBook,
     core_analysis::{AnalysisError, AnalysisState, CoreAnalyzer},
-    core_phases::{CorePhaseError, CorePhaseInputs, CorePhases},
+    core_phases::{CorePhaseError, CorePhaseInputs, CorePhases, PreparedPhaseInputs},
     dependencies::Store,
     diagnostic_inputs::{DiagnosticInputError, DiagnosticInputs, TargetCallbackState},
     native_runtime_hash::NativeAtomLayout,
     program::ModuleId,
-    source_callgraph::GraphVertex,
+    source_callgraph::{GraphVertex, SourceCallGraph},
     source_schedule::{ScheduleError, ScopedReferenceAllocator, SourceSchedule},
     success_phase::FunctionTypes,
     warning_payload::NativeWarning,
@@ -37,6 +37,27 @@ pub struct CollectedAnalysis {
     pub raw_warnings: Vec<NativeWarning>,
 }
 
+pub type PipelineSchedule = SourceSchedule<ScopedReferenceAllocator>;
+
+/// The schedule `analyze` starts from, with its first `finalize` (the
+/// condensation of the whole call graph) already done. It reads only the
+/// cleaned call graph and the program, so setup builds it alongside the
+/// definitions; failures surface where `analyze` reported them.
+pub fn prepare_schedule(
+    graph: &SourceCallGraph,
+    program: &crate::program::Program,
+    next_core_label: crate::labels::CoreLabel,
+    scope: String,
+) -> Result<PipelineSchedule, PipelineError> {
+    let runtime = GenerationRuntimeCaptures::for_analysis(scope.clone(), next_core_label, program)
+        .map_err(PipelineError::Boundary)?;
+    let allocator = ScopedReferenceAllocator::new(scope)
+        .map_err(|error| PipelineError::Boundary(format!("{error:?}")))?;
+    let mut schedule = SourceSchedule::new(runtime, allocator).map_err(PipelineError::Schedule)?;
+    schedule.prefinalize(graph);
+    Ok(schedule)
+}
+
 pub fn analyze<'a>(
     inputs: CorePhaseInputs<'a>,
     library: &'a Store,
@@ -46,6 +67,30 @@ pub fn analyze<'a>(
     solvers: SolverSelection,
     mode: AnalysisMode,
     report_modules: Option<&BTreeSet<String>>,
+) -> Result<CollectedAnalysis, PipelineError> {
+    analyze_prepared(
+        inputs, library, callbacks, layout, scope, solvers, mode, report_modules, None,
+    )
+}
+
+/// What setup prepared ahead for `analyze_prepared`.
+pub struct PreparedPipeline<'a> {
+    pub schedule: Result<PipelineSchedule, PipelineError>,
+    pub phases: PreparedPhaseInputs<'a>,
+}
+
+/// `analyze`, starting from parts setup built ahead when given.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_prepared<'a>(
+    inputs: CorePhaseInputs<'a>,
+    library: &'a Store,
+    callbacks: &TargetCallbackState<'a>,
+    layout: &NativeAtomLayout,
+    scope: String,
+    solvers: SolverSelection,
+    mode: AnalysisMode,
+    report_modules: Option<&BTreeSet<String>>,
+    prepared: Option<PreparedPipeline<'a>>,
 ) -> Result<CollectedAnalysis, PipelineError> {
     let mut timings = crate::phase_timings::PhaseTimings::new("core_pipeline");
     let analyzer = CoreAnalyzer {
@@ -84,17 +129,30 @@ pub fn analyze<'a>(
         .callables()
         .map(|(name, contract)| (name.clone(), (*contract.summary).clone()))
         .collect();
-    let runtime = GenerationRuntimeCaptures::for_analysis(
-        scope.clone(),
-        analyzer.next_core_label,
-        inputs.program,
-    )
-    .map_err(PipelineError::Boundary)?;
-    let allocator = ScopedReferenceAllocator::new(scope)
-        .map_err(|error| PipelineError::Boundary(format!("{error:?}")))?;
-    let mut schedule = SourceSchedule::new(runtime, allocator).map_err(PipelineError::Schedule)?;
     let graph = inputs.graph;
-    let mut phases = CorePhases::new(inputs, library, solvers).map_err(PipelineError::Phase)?;
+    let (mut schedule, mut phases) = match prepared {
+        Some(prepared) => {
+            let schedule = prepared.schedule?;
+            let phases = CorePhases::with_prepared(inputs, library, solvers, prepared.phases)
+                .map_err(PipelineError::Phase)?;
+            (schedule, phases)
+        }
+        None => {
+            let runtime = GenerationRuntimeCaptures::for_analysis(
+                scope.clone(),
+                analyzer.next_core_label,
+                inputs.program,
+            )
+            .map_err(PipelineError::Boundary)?;
+            let allocator = ScopedReferenceAllocator::new(scope)
+                .map_err(|error| PipelineError::Boundary(format!("{error:?}")))?;
+            let schedule =
+                SourceSchedule::new(runtime, allocator).map_err(PipelineError::Schedule)?;
+            let phases =
+                CorePhases::new(inputs, library, solvers).map_err(PipelineError::Phase)?;
+            (schedule, phases)
+        }
+    };
     timings.mark("setup");
     let state = analyzer
         .run(
