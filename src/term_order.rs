@@ -379,6 +379,10 @@ impl CaptureEnvironment {
             CaptureId(source.root.0),
         )
     }
+    /// Two native environments compare without building, so infallibly.
+    pub fn is_native(&self) -> bool {
+        matches!(self.form, EnvironmentForm::Native(_))
+    }
     pub fn compare(&self, other: &Self) -> Result<Ordering, String> {
         if let (EnvironmentForm::Native(a), EnvironmentForm::Native(b)) = (&self.form, &other.form)
         {

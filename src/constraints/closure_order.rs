@@ -64,6 +64,13 @@ impl ClosureOrderKey {
             environment,
         }))
     }
+    /// Whether comparing two keys that both satisfy this cannot fail.
+    pub fn compares_infallibly(&self) -> bool {
+        match self {
+            Self::Local(closure) => closure.environment.is_native(),
+            Self::External { .. } => true,
+        }
+    }
     pub fn compare(&self, other: &Self) -> Result<Ordering, String> {
         match (self, other) {
             (Self::Local(a), Self::Local(b)) => {

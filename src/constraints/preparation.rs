@@ -1,5 +1,5 @@
 use crate::constraints::normalize::{
-    GroupKind, NativeConstraint, NativeConstraintArena, NativeConstraintId,
+    GroupKind, NativeConstraint, NativeConstraintArena, NativeConstraintId, NativeOperand,
 };
 use crate::constraints::tree::FunctionVariable;
 use crate::lattice::VariableId;
@@ -14,6 +14,7 @@ pub struct PreparedNode {
     pub source: NativeConstraintId,
     pub children: Vec<PreparedNodeId>,
     pub dependencies: BTreeSet<VariableId>,
+    /// Child positions per variable, zero-based as the solver uses them.
     pub masks: Option<BTreeMap<VariableId, BTreeSet<usize>>>,
     pub list_id: Option<NativeListId>,
 }
@@ -55,6 +56,26 @@ impl PreparedConstruction {
         functions: &[FunctionBody],
         dependency_retention: DependencyRetention,
     ) -> Result<Self, String> {
+        let out = Self::build_with(arena, functions, dependency_retention, false)?;
+        if crate::lattice::verify_fast_paths() {
+            let copied = Self::build_with(arena, functions, dependency_retention, true)?;
+            assert_eq!(
+                out.to_value(arena)?,
+                copied.to_value(arena)?,
+                "in-place preparation diverged from copying preparation"
+            );
+        }
+        Ok(out)
+    }
+    /// `copying` keeps every rewritten node as a fresh copy and groups flat
+    /// prefixes through the arena, the reference the in-place rewrite is
+    /// checked against.
+    fn build_with(
+        arena: &mut NativeConstraintArena,
+        functions: &[FunctionBody],
+        dependency_retention: DependencyRetention,
+        copying: bool,
+    ) -> Result<Self, String> {
         let mut out = Self {
             dependency_retention,
             nodes: Vec::new(),
@@ -75,7 +96,7 @@ impl PreparedConstruction {
             for f in functions {
                 let root = out.bodies[&f.function];
                 let old_deps = out.nodes[root.0].dependencies.clone();
-                let new = out.rewrite(arena, root, phase)?;
+                let new = out.rewrite(arena, root, phase, copying)?;
                 if matches!(phase, Phase::Order) {
                     out.nodes[new.0].dependencies = old_deps;
                 }
@@ -88,7 +109,7 @@ impl PreparedConstruction {
         Ok(out)
     }
     pub fn into_tree(
-        self,
+        mut self,
         arena: NativeConstraintArena,
         parameters: BTreeMap<FunctionVariable, FunctionParameters>,
         entry_functions: Vec<FunctionVariable>,
@@ -107,6 +128,12 @@ impl PreparedConstruction {
         {
             return Err("entry function catalogue is empty or undefined".into());
         }
+        let entry_deps: Vec<_> = entry_functions
+            .iter()
+            .map(|function| self.nodes[self.bodies[function].0].dependencies.clone())
+            .collect();
+        // Every prepared node is reachable once, so its sets move into the tree.
+        let mut taken = vec![false; self.nodes.len()];
         let mut nodes = Vec::new();
         let mut definitions = BTreeMap::new();
         for (function, root) in &self.bodies {
@@ -125,8 +152,12 @@ impl PreparedConstruction {
                         }
                     }
                     Work::Exit(id) => {
-                        let n = &self.nodes[id.0];
+                        if std::mem::replace(&mut taken[id.0], true) {
+                            return Err("prepared node reached twice".into());
+                        }
+                        let n = &mut self.nodes[id.0];
                         let children = built.split_off(built.len() - n.children.len());
+                        let dependencies = std::mem::take(&mut n.dependencies);
                         let constraint = match arena
                             .node(n.source)
                             .ok_or("foreign prepared source")?
@@ -143,7 +174,7 @@ impl PreparedConstruction {
                             }),
                             NativeConstraint::Reference { function, .. } => Constraint::Reference {
                                 function: function.clone(),
-                                dependencies: n.dependencies.clone(),
+                                dependencies: dependencies.clone(),
                             },
                             NativeConstraint::Group { kind, .. } => {
                                 if *kind == GroupKind::Conjunction {
@@ -153,19 +184,11 @@ impl PreparedConstruction {
                                 }
                             }
                         };
-                        let masks = n
-                            .masks
-                            .as_ref()
-                            .map(|m| {
-                                m.iter()
-                                    .map(|(v, xs)| (v.clone(), xs.iter().map(|x| x - 1).collect()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
+                        let masks = n.masks.take().unwrap_or_default();
                         built.push(ConstraintId(nodes.len()));
                         nodes.push(ConstraintNode {
                             constraint,
-                            dependencies: n.dependencies.clone(),
+                            dependencies,
                             masks,
                         });
                     }
@@ -186,8 +209,7 @@ impl PreparedConstruction {
         let mut entries = Vec::new();
         let mut root_deps = BTreeSet::new();
         let mut root_masks: BTreeMap<VariableId, BTreeSet<usize>> = BTreeMap::new();
-        for (index, function) in entry_functions.iter().enumerate() {
-            let mut deps = self.nodes[self.bodies[function].0].dependencies.clone();
+        for ((index, function), mut deps) in entry_functions.iter().enumerate().zip(entry_deps) {
             deps.remove(function.variable());
             root_deps.extend(deps.clone());
             for v in &deps {
@@ -249,7 +271,7 @@ impl PreparedConstruction {
                             .ok_or("foreign prepared source")?
                         {
                             NativeConstraint::Group { kind, .. } => {
-                                json!({"kind":if *kind==GroupKind::Conjunction{"conj"}else{"disj"},"children":children,"list_id":n.list_id.map(|id|id.0),"masks":n.masks.as_ref().map(|m|m.iter().map(|(v,indices)|json!({"variable":var(v),"indices":indices})).collect::<Vec<_>>())})
+                                json!({"kind":if *kind==GroupKind::Conjunction{"conj"}else{"disj"},"children":children,"list_id":n.list_id.map(|id|id.0),"masks":n.masks.as_ref().map(|m|m.iter().map(|(v,indices)|json!({"variable":var(v),"indices":indices.iter().map(|i|i+1).collect::<Vec<_>>()})).collect::<Vec<_>>())})
                             }
                             _ => arena.to_value(n.source).map_err(|e| format!("{e:?}"))?["nodes"]
                                 [0]
@@ -313,6 +335,7 @@ impl PreparedConstruction {
         arena: &mut NativeConstraintArena,
         root: PreparedNodeId,
         phase: Phase,
+        copying: bool,
     ) -> Result<PreparedNodeId, String> {
         enum Work {
             Enter(PreparedNodeId),
@@ -390,54 +413,102 @@ impl PreparedConstruction {
                 }
                 Work::Group(id, count, flat_count) => {
                     let mut children = values.split_off(values.len() - count);
-                    let mut new = self.nodes[id.0].clone();
+                    // A rewritten group replaces its source node, which nothing
+                    // reaches afterwards, so it is updated in place.
+                    let target = if copying {
+                        let fresh = PreparedNodeId(self.nodes.len());
+                        self.nodes.push(self.nodes[id.0].clone());
+                        fresh
+                    } else {
+                        id
+                    };
                     if matches!(phase, Phase::Enumerate) {
                         if flat_count > 0 && flat_count < count {
                             let flat: Vec<_> = children.drain(..flat_count).collect();
-                            let sources = flat.iter().map(|n| self.nodes[n.0].source).collect();
-                            let source = arena
-                                .group(GroupKind::Conjunction, sources)
-                                .map_err(|e| format!("{e:?}"))?;
+                            let parent = self.nodes[id.0].source;
+                            let (source, dependencies) =
+                                self.flat_source(arena, &flat, parent, copying)?;
                             let tmp = PreparedNodeId(self.nodes.len());
                             self.nodes.push(PreparedNode {
                                 source,
                                 children: flat,
-                                dependencies: arena
-                                    .dependencies(source)
-                                    .map_err(|e| format!("{e:?}"))?
-                                    .clone(),
+                                dependencies,
                                 masks: None,
                                 list_id: Some(NativeListId(self.next_list_id)),
                             });
                             self.next_list_id += 1;
                             children.insert(0, tmp);
                         }
-                        new.list_id = Some(NativeListId(self.next_list_id));
+                        self.nodes[target.0].list_id = Some(NativeListId(self.next_list_id));
                         self.next_list_id += 1;
                     } else {
                         let mut masks: BTreeMap<VariableId, BTreeSet<usize>> = BTreeMap::new();
                         for (index, child) in children.iter_mut().enumerate() {
                             for key in &self.nodes[child.0].dependencies {
-                                masks.entry(key.clone()).or_default().insert(index + 1);
+                                masks.entry(key.clone()).or_default().insert(index);
                             }
-                            let mut reset = self.nodes[child.0].clone();
+                            let reset = if copying {
+                                let fresh = PreparedNodeId(self.nodes.len());
+                                self.nodes.push(self.nodes[child.0].clone());
+                                fresh
+                            } else {
+                                *child
+                            };
                             if self.dependency_retention == DependencyRetention::Clear {
-                                reset.dependencies.clear();
+                                self.nodes[reset.0].dependencies.clear();
                             }
-                            let fresh = PreparedNodeId(self.nodes.len());
-                            self.nodes.push(reset);
-                            *child = fresh;
+                            *child = reset;
                         }
-                        new.masks = Some(masks);
+                        self.nodes[target.0].masks = Some(masks);
                     }
-                    new.children = children;
-                    let fresh = PreparedNodeId(self.nodes.len());
-                    self.nodes.push(new);
-                    values.push(fresh);
+                    self.nodes[target.0].children = children;
+                    values.push(target);
                 }
             }
         }
         Ok(values.pop().unwrap())
+    }
+    /// The source and dependencies of the conjunction over a group's flat
+    /// atom prefix. Only the kind of the source is read later, so the parent
+    /// conjunction stands in for it unless the arena's grouping could fail,
+    /// which only comparing closure environments that are not native can.
+    fn flat_source(
+        &self,
+        arena: &mut NativeConstraintArena,
+        flat: &[PreparedNodeId],
+        parent: NativeConstraintId,
+        copying: bool,
+    ) -> Result<(NativeConstraintId, BTreeSet<VariableId>), String> {
+        let sources: Vec<_> = flat.iter().map(|n| self.nodes[n.0].source).collect();
+        let fallible = sources
+            .iter()
+            .filter(|id| match arena.node(**id) {
+                Some(NativeConstraint::Atomic {
+                    right: NativeOperand::Derived(derived),
+                    ..
+                }) => arena
+                    .derived_order_key(*derived)
+                    .is_none_or(|key| !key.compares_infallibly()),
+                _ => false,
+            })
+            .count();
+        if copying || fallible > 0 {
+            let source = arena
+                .group(GroupKind::Conjunction, sources)
+                .map_err(|e| format!("{e:?}"))?;
+            let dependencies = arena
+                .dependencies(source)
+                .map_err(|e| format!("{e:?}"))?
+                .clone();
+            return Ok((source, dependencies));
+        }
+        let mut all = Vec::new();
+        for id in &sources {
+            all.extend(arena.dependencies(*id).map_err(|e| format!("{e:?}"))?);
+        }
+        all.sort();
+        all.dedup();
+        Ok((parent, all.into_iter().cloned().collect()))
     }
 }
 
