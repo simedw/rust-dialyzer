@@ -4171,12 +4171,6 @@ impl UnificationValue {
             Self::MalformedNominalSet { .. } | Self::Type(Type(Repr::NominalSet(_)))
         )
     }
-    fn type_ref(&self) -> Option<&Type> {
-        match self {
-            Self::Type(t) => Some(t),
-            _ => None,
-        }
-    }
 }
 impl From<Type> for UnificationValue {
     fn from(t: Type) -> Self {
@@ -4221,13 +4215,55 @@ impl From<LatticeError> for UnificationError {
 #[derive(Default)]
 struct Unifier {
     bindings: UnificationBindings,
-    // Only absent-key inserts change bindings; length identifies each active snapshot.
-    active: Vec<(UnificationValue, UnificationValue, usize)>,
+}
+/// A borrowed `UnificationValue`, so unifying the parts of a type doesn't
+/// clone them. `Other` never holds `UnificationValue::Type`, so the derived
+/// equality agrees with `UnificationValue`'s.
+#[derive(Clone, Copy, PartialEq)]
+enum Val<'a> {
+    Type(&'a Type),
+    Other(&'a UnificationValue),
+}
+impl<'a> From<&'a UnificationValue> for Val<'a> {
+    fn from(v: &'a UnificationValue) -> Self {
+        match v {
+            UnificationValue::Type(t) => Self::Type(t),
+            other => Self::Other(other),
+        }
+    }
+}
+impl<'a> Val<'a> {
+    fn type_ref(self) -> Option<&'a Type> {
+        match self {
+            Self::Type(t) => Some(t),
+            Self::Other(_) => None,
+        }
+    }
+    fn is_nominal_set(self) -> bool {
+        match self {
+            Self::Type(t) => matches!(t.0, Repr::NominalSet(_)),
+            Self::Other(v) => v.is_nominal_set(),
+        }
+    }
+    fn to_owned(self) -> UnificationValue {
+        match self {
+            Self::Type(t) => UnificationValue::Type(t.clone()),
+            Self::Other(v) => v.clone(),
+        }
+    }
+}
+/// A pair being unified by an enclosing call, linked to its caller's pair.
+/// Only absent-key inserts change bindings; `len` identifies each snapshot.
+struct Active<'a> {
+    a: Val<'a>,
+    b: Val<'a>,
+    len: usize,
+    up: Option<&'a Active<'a>>,
 }
 impl Type {
     pub fn unify_bindings(&self, rhs: &Self) -> Result<UnificationBindings, UnificationError> {
         let mut u = Unifier::default();
-        u.pair(&self.clone().into(), &rhs.clone().into())?;
+        u.pair(Val::Type(self), Val::Type(rhs), None)?;
         Ok(u.bindings)
     }
     fn direct_slots(&self) -> Option<&FamilyStore> {
@@ -4238,43 +4274,36 @@ impl Type {
     }
 }
 impl Unifier {
-    fn mismatch(a: &UnificationValue, b: &UnificationValue) -> UnificationError {
+    fn mismatch(a: Val, b: Val) -> UnificationError {
         UnificationError::Mismatch {
-            left: Box::new(a.clone()),
-            right: Box::new(b.clone()),
+            left: Box::new(a.to_owned()),
+            right: Box::new(b.to_owned()),
         }
     }
-    fn pair(&mut self, a: &UnificationValue, b: &UnificationValue) -> Result<(), UnificationError> {
-        if self
-            .active
-            .iter()
-            .any(|(x, y, m)| x == a && y == b && *m == self.bindings.len())
-        {
-            return Err(UnificationError::NativeNonTerminating);
+    fn pair(&mut self, a: Val, b: Val, up: Option<&Active>) -> Result<(), UnificationError> {
+        let len = self.bindings.len();
+        let mut active = up;
+        while let Some(x) = active {
+            if x.len == len && x.a == a && x.b == b {
+                return Err(UnificationError::NativeNonTerminating);
+            }
+            active = x.up;
         }
-        self.active
-            .push((a.clone(), b.clone(), self.bindings.len()));
-        let result = self.pair_aux(a, b);
-        self.active.pop();
-        result
+        self.pair_aux(a, b, &Active { a, b, len, up })
     }
-    fn types(&mut self, a: &Type, b: &Type) -> Result<(), UnificationError> {
-        self.pair(&a.clone().into(), &b.clone().into())
+    fn types(&mut self, a: &Type, b: &Type, up: &Active) -> Result<(), UnificationError> {
+        self.pair(Val::Type(a), Val::Type(b), Some(up))
     }
-    fn lists(&mut self, a: &[Type], b: &[Type]) -> Result<(), UnificationError> {
+    fn lists(&mut self, a: &[Type], b: &[Type], up: &Active) -> Result<(), UnificationError> {
         if a.len() != b.len() {
             return Err(LatticeError::FunctionClause.into());
         }
         for (a, b) in a.iter().zip(b.iter()) {
-            self.types(a, b)?;
+            self.types(a, b, up)?;
         }
         Ok(())
     }
-    fn pair_aux(
-        &mut self,
-        a: &UnificationValue,
-        b: &UnificationValue,
-    ) -> Result<(), UnificationError> {
+    fn pair_aux(&mut self, a: Val, b: Val, up: &Active) -> Result<(), UnificationError> {
         let ta = a.type_ref();
         let tb = b.type_ref();
         let va = ta.and_then(|t| {
@@ -4298,28 +4327,28 @@ impl Unifier {
             let bx = self.bindings.get(x).cloned();
             let by = self.bindings.get(y).cloned();
             return match (bx, by) {
-                (Some(x), Some(y)) => self.pair(&x, &y),
-                (Some(x), None) => self.pair(&x, b),
-                (None, Some(y)) => self.pair(a, &y),
+                (Some(x), Some(y)) => self.pair((&x).into(), (&y).into(), Some(up)),
+                (Some(x), None) => self.pair((&x).into(), b, Some(up)),
+                (None, Some(y)) => self.pair(a, (&y).into(), Some(up)),
                 (None, None) => {
-                    self.bindings.insert(x.clone(), a.clone());
-                    self.bindings.insert(y.clone(), a.clone());
+                    self.bindings.insert(x.clone(), a.to_owned());
+                    self.bindings.insert(y.clone(), a.to_owned());
                     Ok(())
                 }
             };
         }
         if let Some(id) = va {
             if let Some(bound) = self.bindings.get(id).cloned() {
-                return self.pair(&bound, b);
+                return self.pair((&bound).into(), b, Some(up));
             }
-            self.bindings.insert(id.clone(), b.clone());
+            self.bindings.insert(id.clone(), b.to_owned());
             return Ok(());
         }
         if let Some(id) = vb {
             if let Some(bound) = self.bindings.get(id).cloned() {
-                return self.pair(&bound, a);
+                return self.pair((&bound).into(), a, Some(up));
             }
-            self.bindings.insert(id.clone(), a.clone());
+            self.bindings.insert(id.clone(), a.to_owned());
             return Ok(());
         }
         if let (Some(ta), Some(tb)) = (ta, tb) {
@@ -4329,12 +4358,12 @@ impl Unifier {
                 sa.and_then(|s| s.functions()),
                 sb.and_then(|s| s.functions()),
             ) {
-                self.types(&fa.domain, &fb.domain)?;
-                return self.types(&fa.range, &fb.range);
+                self.types(&fa.domain, &fb.domain, up)?;
+                return self.types(&fa.range, &fb.range, up);
             }
             if let (Repr::Nominal(na), Repr::Nominal(nb)) = (&ta.0, &tb.0) {
                 return if na.name == nb.name {
-                    self.types(&na.inner, &nb.inner)
+                    self.types(&na.inner, &nb.inner, up)
                 } else {
                     Err(Self::mismatch(a, b))
                 };
@@ -4342,50 +4371,51 @@ impl Unifier {
             if let (Repr::NominalSet(na), Repr::NominalSet(nb)) = (&ta.0, &tb.0)
                 && let (Some(ha), Some(hb)) = (na.nominals.first(), nb.nominals.first())
             {
-                self.types(&ha.as_type(), &hb.as_type())?;
+                self.types(&ha.as_type(), &hb.as_type(), up)?;
                 if na.nominals.len() == 1 && nb.nominals.len() == 1 {
-                    return self.types(&na.structural, &nb.structural);
+                    return self.types(&na.structural, &nb.structural, up);
                 }
                 return self.types(
                     &NominalSet::raw(na.nominals[1..].to_vec(), *na.structural.clone()),
                     &NominalSet::raw(nb.nominals[1..].to_vec(), *nb.structural.clone()),
+                    up,
                 );
             }
         }
         if ta.is_some_and(|t| matches!(t.0, Repr::Nominal(_))) && b.is_nominal_set() {
-            return self.pair(b, a);
+            return self.pair(b, a, Some(up));
         }
         if a.is_nominal_set()
             && let Some(Type(Repr::Nominal(_))) = tb
         {
-            return self.pair(
-                a,
-                &UnificationValue::MalformedNominalSet {
-                    nominal: tb.unwrap().clone(),
-                    structural: Type::none(),
-                },
-            );
+            let malformed = UnificationValue::MalformedNominalSet {
+                nominal: tb.unwrap().clone(),
+                structural: Type::none(),
+            };
+            return self.pair(a, Val::Other(&malformed), Some(up));
         }
         if let Some(Type(Repr::NominalSet(n))) = ta
             && let Some(head) = n.nominals.first()
         {
-            self.pair(&head.inner.join(&n.structural)?.into(), b)?;
+            self.pair(
+                Val::Type(&head.inner.join(&n.structural)?),
+                b,
+                Some(up),
+            )?;
             if n.nominals.len() == 1 {
                 return Ok(());
             }
-            return self.pair(
-                &NominalSet::raw(n.nominals[1..].to_vec(), *n.structural.clone()).into(),
-                b,
-            );
+            let rest = NominalSet::raw(n.nominals[1..].to_vec(), *n.structural.clone());
+            return self.pair(Val::Type(&rest), b, Some(up));
         }
         if b.is_nominal_set() {
-            return self.pair(b, a);
+            return self.pair(b, a, Some(up));
         }
         if let Some(Type(Repr::Nominal(n))) = ta {
-            return self.pair(&(*n.inner.clone()).into(), b);
+            return self.pair(Val::Type(&n.inner), b, Some(up));
         }
         if tb.is_some_and(|t| matches!(t.0, Repr::Nominal(_))) {
-            return self.pair(b, a);
+            return self.pair(b, a, Some(up));
         }
         if let (Some(ta), Some(tb)) = (ta, tb) {
             let sa = ta.direct_slots();
@@ -4404,11 +4434,11 @@ impl Unifier {
             ) = (sa.and_then(|s| s.list()), sb.and_then(|s| s.list()))
                 && na == nb
             {
-                self.types(ea, eb)?;
-                return self.types(xa, xb);
+                self.types(ea, eb, up)?;
+                return self.types(xa, xb, up);
             }
             if let (Repr::Product(pa), Repr::Product(pb)) = (&ta.0, &tb.0) {
-                return self.lists(pa, pb);
+                return self.lists(pa, pb, up);
             }
             if let (Some(Tuples::Set(ga)), Some(Tuples::Set(gb))) =
                 (sa.and_then(|s| s.tuple()), sb.and_then(|s| s.tuple()))
@@ -4419,6 +4449,7 @@ impl Unifier {
                     return self.lists(
                         &ga.values().next().unwrap()[0].elements,
                         &gb.values().next().unwrap()[0].elements,
+                        up,
                     );
                 }
                 if !direct_a && !direct_b {
@@ -4434,7 +4465,7 @@ impl Unifier {
                             })
                             .collect::<Vec<_>>()
                     };
-                    return match self.lists(&types(ga), &types(gb)) {
+                    return match self.lists(&types(ga), &types(gb), up) {
                         Err(UnificationError::NativeNonTerminating) => {
                             Err(UnificationError::NativeNonTerminating)
                         }
@@ -4455,14 +4486,15 @@ impl Unifier {
                     return self.lists(
                         &sup(ga.values().next().unwrap())?,
                         &sup(gb.values().next().unwrap())?,
+                        up,
                     );
                 }
             }
             if let (Some(ma), Some(mb)) = (sa.and_then(|s| s.maps()), sb.and_then(|s| s.maps())) {
-                self.types(&ma.default_key, &mb.default_key)?;
-                self.types(&ma.default_value, &mb.default_value)?;
+                self.types(&ma.default_key, &mb.default_key, up)?;
+                self.types(&ma.default_value, &mb.default_value, up)?;
                 for (_, _, x, _, y) in ma.aligned(mb)?.into_iter().rev() {
-                    self.types(&x, &y)?;
+                    self.types(&x, &y, up)?;
                 }
                 return Ok(());
             }
