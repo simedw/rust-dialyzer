@@ -127,25 +127,48 @@ defmodule CoreExport do
   defp etf_term(:nil), do: :nil
   defp etf_term({kind, value}) when kind in [:float, :atom, :integer, :binary, :bitstring], do: {kind, value}
 
-  defp etf_node(encoded) do
-    {String.to_atom(encoded.kind), encoded.annotations, Enum.map(encoded.groups, &ids/1),
-     Map.get(encoded, :value, :undefined), Map.get(encoded, :map_arg, :undefined),
-     Map.get(encoded, :map_pattern, :undefined)}
+  defp flat_node(core) do
+    if Process.get(:core_export_format) == :etf,
+      do: flat_node_etf(core), else: flat_node_json(core)
   end
 
-  defp flat_node(core) do
+  defp flat_node_etf(core) do
+    kind = :cerl.type(core)
+    annotations = intern(:cerl.get_ann(core))
+    encoded = case kind do
+      :literal -> {kind, annotations, [], intern(:cerl.concrete(core)), :undefined, :undefined}
+      :var -> {kind, annotations, [], intern(:cerl.var_name(core)), :undefined, :undefined}
+      :opaque -> {kind, annotations, [], intern(elem(core, 2)), :undefined, :undefined}
+      :map ->
+        groups = flat_groups_etf(core)
+        map_arg = flat_node_etf(:cerl.map_arg(core))
+        {kind, annotations, groups, :undefined, map_arg, :cerl.is_c_map_pattern(core)}
+      _ -> {kind, annotations, flat_groups_etf(core), :undefined, :undefined, :undefined}
+    end
+    id = Process.get(:core_nodes_count)
+    Process.put(:core_nodes_count, id + 1)
+    Process.put(:core_nodes, [encoded | Process.get(:core_nodes)])
+    id
+  end
+
+  defp flat_groups_etf(core) do
+    Enum.map(:cerl.subtrees(core), fn group ->
+      group |> Enum.map(&flat_node_etf/1) |> ids()
+    end)
+  end
+
+  defp flat_node_json(core) do
     kind = :cerl.type(core)
     base = %{kind: Atom.to_string(kind), annotations: intern(:cerl.get_ann(core))}
     encoded = case kind do
       :literal -> Map.merge(base, %{groups: [], value: intern(:cerl.concrete(core))})
       :var -> Map.merge(base, %{groups: [], value: intern(:cerl.var_name(core))})
       :opaque -> Map.merge(base, %{groups: [], value: intern(elem(core, 2))})
-      :map -> Map.merge(base, %{groups: Enum.map(:cerl.subtrees(core), &Enum.map(&1, fn n -> flat_node(n) end)), map_arg: flat_node(:cerl.map_arg(core)), map_pattern: :cerl.is_c_map_pattern(core)})
-      _ -> Map.put(base, :groups, Enum.map(:cerl.subtrees(core), &Enum.map(&1, fn n -> flat_node(n) end)))
+      :map -> Map.merge(base, %{groups: Enum.map(:cerl.subtrees(core), &Enum.map(&1, fn n -> flat_node_json(n) end)), map_arg: flat_node_json(:cerl.map_arg(core)), map_pattern: :cerl.is_c_map_pattern(core)})
+      _ -> Map.put(base, :groups, Enum.map(:cerl.subtrees(core), &Enum.map(&1, fn n -> flat_node_json(n) end)))
     end
     id = Process.get(:core_nodes_count)
     Process.put(:core_nodes_count, id + 1)
-    encoded = if Process.get(:core_export_format) == :etf, do: etf_node(encoded), else: encoded
     Process.put(:core_nodes, [encoded | Process.get(:core_nodes)])
     id
   end
