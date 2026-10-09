@@ -604,7 +604,7 @@ impl<'a> Generator<'a> {
         site: &str,
         env: Vec<NativeValue>,
     ) -> Result<NativeOperand> {
-        let environment = CaptureEnvironment::lazy(env.len(), move || capture_values(&env));
+        let environment = CaptureEnvironment::native(env);
         let key = self
             .profile
             .instantiate(site, environment)

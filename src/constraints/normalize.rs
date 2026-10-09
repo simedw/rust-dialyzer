@@ -273,10 +273,19 @@ impl NativeConstraintArena {
         {
             list = vec![self.any(Relation::Equal)];
         }
-        let mut deps = BTreeSet::new();
-        for id in &list {
-            deps.extend(self.dependencies(*id)?.clone());
-        }
+        let deps = match list.as_slice() {
+            [only] => self.dependencies(*only)?.clone(),
+            _ => {
+                // The children's sets are sorted runs; merge them and build the set in bulk.
+                let mut all = Vec::new();
+                for id in &list {
+                    all.extend(self.dependencies(*id)?);
+                }
+                all.sort();
+                all.dedup();
+                all.into_iter().cloned().collect::<BTreeSet<_>>()
+            }
+        };
         if deps.is_empty() {
             let tautology = self.any(Relation::Equal);
             return Ok(self.push(NativeConstraint::Group {
@@ -464,6 +473,29 @@ impl NativeConstraintArena {
         }
         Ok(json!({"root":built[0],"nodes":nodes}))
     }
+    fn compare_left(
+        &self,
+        ai: NativeConstraintId,
+        bi: NativeConstraintId,
+        a: &Type,
+        b: &Type,
+    ) -> Ordering {
+        let key = |id: NativeConstraintId, t: &Type| {
+            self.order_keys[id.0]
+                .left
+                .get_or_init(|| t.to_native_value())
+        };
+        // Variables are `{c, var, Id, unknown}`, so two of them are ordered by
+        // their identities: integers before atoms, each in its own order.
+        if let (Some(av), Some(bv)) = (a.variable_ref(), b.variable_ref()) {
+            let order = av.cmp(bv);
+            if crate::lattice::verify_fast_paths() {
+                assert_eq!(order, key(ai, a).cmp(key(bi, b)), "variable order diverged");
+            }
+            return order;
+        }
+        key(ai, a).cmp(key(bi, b))
+    }
     fn compare_operand(
         &self,
         ai: NativeConstraintId,
@@ -553,13 +585,7 @@ impl NativeConstraintArena {
                             deps: bd,
                         },
                     ) => {
-                        let a = self.order_keys[ai.0]
-                            .left
-                            .get_or_init(|| a.to_native_value());
-                        let b = self.order_keys[bi.0]
-                            .left
-                            .get_or_init(|| b.to_native_value());
-                        let c = a.cmp(b).then(match (ar, br) {
+                        let c = self.compare_left(ai, bi, a, b).then(match (ar, br) {
                             (Relation::Equal, Relation::Subtype) => Ordering::Less,
                             (Relation::Subtype, Relation::Equal) => Ordering::Greater,
                             _ => Ordering::Equal,
@@ -636,6 +662,82 @@ impl NativeConstraintArena {
     }
     fn sorted_unique(
         &self,
+        list: Vec<NativeConstraintId>,
+    ) -> Result<Vec<NativeConstraintId>, NormalizationError> {
+        // Lists mostly arrive sorted, or as a few sorted runs. The order is
+        // total, so stably merging the runs gives the list the bottom-up
+        // merge sort gives, and for a single run the comparisons that find
+        // it also find its duplicates.
+        let mut runs = vec![0];
+        let mut unique = Vec::with_capacity(list.len());
+        for (index, &id) in list.iter().enumerate() {
+            if index > 0 {
+                match self.compare(list[index - 1], id)? {
+                    Ordering::Greater => runs.push(index),
+                    Ordering::Equal if runs.len() == 1 => continue,
+                    _ => {}
+                }
+            }
+            if runs.len() == 1 {
+                unique.push(id);
+            }
+        }
+        if runs.len() > 1 {
+            unique.clear();
+            for id in self.merge_runs(&list, runs)? {
+                if let Some(last) = unique.last()
+                    && self.compare(*last, id)? == Ordering::Equal
+                {
+                    continue;
+                }
+                unique.push(id);
+            }
+        }
+        if crate::lattice::verify_fast_paths() {
+            let merged = self.merge_sorted_unique(list);
+            assert!(
+                matches!(&merged, Ok(merged) if *merged == unique),
+                "natural merge diverged from merge sort: {unique:?} {merged:?}"
+            );
+        }
+        Ok(unique)
+    }
+    /// Merges adjacent runs, given by their starts, pairwise and stably.
+    fn merge_runs(
+        &self,
+        list: &[NativeConstraintId],
+        mut runs: Vec<usize>,
+    ) -> Result<Vec<NativeConstraintId>, NormalizationError> {
+        let n = list.len();
+        let mut list = list.to_vec();
+        let mut merged = Vec::with_capacity(n);
+        while runs.len() > 1 {
+            let bound = |i: usize| runs.get(i).copied().unwrap_or(n);
+            let mut next = Vec::with_capacity(runs.len().div_ceil(2));
+            for i in (0..runs.len()).step_by(2) {
+                let (start, middle, end) = (bound(i), bound(i + 1), bound(i + 2));
+                next.push(start);
+                let (mut a, mut b) = (start, middle);
+                while a < middle && b < end {
+                    if self.compare(list[a], list[b])? != Ordering::Greater {
+                        merged.push(list[a]);
+                        a += 1;
+                    } else {
+                        merged.push(list[b]);
+                        b += 1;
+                    }
+                }
+                merged.extend_from_slice(&list[a..middle]);
+                merged.extend_from_slice(&list[b..end]);
+            }
+            std::mem::swap(&mut list, &mut merged);
+            merged.clear();
+            runs = next;
+        }
+        Ok(list)
+    }
+    fn merge_sorted_unique(
+        &self,
         mut list: Vec<NativeConstraintId>,
     ) -> Result<Vec<NativeConstraintId>, NormalizationError> {
         let n = list.len();
@@ -680,6 +782,7 @@ impl NativeConstraintArena {
 mod tests {
     use super::*;
     use crate::constraints::derived::NoBifProvider;
+    use num_bigint::BigInt;
     fn leaf(a: &mut NativeConstraintArena, variable: i64, name: &str) -> NativeConstraintId {
         a.atomic(
             Type::variable_integer(variable.into()),
@@ -692,18 +795,18 @@ mod tests {
     #[test]
     fn atomic_order_keys_are_lazy_on_the_reached_operand() {
         let mut arena = NativeConstraintArena::default();
-        let mut atom = |variable: i64| {
+        let mut atom = |left: &str| {
             arena
                 .atomic(
-                    Type::variable_integer(variable.into()),
+                    Type::atom(left),
                     Relation::Subtype,
-                    NativeOperand::Type(Type::atom("payload")),
+                    NativeOperand::Type(Type::variable_integer(1.into())),
                     &NoBifProvider,
                 )
                 .unwrap()
         };
-        let first = atom(1_i64);
-        let second = atom(2_i64);
+        let first = atom("a");
+        let second = atom("b");
         assert!(arena.order_keys[first.0].left.get().is_none());
         assert!(arena.order_keys[first.0].right.get().is_none());
         assert_eq!(arena.compare(first, second).unwrap(), Ordering::Less);
@@ -717,6 +820,47 @@ mod tests {
             left,
             arena.order_keys[first.0].left.get().unwrap() as *const NativeValue
         );
+    }
+
+    #[test]
+    fn variable_left_sides_compare_by_identity() {
+        let mut arena = NativeConstraintArena::default();
+        let mut atom = |left: Type| {
+            arena
+                .atomic(
+                    left,
+                    Relation::Subtype,
+                    NativeOperand::Type(Type::atom("payload")),
+                    &NoBifProvider,
+                )
+                .unwrap()
+        };
+        let ids = [
+            atom(Type::variable_integer((-3).into())),
+            atom(Type::variable_integer(2.into())),
+            atom(Type::variable_integer(BigInt::from(1u8) << 70)),
+            atom(Type::variable_atom("A")),
+            atom(Type::variable_atom("B")),
+        ];
+        for (i, a) in ids.iter().enumerate() {
+            for (j, b) in ids.iter().enumerate() {
+                assert_eq!(arena.compare(*a, *b).unwrap(), i.cmp(&j));
+            }
+        }
+        if !crate::lattice::verify_fast_paths() {
+            assert!(arena.order_keys[ids[0].0].left.get().is_none());
+        }
+        for (i, a) in ids.iter().enumerate() {
+            for (j, b) in ids.iter().enumerate() {
+                let NativeConstraint::Atomic { left: l, .. } = arena.node(*a).unwrap() else {
+                    unreachable!()
+                };
+                let NativeConstraint::Atomic { left: r, .. } = arena.node(*b).unwrap() else {
+                    unreachable!()
+                };
+                assert_eq!(l.to_native_value().cmp(&r.to_native_value()), i.cmp(&j));
+            }
+        }
     }
 
     #[test]

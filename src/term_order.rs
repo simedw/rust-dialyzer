@@ -70,12 +70,20 @@ pub struct CaptureEnvironment {
 enum EnvironmentForm {
     Built(std::sync::Arc<TermOrderArena>, CaptureId),
     Lazy(std::sync::Arc<LazyEnvironment>),
+    Native(std::sync::Arc<NativeEnvironment>),
 }
 type BuildEnvironment = dyn Fn() -> Result<CaptureEnvironment, String> + Send + Sync;
 /// Most closure comparisons are decided by code identity, so the comparison
 /// arena of an environment is only built once a comparison reaches it.
 struct LazyEnvironment {
     build: Box<BuildEnvironment>,
+    built: std::sync::OnceLock<Result<(std::sync::Arc<TermOrderArena>, CaptureId), String>>,
+}
+/// An environment of plain native values. These compare directly in Erlang
+/// term order, so the comparison arena is built only when the terms
+/// themselves are needed.
+struct NativeEnvironment {
+    values: Vec<crate::lattice::NativeValue>,
     built: std::sync::OnceLock<Result<(std::sync::Arc<TermOrderArena>, CaptureId), String>>,
 }
 impl std::fmt::Debug for CaptureEnvironment {
@@ -109,9 +117,35 @@ impl CaptureEnvironment {
         }
         this
     }
+    /// The environment `from_native_values(&values)` builds, compared without
+    /// building it. Fast-path verification builds it immediately.
+    pub fn native(values: Vec<crate::lattice::NativeValue>) -> Self {
+        let this = Self {
+            count: values.len(),
+            form: EnvironmentForm::Native(std::sync::Arc::new(NativeEnvironment {
+                values,
+                built: std::sync::OnceLock::new(),
+            })),
+        };
+        if crate::lattice::verify_fast_paths() {
+            if let Err(error) = this.built() {
+                panic!("native capture environment failed to build: {error}");
+            }
+        }
+        this
+    }
     fn built(&self) -> Result<(&TermOrderArena, CaptureId), String> {
         match &self.form {
             EnvironmentForm::Built(arena, root) => Ok((arena, *root)),
+            EnvironmentForm::Native(native) => native
+                .built
+                .get_or_init(|| match Self::from_native_values(&native.values)?.form {
+                    EnvironmentForm::Built(arena, root) => Ok((arena, root)),
+                    _ => unreachable!("native values build an arena"),
+                })
+                .as_ref()
+                .map(|(arena, root)| (&**arena, *root))
+                .map_err(Clone::clone),
             EnvironmentForm::Lazy(lazy) => lazy
                 .built
                 .get_or_init(|| {
@@ -122,6 +156,10 @@ impl CaptureEnvironment {
                     let (arena, root) = built.built()?;
                     match built.form {
                         EnvironmentForm::Built(ref arena, _) => Ok((arena.clone(), root)),
+                        EnvironmentForm::Native(ref native) => match native.built.get() {
+                            Some(Ok((arena, _))) => Ok((arena.clone(), root)),
+                            _ => unreachable!("built native capture environment"),
+                        },
                         EnvironmentForm::Lazy(_) => {
                             Ok((std::sync::Arc::new(arena.clone()), root))
                         }
@@ -342,6 +380,21 @@ impl CaptureEnvironment {
         )
     }
     pub fn compare(&self, other: &Self) -> Result<Ordering, String> {
+        if let (EnvironmentForm::Native(a), EnvironmentForm::Native(b)) = (&self.form, &other.form)
+        {
+            let order = compare_native_lists(&a.values, &b.values);
+            if crate::lattice::verify_fast_paths() {
+                assert_eq!(
+                    Ok(order),
+                    self.compare_built(other),
+                    "native capture environment order diverged"
+                );
+            }
+            return Ok(order);
+        }
+        self.compare_built(other)
+    }
+    fn compare_built(&self, other: &Self) -> Result<Ordering, String> {
         let (a, a_root) = self.built()?;
         let (b, b_root) = other.built()?;
         a.compare_captures(a_root, b, b_root)
@@ -986,6 +1039,39 @@ pub fn compare_map_keys(
     let b = TermOrderArena::new(b)?;
     a.compare_map_keys(ai, &b, bi)
 }
+/// Erlang order of the proper lists `from_native_values` builds from `a` and `b`.
+fn compare_native_lists(
+    a: &[crate::lattice::NativeValue],
+    b: &[crate::lattice::NativeValue],
+) -> Ordering {
+    for (a, b) in a.iter().zip(b) {
+        let order = compare_native(a, b);
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+/// Erlang order of the terms `from_native_values` builds, by the ranks of
+/// `rank`: an empty native list becomes nil.
+fn compare_native(a: &crate::lattice::NativeValue, b: &crate::lattice::NativeValue) -> Ordering {
+    use crate::lattice::NativeValue as N;
+    let rank = |n: &N| match n {
+        N::Integer(_) => 0,
+        N::Atom(_) => 2,
+        N::Tuple(_) => 7,
+        N::Nil => 9,
+        N::List(xs) if xs.is_empty() => 9,
+        N::List(_) => 10,
+    };
+    rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
+        (N::Integer(a), N::Integer(b)) => a.cmp(b),
+        (N::Atom(a), N::Atom(b)) => a.cmp(b),
+        (N::Tuple(a), N::Tuple(b)) => a.len().cmp(&b.len()).then_with(|| compare_native_lists(a, b)),
+        (N::List(a), N::List(b)) => compare_native_lists(a, b),
+        _ => Ordering::Equal,
+    })
+}
 fn rank(n: &Node, exact: bool) -> u8 {
     match n {
         Node::Integer(_) => 0,
@@ -1335,6 +1421,45 @@ fn compare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_environments_compare_as_their_built_terms() {
+        use crate::lattice::NativeValue as N;
+        let int = |n: i64| N::Integer(n.into());
+        let atom = |a: &str| N::Atom(a.into());
+        let values = [
+            int(-1),
+            int(7),
+            N::Integer(BigInt::from(1u8) << 80),
+            atom("a"),
+            atom("ab"),
+            N::Tuple(vec![]),
+            N::Tuple(vec![int(1), atom("a")]),
+            N::Tuple(vec![atom("a")]),
+            N::Nil,
+            N::List(vec![]),
+            N::List(vec![int(1)]),
+            N::List(vec![int(1), N::Nil]),
+            N::List(vec![N::Tuple(vec![atom("z")])]),
+        ];
+        let mut envs = vec![vec![]];
+        for a in &values {
+            envs.push(vec![a.clone()]);
+            for b in &values {
+                envs.push(vec![a.clone(), b.clone()]);
+            }
+        }
+        for a in &envs {
+            for b in &envs {
+                let (native_a, native_b) =
+                    (CaptureEnvironment::native(a.clone()), CaptureEnvironment::native(b.clone()));
+                let built_a = CaptureEnvironment::from_native_values(a).unwrap();
+                let built_b = CaptureEnvironment::from_native_values(b).unwrap();
+                assert_eq!(native_a.compare(&native_b), built_a.compare(&built_b), "{a:?} {b:?}");
+                assert_eq!(native_a.compare(&built_b), built_a.compare(&built_b));
+            }
+        }
+    }
 
     fn handle(object: &str) -> CaptureTerm {
         CaptureTerm::Runtime {
