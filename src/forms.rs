@@ -9,25 +9,25 @@ type Result<T> = std::result::Result<T, String>;
 
 pub(crate) trait FormTerms {
     fn name(&self) -> &str;
-    fn terms(&self) -> &[ErlangTerm];
+    fn terms(&self) -> &crate::shared_vec::SharedVec<ErlangTerm>;
 }
 impl FormTerms for CoreModule {
     fn name(&self) -> &str {
         &self.name
     }
-    fn terms(&self) -> &[ErlangTerm] {
+    fn terms(&self) -> &crate::shared_vec::SharedVec<ErlangTerm> {
         &self.terms
     }
 }
 pub(crate) struct FormSource<'a> {
     pub name: &'a str,
-    pub terms: &'a [ErlangTerm],
+    pub terms: &'a crate::shared_vec::SharedVec<ErlangTerm>,
 }
 impl FormTerms for FormSource<'_> {
     fn name(&self) -> &str {
         self.name
     }
-    fn terms(&self) -> &[ErlangTerm] {
+    fn terms(&self) -> &crate::shared_vec::SharedVec<ErlangTerm> {
         self.terms
     }
 }
@@ -946,7 +946,7 @@ mod tests {
     fn deferred_forms_skip_descendants_and_promote_without_changing_ids() {
         let source = FormSource {
             name: "m",
-            terms: &[
+            terms: &crate::shared_vec::SharedVec::from(vec![
                 ErlangTerm::Nil,
                 ErlangTerm::Integer("0".into()),
                 ErlangTerm::Atom("type".into()),
@@ -967,7 +967,7 @@ mod tests {
                 ErlangTerm::Tuple(vec![TermId(2), TermId(1), TermId(3), TermId(10)]),
                 ErlangTerm::Atom("unknown_builtin".into()),
                 ErlangTerm::Tuple(vec![TermId(2), TermId(1), TermId(12), TermId(0)]),
-            ],
+            ]),
         };
         let mut forms = Forms::default();
         let bad = forms.defer(ModuleId(0), TermId(6));
@@ -1001,7 +1001,7 @@ mod tests {
                 name: "m".into(),
                 source_forms: TermId(0),
                 core: NodeId(0),
-                terms: vec![ErlangTerm::Nil, ErlangTerm::Integer("1".into())],
+                terms: vec![ErlangTerm::Nil, ErlangTerm::Integer("1".into())].into(),
                 nodes: vec![],
                 map_iterator_orders: BTreeMap::new(),
                 contract_variable_maps: BTreeMap::new(),
@@ -1137,7 +1137,7 @@ mod native_source_tests {
             ErlangTerm::Nil, ErlangTerm::List { items: vec![TermId(5)], tail: TermId(6) },
             ErlangTerm::Tuple(vec![TermId(0),TermId(1),TermId(2),TermId(7)]),
         ];
-        RawFormTerm::new(Arc::new(ErlangTerms { root: TermId(8), terms }), TermId(8)).unwrap()
+        RawFormTerm::new(Arc::new(ErlangTerms { root: TermId(8), terms: terms.into() }), TermId(8)).unwrap()
     }
     fn materialize(forms: &mut Forms, id: FormId) {
         let arena = forms.source_arena(id).unwrap();

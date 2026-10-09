@@ -1786,19 +1786,19 @@ impl FormCache {
     pub fn from_native_arena(arena: std::sync::Arc<crate::core::ErlangTerms>) -> Result<Self> {
         use crate::core::{ErlangTerm, TermId};
         use num_traits::ToPrimitive;
-        fn tuple(terms: &[ErlangTerm], id: TermId, n: usize) -> Result<&[TermId]> {
+        fn tuple(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId, n: usize) -> Result<&[TermId]> {
             match &terms[id.0] {
                 ErlangTerm::Tuple(v) if v.len() == n => Ok(v),
                 _ => Err("native cache tuple shape".into()),
             }
         }
-        fn atom(terms: &[ErlangTerm], id: TermId) -> Result<String> {
+        fn atom(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId) -> Result<String> {
             match &terms[id.0] {
                 ErlangTerm::Atom(v) => Ok(v.clone()),
                 _ => Err("native cache atom shape".into()),
             }
         }
-        fn list(terms: &[ErlangTerm], mut id: TermId) -> Result<Vec<TermId>> {
+        fn list(terms: &crate::shared_vec::SharedVec<ErlangTerm>, mut id: TermId) -> Result<Vec<TermId>> {
             let mut out = Vec::new();
             loop {
                 match &terms[id.0] {
@@ -1811,7 +1811,7 @@ impl FormCache {
                 }
             }
         }
-        fn number(terms: &[ErlangTerm], id: TermId) -> Result<num_bigint::BigInt> {
+        fn number(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId) -> Result<num_bigint::BigInt> {
             match &terms[id.0] {
                 ErlangTerm::Integer(v) => {
                     v.parse().map_err(|_| "native cache integer shape".into())

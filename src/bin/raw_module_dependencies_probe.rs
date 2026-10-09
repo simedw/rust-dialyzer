@@ -24,7 +24,7 @@ fn list(a: &ErlangTerms, mut id: TermId) -> Vec<TermId> {
 }
 fn forms(source: &Arc<ErlangTerms>, deps: TermId) -> Arc<ErlangTerms> {
     let mut terms = source.terms.clone();
-    fn push(terms: &mut Vec<ErlangTerm>, term: ErlangTerm) -> TermId {
+    fn push(terms: &mut rust_dialyzer_poc::shared_vec::SharedVec<ErlangTerm>, term: ErlangTerm) -> TermId {
         let id = TermId(terms.len());
         terms.push(term);
         id
@@ -104,7 +104,7 @@ fn behaviour_result(
                 PublicationError::Form(FormError::ErrorReason(reason)) => reason,
                 PublicationError::Native(NativeTransferError::Badarg) => {
                     let a = Arc::new(ErlangTerms {
-                        terms: vec![ErlangTerm::Atom("badarg".into())],
+                        terms: vec![ErlangTerm::Atom("badarg".into())].into(),
                         root: TermId(0),
                     });
                     RawFormTerm::new(a, TermId(0)).unwrap()
@@ -170,7 +170,7 @@ fn behaviour_warnings(
                 FormError::ErrorReason(reason) => reason,
                 FormError::Native(NativeTransferError::FunctionClause) => RawFormTerm::new(
                     Arc::new(ErlangTerms {
-                        terms: vec![ErlangTerm::Atom("function_clause".into())],
+                        terms: vec![ErlangTerm::Atom("function_clause".into())].into(),
                         root: TermId(0),
                     }),
                     TermId(0),
@@ -178,7 +178,7 @@ fn behaviour_warnings(
                 .unwrap(),
                 FormError::Native(NativeTransferError::Badarg) => RawFormTerm::new(
                     Arc::new(ErlangTerms {
-                        terms: vec![ErlangTerm::Atom("badarg".into())],
+                        terms: vec![ErlangTerm::Atom("badarg".into())].into(),
                         root: TermId(0),
                     }),
                     TermId(0),
@@ -212,7 +212,7 @@ fn main() {
                         ErlangTerm::Atom("error".into()),
                         ErlangTerm::Atom("function_clause".into()),
                         ErlangTerm::Tuple(vec![TermId(0), TermId(1)]),
-                    ],
+                    ].into(),
                     root: TermId(2),
                 };
                 let expected = ErlangTerms::parse(&r["expected"]["error"]).unwrap();

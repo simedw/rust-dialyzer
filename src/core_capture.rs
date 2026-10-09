@@ -305,7 +305,7 @@ impl CoreCaptures {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(ErlangTerms { root, terms })
+        Ok(ErlangTerms { root, terms: terms.into() })
     }
     pub fn environment(&self, nodes: &[NodeId]) -> Result<CaptureEnvironment, String> {
         let mut terms = vec![CaptureTerm::Nil];

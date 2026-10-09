@@ -1826,7 +1826,7 @@ mod tests {
             root = TermId(terms.len());
             terms.push(term);
         }
-        ErlangTerms { terms, root }
+        ErlangTerms { terms: terms.into(), root }
     }
     #[test]
     fn deep_arenas_and_shared_dags_compare_and_drop_iteratively() {
@@ -1865,11 +1865,11 @@ mod root_order_tests {
             ErlangTerm::List{items:vec![TermId(1)],tail:TermId(4)},
             ErlangTerm::Map(vec![(TermId(1),TermId(3)),(TermId(2),TermId(4)),(TermId(1),TermId(5))]),
             ErlangTerm::ExternalFun{module:"m".into(),function:"f".into(),arity:2},
-        ]};
+        ].into()};
         let roots=source.terms.len();source.terms.push(ErlangTerm::Float(f64::NAN.to_bits()));
         let mut old=Vec::new();let mut new=Vec::new();
         for i in 0..roots {
-            let mut terms=Vec::new();let root=crate::form_cache_wire::copy_arena(&mut terms,&source.terms,TermId(i));
+            let mut terms=crate::shared_vec::SharedVec::new();let root=crate::form_cache_wire::copy_arena(&mut terms,&source.terms,TermId(i));
             old.push((TermOrderArena::new(&ErlangTerms{root,terms}).unwrap(),root));
             new.push(RootTermOrder::new(&source,TermId(i)).unwrap());
         }

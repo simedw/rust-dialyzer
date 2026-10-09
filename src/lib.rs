@@ -2,6 +2,7 @@ pub mod bifs;
 pub mod compiled_analysis;
 pub mod contracts;
 pub mod core;
+pub mod shared_vec;
 pub mod dependencies;
 pub mod flow;
 pub mod forms;

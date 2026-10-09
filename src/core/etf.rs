@@ -233,6 +233,7 @@ pub fn module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
     for (id, entry) in raw_terms.iter().enumerate() {
         terms.push(erlang_term(entry, id, &mut map_iterator_orders)?);
     }
+    let terms: crate::shared_vec::SharedVec<ErlangTerm> = terms.into();
 
     let mut nodes: Vec<CoreNode> = Vec::with_capacity(raw_nodes.len());
     for (id, entry) in raw_nodes.iter().enumerate() {

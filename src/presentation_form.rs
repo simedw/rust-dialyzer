@@ -3,7 +3,7 @@ use crate::lattice::{BuiltinType, LatticeError, PresentationContext, Type};
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 
-pub fn form_to_string(terms: &[ErlangTerm], root: TermId) -> Result<String, LatticeError> {
+pub fn form_to_string(terms: &crate::shared_vec::SharedVec<ErlangTerm>, root: TermId) -> Result<String, LatticeError> {
     FormPrinter {
         terms,
         context: PresentationContext::default(),
@@ -60,7 +60,7 @@ pub(crate) fn native_float(value: f64) -> String {
     )
 }
 struct FormPrinter<'a> {
-    terms: &'a [ErlangTerm],
+    terms: &'a crate::shared_vec::SharedVec<ErlangTerm>,
     context: PresentationContext,
 }
 impl FormPrinter<'_> {

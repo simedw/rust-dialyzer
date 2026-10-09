@@ -70,7 +70,7 @@ impl ProbeTerms {
     fn finish(self, root: TermId) -> RawFormTerm {
         RawFormTerm::new(
             Arc::new(ErlangTerms {
-                terms: self.0,
+                terms: self.0.into(),
                 root,
             }),
             root,

@@ -807,7 +807,7 @@ mod tests {
             }
             let arena = ErlangTerms {
                 root: TermId(count),
-                terms,
+                terms: terms.into(),
             };
             assert!(matches!(
                 Renderer::default().format_warning(&arena, arena.root, Options::default()),

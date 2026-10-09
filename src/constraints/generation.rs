@@ -2089,7 +2089,7 @@ mod capture_store_tests {
                 name: "probe".into(),
                 source_forms: TermId(0),
                 core: NodeId(4),
-                terms,
+                terms: terms.into(),
                 nodes,
                 map_iterator_orders: BTreeMap::new(),
                 contract_variable_maps: BTreeMap::new(),

@@ -11,7 +11,7 @@ pub fn cache_to_value(cache: &FormCache) -> Result<serde_json::Value, String> {
     if !cache.interop_complete() {
         return Err("cache was created by a resolver without original metadata handles".into());
     }
-    let mut out = Vec::new();
+    let mut out = crate::shared_vec::SharedVec::new();
     let mut entries = Vec::new();
     for entry in cache.entries() {
         let names = entry
@@ -70,12 +70,12 @@ fn list(v: Vec<NativeValue>) -> NativeValue {
         NativeValue::List(v)
     }
 }
-pub(crate) fn push(out: &mut Vec<ErlangTerm>, term: ErlangTerm) -> TermId {
+pub(crate) fn push(out: &mut crate::shared_vec::SharedVec<ErlangTerm>, term: ErlangTerm) -> TermId {
     let id = TermId(out.len());
     out.push(term);
     id
 }
-fn native(out: &mut Vec<ErlangTerm>, v: &NativeValue) -> TermId {
+fn native(out: &mut crate::shared_vec::SharedVec<ErlangTerm>, v: &NativeValue) -> TermId {
     let term = match v {
         NativeValue::Atom(v) => ErlangTerm::Atom(v.clone()),
         NativeValue::Integer(v) => ErlangTerm::Integer(v.to_string()),
@@ -89,7 +89,7 @@ fn native(out: &mut Vec<ErlangTerm>, v: &NativeValue) -> TermId {
     };
     push(out, term)
 }
-pub(crate) fn copy_arena(out: &mut Vec<ErlangTerm>, terms: &[ErlangTerm], root: TermId) -> TermId {
+pub(crate) fn copy_arena(out: &mut crate::shared_vec::SharedVec<ErlangTerm>, terms: &crate::shared_vec::SharedVec<ErlangTerm>, root: TermId) -> TermId {
     let mut reachable = BTreeSet::new();
     let mut work = vec![root];
     while let Some(id) = work.pop() {

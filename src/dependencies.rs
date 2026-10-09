@@ -425,7 +425,7 @@ impl ImportPlan {
                     _ => true,
                 })
                 .collect();
-            arena.terms[arena.root.0] = ErlangTerm::Map(entries);
+            arena.terms.set(arena.root.0, ErlangTerm::Map(entries));
         }
         arena
     }

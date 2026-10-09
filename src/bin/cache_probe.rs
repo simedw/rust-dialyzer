@@ -34,7 +34,7 @@ fn run(v: &Value) -> Result<Value, String> {
                 return Err("native cache tuple".into());
             };
             let modules = fields[2];
-            a.terms[modules.0] = ErlangTerm::Map(Vec::new());
+            a.terms.set(modules.0, ErlangTerm::Map(Vec::new()));
             cache = FormCache::from_native_arena(Arc::new(a))?;
         }
         let mut vars = var_table_new();
@@ -71,7 +71,7 @@ fn run(v: &Value) -> Result<Value, String> {
         } else {
             Arc::new(ErlangTerms {
                 root: TermId(0),
-                terms: vec![ErlangTerm::Binary(b"cache.erl".to_vec())],
+                terms: vec![ErlangTerm::Binary(b"cache.erl".to_vec())].into(),
             })
         };
         let site = NativeFormSite {

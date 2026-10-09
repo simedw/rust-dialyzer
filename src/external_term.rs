@@ -268,7 +268,7 @@ impl Reader<'_> {
         }
         let arena = ErlangTerms {
             root: self.values[0],
-            terms: self.terms,
+            terms: self.terms.into(),
         };
         let order = TermOrderArena::new(&arena).map_err(|_| Error::Invalid)?;
         for term in &arena.terms {
@@ -826,7 +826,7 @@ mod tests {
         }
         let arena = ErlangTerms {
             root: TermId(50_000),
-            terms,
+            terms: terms.into(),
         };
         for compressed in [false, true] {
             let encoded = encode(&arena, Limits::default(), compressed).unwrap();
@@ -856,7 +856,7 @@ mod tests {
         }
         let arena = ErlangTerms {
             root: TermId(31),
-            terms,
+            terms: terms.into(),
         };
         let limits = Limits {
             expanded: 100,

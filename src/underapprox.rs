@@ -538,7 +538,7 @@ mod tests {
         });
         let literals = LiteralTypes::build_roots(
             &ErlangTerms {
-                terms: terms.clone(),
+                terms: terms.clone().into(),
                 root: TermId(0),
             },
             &[TermId(0), TermId(1), TermId(2), TermId(3)],
@@ -560,7 +560,7 @@ mod tests {
                 name: "deep".into(),
                 source_forms: TermId(0),
                 core: pattern,
-                terms,
+                terms: terms.into(),
                 nodes,
                 map_iterator_orders: BTreeMap::new(),
                 contract_variable_maps: BTreeMap::new(),

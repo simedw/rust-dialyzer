@@ -22,7 +22,7 @@ mod tests {
             }));
             root = TermId(terms.len() - 1);
         }
-        ErlangTerms { root, terms }
+        ErlangTerms { root, terms: terms.into() }
     }
     #[test]
     fn deep_and_expanding_literals_fail_before_recursive_type_ownership() {
@@ -69,7 +69,7 @@ mod tests {
                     } else {
                         ErlangTerm::Nil
                     },
-                ],
+                ].into(),
             };
             let tail = arena.root;
             let items = (0..10_000).map(|i| TermId(i % 2)).collect::<Vec<_>>();
@@ -92,7 +92,7 @@ mod tests {
     fn nested_list_elements_still_exceed_the_ownership_depth_limit() {
         let mut arena = ErlangTerms {
             root: TermId(0),
-            terms: vec![ErlangTerm::Nil],
+            terms: vec![ErlangTerm::Nil].into(),
         };
         for _ in 0..200 {
             let head = arena.root;
@@ -118,7 +118,7 @@ mod tests {
                     items: vec![TermId(0); 10_000],
                     tail: TermId(1),
                 },
-            ],
+            ].into(),
         };
         assert!(LiteralTypes::build(&arena).is_ok());
     }

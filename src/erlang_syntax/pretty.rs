@@ -601,7 +601,7 @@ mod tests {
             }
             let arena = ErlangTerms {
                 root: TermId(count),
-                terms,
+                terms: terms.into(),
             };
             assert!(Doc::parse(&arena, arena.root).is_err());
         }

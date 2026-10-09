@@ -25,19 +25,19 @@ pub struct ImportReport {
     pub record_prototypes: Vec<RecordPrototype>,
     pub multi_arity_records: Vec<(String, String, Vec<usize>)>,
 }
-fn atom(terms: &[ErlangTerm], id: TermId) -> Result<&str> {
+fn atom(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId) -> Result<&str> {
     match &terms[id.0] {
         ErlangTerm::Atom(s) => Ok(s),
         _ => Err("native environment expected atom".into()),
     }
 }
-fn tuple(terms: &[ErlangTerm], id: TermId, len: usize) -> Result<&[TermId]> {
+fn tuple(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId, len: usize) -> Result<&[TermId]> {
     match &terms[id.0] {
         ErlangTerm::Tuple(xs) if xs.len() == len => Ok(xs),
         _ => Err(format!("native environment expected tuple of length {len}")),
     }
 }
-fn list(terms: &[ErlangTerm], mut id: TermId) -> Result<Vec<TermId>> {
+fn list(terms: &crate::shared_vec::SharedVec<ErlangTerm>, mut id: TermId) -> Result<Vec<TermId>> {
     let mut out = Vec::new();
     loop {
         match &terms[id.0] {
@@ -50,7 +50,7 @@ fn list(terms: &[ErlangTerm], mut id: TermId) -> Result<Vec<TermId>> {
         }
     }
 }
-fn integer(terms: &[ErlangTerm], id: TermId) -> Result<usize> {
+fn integer(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId) -> Result<usize> {
     match &terms[id.0] {
         ErlangTerm::Integer(value) => value
             .parse()
@@ -121,7 +121,7 @@ fn import_mode(
         source_forms: tables.root,
         core: NodeId(0),
         terms: if deferred {
-            Vec::new()
+            crate::shared_vec::SharedVec::new()
         } else {
             tables.terms.clone()
         },

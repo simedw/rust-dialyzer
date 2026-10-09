@@ -34,7 +34,7 @@ pub struct PublicationInput<'a> {
     pub targets: &'a [ModuleId],
     pub use_contracts: bool,
 }
-fn tuple(terms: &[ErlangTerm], id: TermId) -> Result<&[TermId]> {
+fn tuple(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId) -> Result<&[TermId]> {
     match &terms[id.0] {
         ErlangTerm::Tuple(xs) => Ok(xs),
         _ => Err(PublicationError::Boundary(
@@ -42,7 +42,7 @@ fn tuple(terms: &[ErlangTerm], id: TermId) -> Result<&[TermId]> {
         )),
     }
 }
-fn list(terms: &[ErlangTerm], mut id: TermId) -> Result<Vec<TermId>> {
+fn list(terms: &crate::shared_vec::SharedVec<ErlangTerm>, mut id: TermId) -> Result<Vec<TermId>> {
     let mut out = Vec::new();
     loop {
         match &terms[id.0] {

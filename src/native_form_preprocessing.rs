@@ -82,7 +82,7 @@ fn compact_source(raw: &RawFormTerm) -> RawFormTerm {
         terms.push(term);
     }
     let root = ids[&raw.id()];
-    RawFormTerm::new(std::sync::Arc::new(ErlangTerms { root, terms }), root)
+    RawFormTerm::new(std::sync::Arc::new(ErlangTerms { root, terms: terms.into() }), root)
         .expect("copied form root")
 }
 pub(crate) fn massage(raw: &RawFormTerm, definitions: &BTreeSet<(String, usize)>) -> RawFormTerm {
@@ -163,7 +163,7 @@ mod compact_source_tests {
         RawFormTerm::new(
             Arc::new(ErlangTerms {
                 root: TermId(root),
-                terms,
+                terms: terms.into(),
             }),
             TermId(root),
         )

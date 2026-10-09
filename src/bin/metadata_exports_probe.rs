@@ -21,7 +21,7 @@ fn run(v: &Value) -> Result<Value, type_exports::ExportError> {
         let table = rust_dialyzer_poc::form_exports::var_table_new();
         assert!(table.is_empty());
         return Ok(type_exports::arena_to_value(
-            &[rust_dialyzer_poc::core::ErlangTerm::Map(vec![])],
+            &rust_dialyzer_poc::shared_vec::SharedVec::from(vec![rust_dialyzer_poc::core::ErlangTerm::Map(vec![])]),
             TermId(0),
         ));
     }

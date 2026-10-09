@@ -123,17 +123,17 @@ impl FormError {
 }
 /// Flat reason construction retains raw handles without recursive owned terms.
 pub(crate) struct ReasonBuilder {
-    terms: Vec<ErlangTerm>,
+    terms: crate::shared_vec::SharedVec<ErlangTerm>,
     nil: TermId,
 }
 impl ReasonBuilder {
     pub fn new() -> Self {
         Self {
-            terms: vec![ErlangTerm::Nil],
+            terms: vec![ErlangTerm::Nil].into(),
             nil: TermId(0),
         }
     }
-    pub(crate) fn from_terms(mut terms: Vec<ErlangTerm>) -> Self {
+    pub(crate) fn from_terms(mut terms: crate::shared_vec::SharedVec<ErlangTerm>) -> Self {
         let nil = if let Some(index) = terms.iter().position(|t| matches!(t, ErlangTerm::Nil)) {
             TermId(index)
         } else {
@@ -214,9 +214,7 @@ impl ReasonBuilder {
         values.pop().expect("native value traversal emits one root")
     }
     pub fn finish(self, root: TermId) -> RawFormTerm {
-        // Builders seeded with a copied module arena doubled its capacity on
-        // the first push; the arena is kept for the whole run.
-        let terms = crate::core::exact_capacity(self.terms);
+        let terms = self.terms;
         RawFormTerm {
             arena: Arc::new(ErlangTerms { root, terms }),
             id: root,

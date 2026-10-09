@@ -80,7 +80,7 @@ fn run(v: &Value) -> Result<Value, String> {
             ErlangTerm::Atom("c_literal".into()),
             ErlangTerm::Atom("true".into()),
             ErlangTerm::Tuple(vec![TermId(1), TermId(0), TermId(2)]),
-        ],
+        ].into(),
     });
     types.push(NativeTypeOperand::Raw(RawFormTerm::new(
         raw.clone(),

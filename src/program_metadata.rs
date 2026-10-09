@@ -229,7 +229,7 @@ fn characters(module: &CoreModule, id: TermId) -> Result<String> {
     characters_from_terms(&module.terms, id, &module.name)
 }
 pub(crate) fn characters_from_terms(
-    terms: &[ErlangTerm],
+    terms: &crate::shared_vec::SharedVec<ErlangTerm>,
     root: TermId,
     module: &str,
 ) -> Result<String> {

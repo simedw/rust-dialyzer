@@ -70,7 +70,6 @@ impl FoldedCore {
                 folded.push(id);
             }
             // Folding appends to copies of full arenas, doubling them.
-            module.terms = crate::core::exact_capacity(std::mem::take(&mut module.terms));
             module.nodes = crate::core::exact_capacity(std::mem::take(&mut module.nodes));
             roots.push(folded);
         }

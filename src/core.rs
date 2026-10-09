@@ -12,7 +12,7 @@ pub struct NodeId(pub usize);
 #[derive(Clone, Debug)]
 pub struct ErlangTerms {
     pub root: TermId,
-    pub terms: Vec<ErlangTerm>,
+    pub terms: crate::shared_vec::SharedVec<ErlangTerm>,
 }
 impl ErlangTerms {
     pub fn parse(raw: &Value) -> Result<Self> {
@@ -23,7 +23,7 @@ impl ErlangTerms {
             terms.len(),
             "$.arena.root",
         )?);
-        Ok(Self { root, terms })
+        Ok(Self { root, terms: terms.into() })
     }
 }
 fn parse_term_table(raw: &Value, path: &str) -> Result<Vec<ErlangTerm>> {
@@ -308,7 +308,7 @@ pub struct CoreModule {
     pub name: String,
     pub source_forms: TermId,
     pub core: NodeId,
-    pub terms: Vec<ErlangTerm>,
+    pub terms: crate::shared_vec::SharedVec<ErlangTerm>,
     pub nodes: Vec<CoreNode>,
     pub map_iterator_orders: BTreeMap<TermId, Vec<usize>>,
     pub contract_variable_maps: BTreeMap<TermId, TermId>,
@@ -454,6 +454,7 @@ impl CoreProgram {
                     map_iterator_orders.insert(TermId(j), indices);
                 }
             }
+            let terms: crate::shared_vec::SharedVec<ErlangTerm> = terms.into();
             let source_forms = TermId(reference(
                 field(obj, "source_forms", &path)?,
                 terms.len(),
@@ -705,7 +706,7 @@ fn parse_node(
     path: impl std::fmt::Display + Copy,
     id: usize,
     nodes: &[CoreNode],
-    terms: &[ErlangTerm],
+    terms: &crate::shared_vec::SharedVec<ErlangTerm>,
 ) -> Result<CoreNode> {
     let obj = object(raw, path)?;
     let indices = |v: &Value, at: &str| -> Result<Vec<u64>> {
@@ -773,7 +774,7 @@ pub(crate) fn build_node(
     path: impl std::fmt::Display + Copy,
     id: usize,
     nodes: &[CoreNode],
-    terms: &[ErlangTerm],
+    terms: &crate::shared_vec::SharedVec<ErlangTerm>,
 ) -> Result<CoreNode> {
     let kind = raw.kind;
     let annotations = TermId(index(
@@ -1044,7 +1045,7 @@ pub(crate) fn build_node(
 }
 fn definition_pairs(
     nodes: &[CoreNode],
-    terms: &[ErlangTerm],
+    terms: &crate::shared_vec::SharedVec<ErlangTerm>,
     raw: Vec<NodeId>,
     path: impl std::fmt::Display + Copy,
 ) -> Result<Vec<(NodeId, NodeId)>> {
@@ -1078,7 +1079,7 @@ fn definition_pairs(
 fn function_name<'a>(
     id: NodeId,
     nodes: &[CoreNode],
-    terms: &'a [ErlangTerm],
+    terms: &'a crate::shared_vec::SharedVec<ErlangTerm>,
 ) -> Option<(&'a str, usize)> {
     if let CoreExpr::Var(term) = nodes[id.0].expr
         && let ErlangTerm::Tuple(items) = &terms[term.0]
@@ -1090,7 +1091,7 @@ fn function_name<'a>(
     }
     None
 }
-fn valid_var_name(id: TermId, terms: &[ErlangTerm]) -> bool {
+fn valid_var_name(id: TermId, terms: &crate::shared_vec::SharedVec<ErlangTerm>) -> bool {
     match &terms[id.0] {
         ErlangTerm::Atom(_) | ErlangTerm::Integer(_) => true,
         ErlangTerm::Tuple(items) if items.len() == 2 => {
@@ -1099,7 +1100,7 @@ fn valid_var_name(id: TermId, terms: &[ErlangTerm]) -> bool {
         _ => false,
     }
 }
-fn literal_atom<'a>(id: NodeId, nodes: &[CoreNode], terms: &'a [ErlangTerm]) -> Option<&'a str> {
+fn literal_atom<'a>(id: NodeId, nodes: &[CoreNode], terms: &'a crate::shared_vec::SharedVec<ErlangTerm>) -> Option<&'a str> {
     if let CoreExpr::Literal(term) = nodes[id.0].expr
         && let ErlangTerm::Atom(name) = &terms[term.0]
     {
@@ -1124,7 +1125,7 @@ fn require_kinds(nodes: &[CoreNode], ids: &[NodeId], kind: &str, path: impl std:
     }
     Ok(())
 }
-fn proper_list(mut id: TermId, terms: &[ErlangTerm], path: impl std::fmt::Display + Copy) -> Result<()> {
+fn proper_list(mut id: TermId, terms: &crate::shared_vec::SharedVec<ErlangTerm>, path: impl std::fmt::Display + Copy) -> Result<()> {
     loop {
         match terms[id.0] {
             ErlangTerm::Nil => return Ok(()),
@@ -1393,7 +1394,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, raw)| parse_term(raw, &format!("$.terms[{i}]"), i))
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<crate::shared_vec::SharedVec<_>>>()?;
             let mut nodes = Vec::new();
             for (i, raw) in self.nodes.iter().enumerate() {
                 nodes.push(parse_node(

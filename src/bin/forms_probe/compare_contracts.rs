@@ -139,7 +139,7 @@ pub fn run(path: &str, reference: &Value, environment: Option<&str>) -> Result<V
         let metadata = ErlangTerms::parse(&reference["metadata"])?;
         let exports = ErlangTerms {
             root: TermId(0),
-            terms: vec![ErlangTerm::Nil],
+            terms: vec![ErlangTerm::Nil].into(),
         };
         let report = crate::environment::import(
             &mut Forms::default(),

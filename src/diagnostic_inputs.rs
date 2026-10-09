@@ -247,7 +247,7 @@ pub(crate) fn prepared_origin(contract: &PreparedContract) -> Origin {
         location: RawFormTerm::new(raw.arena().clone(), fields[1]).expect("prepared location"),
     }
 }
-fn list_ids(terms: &[ErlangTerm], mut id: TermId) -> Result<Vec<TermId>> {
+fn list_ids(terms: &crate::shared_vec::SharedVec<ErlangTerm>, mut id: TermId) -> Result<Vec<TermId>> {
     let mut out = Vec::new();
     loop {
         match &terms[id.0] {

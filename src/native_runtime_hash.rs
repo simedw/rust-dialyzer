@@ -154,7 +154,7 @@ impl NativeHashKey {
         }
         let mut terms = Vec::new();
         let root = append(self, &mut terms);
-        ErlangTerms { root, terms }
+        ErlangTerms { root, terms: terms.into() }
     }
 }
 impl NativeAtomLayout {

@@ -101,7 +101,7 @@ impl RawCore {
                 name: "probe".into(),
                 source_forms: TermId(0),
                 core,
-                terms: self.terms,
+                terms: self.terms.into(),
                 nodes: self.nodes,
             }],
             node_count,

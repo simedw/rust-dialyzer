@@ -11,7 +11,7 @@ pub enum ExportError {
 }
 type Result<T> = std::result::Result<T, ExportError>;
 
-struct Arena<'a>(&'a [ErlangTerm]);
+struct Arena<'a>(&'a crate::shared_vec::SharedVec<ErlangTerm>);
 enum Walk {
     Visit(TermId, i64),
     Reduce,
@@ -345,7 +345,7 @@ fn type_form_with_literals(
 }
 
 /// Returns the original arena identities, including integer variable names.
-pub fn t_var_names(terms: &[ErlangTerm], forms: TermId) -> Result<Vec<TermId>> {
+pub fn t_var_names(terms: &crate::shared_vec::SharedVec<ErlangTerm>, forms: TermId) -> Result<Vec<TermId>> {
     let arena = Arena(terms);
     arena
         .list(forms)?
@@ -391,7 +391,7 @@ impl Arena<'_> {
 
 /// Type-table values retain original raw form identities; resolution remains in Resolver.
 pub fn lookup_record(
-    terms: &[ErlangTerm],
+    terms: &crate::shared_vec::SharedVec<ErlangTerm>,
     tag: &str,
     arity: TermId,
     table: TermId,
@@ -461,7 +461,7 @@ pub fn lookup_record(
 }
 
 pub fn type_is_defined(
-    terms: &[ErlangTerm],
+    terms: &crate::shared_vec::SharedVec<ErlangTerm>,
     kind: TermId,
     name: TermId,
     arity: TermId,
@@ -547,7 +547,7 @@ pub fn module_type_deps_of_type_defs_in(
 
 /// Lossless compact CoreExport arena view, used by context/cache interop.
 /// This is serialization of validated terms, not a second term parser.
-pub fn reachable_term_ids(terms: &[ErlangTerm], root: TermId) -> BTreeSet<usize> {
+pub fn reachable_term_ids(terms: &crate::shared_vec::SharedVec<ErlangTerm>, root: TermId) -> BTreeSet<usize> {
     let mut reachable = BTreeSet::new();
     let mut work = vec![root];
     while let Some(id) = work.pop() {
@@ -624,7 +624,7 @@ pub fn term_to_value(term: &ErlangTerm, at: impl Fn(TermId) -> usize) -> Value {
         }
     }
 }
-pub fn arena_to_value(terms: &[ErlangTerm], root: TermId) -> serde_json::Value {
+pub fn arena_to_value(terms: &crate::shared_vec::SharedVec<ErlangTerm>, root: TermId) -> serde_json::Value {
     use serde_json::json;
     let reachable = reachable_term_ids(terms, root);
     let ids = reachable
@@ -727,7 +727,7 @@ mod tests {
                 ErlangTerm::Map(vec![(TermId(2), TermId(8))]),
                 ErlangTerm::Tuple((1..10).map(TermId).collect()),
                 ErlangTerm::Atom("unreachable-after".into()),
-            ],
+            ].into(),
         };
         let compact = compact_arena(&arena);
         assert_eq!(compact.root, TermId(9));
