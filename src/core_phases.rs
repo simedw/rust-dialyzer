@@ -134,7 +134,7 @@ pub struct CorePhases<'a> {
     function_names: BTreeMap<CoreLabel, Mfa>,
     core_captures: CoreCaptureStore<'a>,
     scc_memo: std::sync::Mutex<BTreeMap<Vec<Mfa>, std::sync::Arc<SccMemo>>>,
-    module_memo: std::sync::Mutex<BTreeMap<ModuleId, std::sync::Arc<ModuleMemo>>>,
+    module_memo: std::sync::Mutex<BTreeMap<ModuleId, std::sync::Arc<ModuleMemo<'a>>>>,
     module_memo_counts: ModuleMemoCounts,
     /// Generation's view of each entry of `world.active_contracts`, converted
     /// once when the contract is activated instead of at every call site.
@@ -282,25 +282,44 @@ pub struct ModuleBodies<'phase, 'input> {
     letrec: &'phase BTreeMap<ModuleId, crate::letrec_types::LetrecLinks>,
     binder_states: &'phase [std::sync::OnceLock<Result<BinderState<AnalysisWarning>, ModuleBinderError>>],
 }
-impl ModuleBodies<'_, '_> {
+/// A module body analysis stopped after its inference loop: what the
+/// warning loop of a diagnostic run with the same inputs continues from.
+pub struct ModuleSnapshot<'input> {
+    functions: crate::function_state::FunctionState,
+    patterns: Patterns<'input, 'input>,
+    state: BinderState<AnalysisWarning>,
+}
+impl<'input> ModuleBodies<'_, 'input> {
+    /// Analyzes `module`'s bodies; with `warnings`, then collects warnings.
+    /// `resume` continues a diagnostic run from a refinement's inference
+    /// loop with identical inputs instead of repeating it. Refinement runs
+    /// return their snapshot when `keep` is set.
     fn module_body(
         &self,
         module: ModuleId,
         previous: &FunctionTypes,
         calls: &dyn CallLookup,
         warnings: bool,
-    ) -> Result<(FunctionTypes, Vec<NativeWarning>), CorePhaseError> {
+        resume: Option<ModuleSnapshot<'input>>,
+        keep: bool,
+    ) -> Result<(FunctionTypes, Vec<NativeWarning>, Option<ModuleSnapshot<'input>>), CorePhaseError> {
         let mut timings = crate::phase_timings::PhaseTimings::new(if warnings {
             "module_diagnostics"
         } else {
             "module_refinement"
         });
-        let inputs = self
-            .graph
-            .function_inputs(module, self.program, self.nodes.labels(), previous.clone())
-            .map_err(CorePhaseError::Boundary)?;
-        let mut functions =
-            build_function_state(self.nodes, module, &inputs).map_err(CorePhaseError::Boundary)?;
+        let (mut functions, mut patterns, inferred) = match resume {
+            Some(snapshot) => (snapshot.functions, snapshot.patterns, Some(snapshot.state)),
+            None => {
+                let inputs = self
+                    .graph
+                    .function_inputs(module, self.program, self.nodes.labels(), previous.clone())
+                    .map_err(CorePhaseError::Boundary)?;
+                let functions = build_function_state(self.nodes, module, &inputs)
+                    .map_err(CorePhaseError::Boundary)?;
+                (functions, Patterns::new(self.nodes), None)
+            }
+        };
         let folded_patterns = Patterns::new(&self.folded_nodes);
         let producer = GuardProducer {
             original: self.nodes,
@@ -313,7 +332,6 @@ impl ModuleBodies<'_, '_> {
             literals: &self.guard_literals,
             registry: self.bifs,
         };
-        let mut patterns = Patterns::new(self.nodes);
         let build = || {
             BinderState::<AnalysisWarning>::for_module(
                 self.nodes.core(),
@@ -342,9 +360,11 @@ impl ModuleBodies<'_, '_> {
             letrec,
         };
         timings.mark("prepare_module_body");
-        let mut bound = flow
-            .analyze_module(initial, warnings)
-            .map_err(|error| CorePhaseError::Body(Box::new(error)))?;
+        let mut bound = match inferred {
+            Some(state) => flow.resume_warning_loop(&state),
+            None => flow.analyze_module(initial, warnings),
+        }
+        .map_err(|error| CorePhaseError::Body(Box::new(error)))?;
         timings.mark("analyze_module");
         if warnings {
             bound = flow
@@ -354,26 +374,31 @@ impl ModuleBodies<'_, '_> {
         timings.mark("function_warnings");
         let signatures = functions.function_types();
         timings.mark("signatures");
-        Ok((
-            signatures,
-            bound
-                .warnings
-                .warnings
-                .into_iter()
-                .map(|warning| warning.0)
-                .collect(),
-        ))
+        let warnings_out = bound
+            .warnings
+            .warnings
+            .iter()
+            .map(|warning| warning.0.clone())
+            .collect();
+        let snapshot = (keep && !warnings).then(|| ModuleSnapshot { functions, patterns, state: bound });
+        Ok((signatures, warnings_out, snapshot))
     }
     pub fn module_diagnostics(
         &self,
         module: ModuleId,
         previous: &FunctionTypes,
+        resume: Option<ModuleSnapshot<'input>>,
     ) -> Result<ModuleDiagnostics, CorePhaseError> {
-        self.module_body(module, previous, self.world, true)
-            .map(|(signatures, warnings)| ModuleDiagnostics {
-                signatures,
-                warnings,
-            })
+        let resumed = resume.is_some();
+        let result = self
+            .module_body(module, previous, self.world, true, resume, false)
+            .map(|(signatures, warnings, _)| ModuleDiagnostics { signatures, warnings })?;
+        if resumed && crate::lattice::verify_fast_paths() {
+            let (signatures, warnings, _) = self.module_body(module, previous, self.world, true, None, false)?;
+            assert!(signatures == result.signatures, "resumed diagnostic signatures differ: {module:?}");
+            assert!(warnings == result.warnings, "resumed diagnostic warnings differ: {module:?}");
+        }
+        Ok(result)
     }
 }
 
@@ -520,17 +545,22 @@ impl AnalysisPhases for CorePhases<'_> {
     }
 }
 
-impl CorePhases<'_> {
+impl<'a> CorePhases<'a> {
     /// Module refinement is memoized across fixpoint iterations like SCCs.
     /// The body analysis depends on the module's Core, the fixed run inputs
     /// (definitions, call sites, guards, letrec links), `previous` and the
     /// signatures and contracts it reads from the call world; with identical
     /// values for all of these it computes the same types.
-    /// Whether the last refinement of `module` read exactly what a body
-    /// analysis with `previous` would read now.
-    pub fn module_memo_valid(&self, module: ModuleId, previous: &FunctionTypes) -> Option<bool> {
+    /// The inference state of `module`'s last refinement, if that run had
+    /// `previous` and read exactly the call-world values a body analysis
+    /// would read now: a diagnostic run's inference loop would repeat it.
+    pub fn take_module_snapshot(&self, module: ModuleId, previous: &FunctionTypes) -> Option<ModuleSnapshot<'a>> {
         let memo = self.module_memo.lock().unwrap().get(&module).cloned()?;
-        Some(memo.previous == *previous && memo.reads.still_valid(&self.world))
+        if memo.previous == *previous && memo.reads.still_valid(&self.world) {
+            memo.snapshot.lock().unwrap().take()
+        } else {
+            None
+        }
     }
     fn refine_module_shared(&self, request: &ModuleRequest<'_>) -> Result<FunctionTypes, CorePhaseError> {
         let memo = self.module_memo.lock().unwrap().get(&request.module).cloned();
@@ -541,30 +571,36 @@ impl CorePhases<'_> {
             if memo.reads.still_valid(&self.world) {
                 self.module_memo_counts.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if crate::lattice::verify_fast_paths() {
-                    let (fresh, _) = self.refine_module_uncached(request)?;
+                    let (fresh, _, _) = self.refine_module_uncached(request, false)?;
                     assert_eq!(fresh, memo.result, "memoized module result differs: {:?}", request.module);
                 }
                 return Ok(memo.result.clone());
             }
         }
-        let (result, reads) = self.refine_module_uncached(request)?;
+        let (result, reads, snapshot) = self.refine_module_uncached(request, true)?;
         self.module_memo.lock().unwrap().insert(
             request.module,
             std::sync::Arc::new(ModuleMemo {
                 previous: request.previous.clone(),
                 reads,
                 result: result.clone(),
+                snapshot: std::sync::Mutex::new(snapshot),
             }),
         );
         Ok(result)
     }
-    fn refine_module_uncached(&self, request: &ModuleRequest<'_>) -> Result<(FunctionTypes, CallReads), CorePhaseError> {
+    fn refine_module_uncached(
+        &self,
+        request: &ModuleRequest<'_>,
+        keep_snapshot: bool,
+    ) -> Result<(FunctionTypes, CallReads, Option<ModuleSnapshot<'a>>), CorePhaseError> {
         let calls = RecordingCalls {
             world: &self.world,
             reads: Default::default(),
         };
-        let (signatures, _) = self.module_bodies().module_body(request.module, request.previous, &calls, false)?;
-        Ok((signatures, calls.reads.into_inner()))
+        let (signatures, _, snapshot) =
+            self.module_bodies().module_body(request.module, request.previous, &calls, false, None, keep_snapshot)?;
+        Ok((signatures, calls.reads.into_inner(), snapshot))
     }
     /// SCC results are memoized across fixpoint iterations. Generation and
     /// solving depend on the Core, the fixed run inputs, `previous` (the
@@ -856,10 +892,12 @@ impl LibraryTypes for RecordingWorld<'_, '_> {
     }
 }
 
-struct ModuleMemo {
+struct ModuleMemo<'a> {
     previous: FunctionTypes,
     reads: CallReads,
     result: FunctionTypes,
+    /// The run's inference state, until a diagnostic run resumes from it.
+    snapshot: std::sync::Mutex<Option<ModuleSnapshot<'a>>>,
 }
 #[derive(Default)]
 struct ModuleMemoCounts {

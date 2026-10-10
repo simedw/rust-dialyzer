@@ -388,11 +388,13 @@ impl DiagnosticSession<'_, '_> {
         Ok(entries)
     }
     pub fn contracts(&self, bifs: &Registry) -> Result<Vec<NativeWarning>> {
-        let entries = self
-            .modules
-            .iter()
-            .map(|module| self.contract_entries(*module))
+        let mut timings = crate::phase_timings::PhaseTimings::new("contract_warnings");
+        // Modules order their entries independently; the first error in
+        // module order is the sequential result.
+        let entries = crate::ordered_parallel::setup_map(&self.modules, |module| self.contract_entries(*module))
+            .into_iter()
             .collect::<Result<Vec<_>>>()?;
+        timings.mark("entries");
         let modules = self
             .modules
             .iter()
@@ -403,7 +405,9 @@ impl DiagnosticSession<'_, '_> {
                 forms: &self.forms,
             })
             .collect::<Vec<_>>();
-        Ok(contract_warnings::collect(&modules, &self.named, bifs)?)
+        let warnings = contract_warnings::collect(&modules, &self.named, bifs)?;
+        timings.mark("collect");
+        Ok(warnings)
     }
     pub fn missing_contract_functions(&self, module: ModuleId) -> Result<Vec<NativeWarning>> {
         let entries = self.contract_entries(module)?;

@@ -212,12 +212,13 @@ pub fn analyze_prepared<'a>(
             module_timings.mark("missing_contract_functions");
             let previous = analyzer.module_previous(module, &state).map_err(PipelineError::Boundary)?;
             module_timings.mark("previous_signatures");
-            let memo_valid = crate::job_trace::enabled().then(|| phases.module_memo_valid(module, &previous));
+            let resume = phases.take_module_snapshot(module, &previous);
+            let resumed = resume.is_some();
             let t0 = crate::job_trace::now();
-            let body = bodies.module_diagnostics(module, &previous).map_err(PipelineError::Phase)?;
-            if let Some(memo_valid) = memo_valid {
+            let body = bodies.module_diagnostics(module, &previous, resume).map_err(PipelineError::Phase)?;
+            if crate::job_trace::enabled() {
                 let t1 = crate::job_trace::now();
-                crate::job_trace::record(|| serde_json::json!({"ev":"diag","m":module.0,"t0":t0,"t1":t1,"memo_valid":memo_valid}));
+                crate::job_trace::record(|| serde_json::json!({"ev":"diag","m":module.0,"t0":t0,"t1":t1,"resumed":resumed}));
             }
             module_timings.mark("body_diagnostics");
             let callbacks = diagnostics.callbacks(module).map_err(|e| {

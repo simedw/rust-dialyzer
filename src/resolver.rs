@@ -296,10 +296,22 @@ impl<'a> Resolver<'a> {
     ) -> Result<()> {
         if let Some((roots, validation)) = &self.ordering_inputs {
             validation.get_or_init(|| {
-                for root in roots {
-                    root.validate()?;
+                // Roots validate independently and are cached per table, so
+                // the first use validates the missing ones on all cores; the
+                // first failure in root order is the sequential result.
+                let missing = roots.iter().filter(|root| root.validation.get().is_none()).count();
+                if missing > 8 {
+                    crate::ordered_parallel::setup_map(roots, |root| root.validate().err())
+                        .into_iter()
+                        .flatten()
+                        .next()
+                        .map_or(Ok(()), Err)
+                } else {
+                    for root in roots {
+                        root.validate()?;
+                    }
+                    Ok(())
                 }
-                Ok(())
             }).clone()
         } else {
             crate::term_order::TermOrderArena::new(raw.arena())?;
