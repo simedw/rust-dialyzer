@@ -455,11 +455,12 @@ impl AnalysisPhases for CorePhases<'_> {
                 };
                 let t0 = crate::job_trace::now();
                 let result = this.analyze_scc_in(&request, &library);
-                let early = library.early.into_inner();
+                let early = library.early.into_inner().unwrap();
                 if crate::job_trace::enabled() {
                     let t1 = crate::job_trace::now();
                     let retry = !early.is_empty();
-                    crate::job_trace::record(|| serde_json::json!({"ev":"scc","pass":crate::job_trace::pass(),"i":i,"t0":t0,"t1":t1,"retry":retry}));
+                    let note = crate::job_trace::take_note();
+                    crate::job_trace::record(|| serde_json::json!({"ev":"scc","pass":crate::job_trace::pass(),"i":i,"t0":t0,"t1":t1,"retry":retry,"note":note}));
                 }
                 if early.is_empty() {
                     crate::ordered_parallel::Attempt::Done(result)
@@ -525,6 +526,12 @@ impl CorePhases<'_> {
     /// (definitions, call sites, guards, letrec links), `previous` and the
     /// signatures and contracts it reads from the call world; with identical
     /// values for all of these it computes the same types.
+    /// Whether the last refinement of `module` read exactly what a body
+    /// analysis with `previous` would read now.
+    pub fn module_memo_valid(&self, module: ModuleId, previous: &FunctionTypes) -> Option<bool> {
+        let memo = self.module_memo.lock().unwrap().get(&module).cloned()?;
+        Some(memo.previous == *previous && memo.reads.still_valid(&self.world))
+    }
     fn refine_module_shared(&self, request: &ModuleRequest<'_>) -> Result<FunctionTypes, CorePhaseError> {
         let memo = self.module_memo.lock().unwrap().get(&request.module).cloned();
         if let Some(memo) = memo
@@ -585,7 +592,21 @@ impl CorePhases<'_> {
     }
     fn analyze_scc_in(&self, request: &SccInput<'_>, library: &RecordingWorld<'_, '_>) -> Result<FunctionTypes, CorePhaseError> {
         let memo = self.scc_memo.lock().unwrap().get(request.ordered_mfas).cloned();
-        if let Some(memo) = memo
+        if crate::job_trace::enabled() {
+            let outcome = match &memo {
+                None => "none",
+                Some(memo) if memo.previous != *request.previous => {
+                    if memo.reads.still_valid(library) { "previous" } else { "previous+reads" }
+                }
+                Some(memo) if !memo.reads.still_valid(library) => "reads",
+                Some(_) => "hit",
+            };
+            let changed_previous = memo.as_ref().map_or(0, |memo| {
+                request.previous.iter().filter(|(label, sig)| memo.previous.get(label) != Some(sig)).count()
+            });
+            crate::job_trace::set_note(serde_json::json!({"memo":outcome,"changed_previous":changed_previous,"functions":request.previous.len()}));
+        }
+        if let Some(memo) = memo.clone()
             && memo.next_core_label == request.next_core_label
             && memo.previous == *request.previous
             && memo.reads.still_valid(library)
@@ -597,12 +618,16 @@ impl CorePhases<'_> {
             return Ok(memo.result.clone());
         }
         let result = self.analyze_scc_uncached(request, library)?;
+        if crate::job_trace::enabled() {
+            let same = memo.as_ref().is_some_and(|memo| memo.result == result);
+            crate::job_trace::add_note("same_result", serde_json::json!(same));
+        }
         self.scc_memo.lock().unwrap().insert(
             request.ordered_mfas.to_vec(),
             std::sync::Arc::new(SccMemo {
                 next_core_label: request.next_core_label,
                 previous: request.previous.clone(),
-                reads: library.reads.take(),
+                reads: std::mem::take(&mut *library.reads.lock().unwrap()),
                 result: result.clone(),
             }),
         );
@@ -773,12 +798,12 @@ fn contract_source(world: &CallWorld<'_>, mfa: &Mfa) -> ContractSource {
 struct RecordingWorld<'w, 'l> {
     world: &'w CallWorld<'l>,
     contracts: &'w BTreeMap<Mfa, Result<GenerationActiveContract, String>>,
-    reads: std::cell::RefCell<LibraryReads>,
+    reads: std::sync::Mutex<LibraryReads>,
     /// Unpublished results of the current phase and the reader's wave.
     overlay: Option<(&'w PhaseOverlay<'w>, usize)>,
     /// Lower-wave SCCs read before they committed; the reading SCC must
     /// run again after them.
-    early: std::cell::RefCell<std::collections::BTreeSet<usize>>,
+    early: std::sync::Mutex<std::collections::BTreeSet<usize>>,
 }
 impl RecordingWorld<'_, '_> {
     /// The committed overlay entry owning `mfa`, if the reader may see it.
@@ -790,7 +815,7 @@ impl RecordingWorld<'_, '_> {
         }
         let entry = overlay.slots[owner].get();
         if entry.is_none() {
-            self.early.borrow_mut().insert(owner);
+            self.early.lock().unwrap().insert(owner);
         }
         entry
     }
@@ -814,7 +839,7 @@ impl RecordingWorld<'_, '_> {
 impl LibraryTypes for RecordingWorld<'_, '_> {
     fn signature(&self, mfa: &Mfa) -> Result<Option<CallSignature>, String> {
         let signature = self.current_signature(mfa)?;
-        self.reads.borrow_mut().signatures.entry(mfa.clone()).or_insert_with(|| {
+        self.reads.lock().unwrap().signatures.entry(mfa.clone()).or_insert_with(|| {
             signature.as_ref().map(|signature| (signature.arguments.clone(), signature.returns.clone()))
         });
         Ok(signature)
@@ -825,7 +850,8 @@ impl LibraryTypes for RecordingWorld<'_, '_> {
             Some(contract) => Some(contract.clone()?),
             None => LibraryTypes::active_contract(self.world, mfa)?,
         };
-        self.reads.borrow_mut().contracts.entry(mfa.clone()).or_insert_with(|| self.current_contract_source(mfa));
+        let source = self.current_contract_source(mfa);
+        self.reads.lock().unwrap().contracts.entry(mfa.clone()).or_insert(source);
         Ok(contract)
     }
 }

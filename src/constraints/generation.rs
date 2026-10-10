@@ -128,6 +128,21 @@ impl LibraryTypes for EmptyLibrary {
 /// Inputs arise from the preceding native success-typing phase, never from own specifications.
 #[derive(Default)]
 pub struct PropagatedTypes(pub BTreeMap<CoreLabel, Type>);
+/// SCCs with at least this many functions generate their constraints on all
+/// cores (`RUST_DIALYZER_PARALLEL_GENERATION=N`, 0 to disable; never in
+/// sequential mode).
+fn parallel_generation_min() -> Option<usize> {
+    static MIN: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        if std::env::var_os("RUST_DIALYZER_SEQUENTIAL").is_some_and(|v| v == "1") {
+            return None;
+        }
+        match std::env::var("RUST_DIALYZER_PARALLEL_GENERATION") {
+            Ok(value) => value.parse().ok().filter(|&n: &usize| n > 0),
+            Err(_) => Some(48),
+        }
+    })
+}
 #[derive(Clone, Default)]
 struct State {
     context: Vec<NativeConstraintId>,
@@ -332,8 +347,8 @@ pub struct Generator<'a> {
     labels: &'a Labels,
     profile: &'a ClosureCodeProfile,
     propagated: &'a PropagatedTypes,
-    provider: &'a dyn SourceBifProvider,
-    library: &'a dyn LibraryTypes,
+    provider: &'a (dyn SourceBifProvider + Sync),
+    library: &'a (dyn LibraryTypes + Sync),
     callgraph: GenerationCallGraph<'a>,
     capture_inputs: Option<&'a GenerationCaptureInputs<'a>>,
     phase_entries: Vec<(ModuleId, NodeId, NodeId)>,
@@ -413,7 +428,7 @@ impl<'a> CoreCaptureStore<'a> {
 pub struct GenerationCaptureInputs<'a> {
     pub core_captures: Option<&'a CoreCaptureStore<'a>>,
     pub runtime: &'a crate::constraints::generation_capture_headers::GenerationRuntimeCaptures,
-    pub records: &'a dyn RecordTableCaptures,
+    pub records: &'a (dyn RecordTableCaptures + Sync),
     pub initial_record_cache: &'a [ModuleId],
     pub solvers: &'a [String],
 }
@@ -421,7 +436,7 @@ pub struct GenerationPhase<'a> {
     pub captures: Option<&'a GenerationCaptureInputs<'a>>,
     pub callgraph: GenerationCallGraph<'a>,
     pub propagated: &'a PropagatedTypes,
-    pub library: &'a dyn LibraryTypes,
+    pub library: &'a (dyn LibraryTypes + Sync),
     pub records: &'a BTreeMap<(ModuleId, String, usize), Type>,
     pub self_recursive: Option<CoreLabel>,
 }
@@ -429,7 +444,7 @@ impl<'a> Generator<'a> {
     pub fn new(
         nodes: &'a DataflowNodes<'a>,
         profile: &'a ClosureCodeProfile,
-        provider: &'a dyn SourceBifProvider,
+        provider: &'a (dyn SourceBifProvider + Sync),
         phase: GenerationPhase<'a>,
     ) -> Result<Self> {
         let GenerationPhase {
@@ -696,27 +711,14 @@ impl<'a> Generator<'a> {
                 .insert(FunctionVariable::new(f.clone()).map_err(GenerationError::Boundary)?);
             defined.insert(r.clone());
         }
-        for (module, variable, function) in entries {
-            let function_id = self.variable_id(&Site {
-                module: *module,
-                node: *function,
-            })?;
-            let recursive_id = self.variable_id(&Site {
-                module: *module,
-                node: *variable,
-            })?;
-            self.state
-                .recursive_variables
-                .insert(function_id, recursive_id);
-            self.state.module = Some(*module);
-            self.state.context.clear();
-            self.traverse(
-                Site {
-                    module: *module,
-                    node: *function,
-                },
-                defined.clone(),
-            )?;
+        if matches!(output, GenerationOutput::BindingsOnly)
+            && parallel_generation_min().is_some_and(|min| entries.len() >= min)
+        {
+            self.generate_chunks(entries, &defined)?;
+        } else {
+            for entry in entries {
+                self.generate_entry(entry, &defined)?;
+            }
         }
         let functions = self
             .state
@@ -749,6 +751,253 @@ impl<'a> Generator<'a> {
             refold_allocations: self.patterns.allocation_count(),
             missing_library_summaries: self.state.missing_library_summaries,
         })
+    }
+    /// Generates the constraints of one SCC function, after the functions
+    /// before it.
+    fn generate_entry(&mut self, entry: &(ModuleId, NodeId, NodeId), defined: &Defined) -> Result<()> {
+        let (module, variable, function) = entry;
+        let function_id = self.variable_id(&Site {
+            module: *module,
+            node: *function,
+        })?;
+        let recursive_id = self.variable_id(&Site {
+            module: *module,
+            node: *variable,
+        })?;
+        self.state
+            .recursive_variables
+            .insert(function_id, recursive_id);
+        self.state.module = Some(*module);
+        self.state.context.clear();
+        self.traverse(
+            Site {
+                module: *module,
+                node: *function,
+            },
+            defined.clone(),
+        )?;
+        Ok(())
+    }
+    /// A generator for the functions from `entries[start]` on, in the state
+    /// sequential generation would have reached there: fresh labels from
+    /// `next_label`, synthetic pattern labels from `synthetic`, and the
+    /// recursion links of the functions before it. Constraint ids start at
+    /// zero; `merge_chunk` rebases them.
+    fn fork(
+        &self,
+        entries: &[(ModuleId, NodeId, NodeId)],
+        start: usize,
+        next_label: u64,
+        synthetic: crate::dataflow_key::SyntheticLabels,
+    ) -> Result<Generator<'a>> {
+        let mut recursive_variables = self.state.recursive_variables.clone();
+        for (module, variable, function) in &entries[..start] {
+            recursive_variables.insert(
+                self.variable_id(&Site { module: *module, node: *function })?,
+                self.variable_id(&Site { module: *module, node: *variable })?,
+            );
+        }
+        Ok(Generator {
+            dependency_retention: self.dependency_retention,
+            core: self.core,
+            labels: self.labels,
+            profile: self.profile,
+            propagated: self.propagated,
+            provider: self.provider,
+            library: self.library,
+            callgraph: self.callgraph,
+            capture_inputs: self.capture_inputs,
+            phase_entries: self.phase_entries.clone(),
+            scc_variables: self.scc_variables.clone(),
+            named_variables: self.named_variables,
+            self_recursive: self.self_recursive,
+            records: self.records,
+            literal_types: self.literal_types,
+            patterns: Patterns::with_allocator(self.patterns.nodes, synthetic),
+            core_captures: BTreeMap::new(),
+            arena: NativeConstraintArena::default(),
+            state: State {
+                next_label,
+                scc: self.state.scc.clone(),
+                recursive_variables,
+                ..State::default()
+            },
+        })
+    }
+    /// Appends a fork's output as if its functions had been generated here.
+    fn merge_chunk(&mut self, chunk: Generator<'a>) {
+        let offset = self.arena.append(chunk.arena);
+        let state = chunk.state;
+        for (function, body) in state.bodies {
+            self.state.bodies.insert(function, NativeConstraintId(body.0 + offset));
+        }
+        for (function, parameters) in state.parameters {
+            self.state.parameters.insert(function, parameters);
+        }
+        for (function, recursive) in state.recursive_variables {
+            self.state.recursive_variables.insert(function, recursive);
+        }
+        for function in state.scc {
+            self.state.scc.insert(function);
+        }
+        self.state.missing_library_summaries.extend(state.missing_library_summaries);
+        // The fork pushed each newly seen module to the front, so its oldest
+        // first sighting is last.
+        for module in state.record_cache.into_iter().rev() {
+            if !self.state.record_cache.contains(&module) {
+                self.state.record_cache.insert(0, module);
+            }
+        }
+        self.state.context = state.context.into_iter().map(|id| NativeConstraintId(id.0 + offset)).collect();
+        self.state.module = state.module;
+        self.state.in_guard = state.in_guard;
+        self.state.in_match = state.in_match;
+        self.state.next_label = state.next_label;
+        self.patterns.set_allocator(chunk.patterns.allocator().advanced(0));
+    }
+    /// Generates the SCC's functions in contiguous chunks on all cores, with
+    /// exactly the constraints, ids and labels of the sequential loop.
+    ///
+    /// Each function's constraints depend only on its own Core and the fixed
+    /// inputs; what the functions before it contribute is a count of fresh
+    /// and synthetic labels, constraint ids, and set/map entries. So a chunk
+    /// starting from the right label counters, with ids rebased when merged
+    /// in order, equals the sequential result. The label counts of each
+    /// function come from an earlier visit of the same SCC or else from a
+    /// counting pass; the counts of the real pass must equal them, or the
+    /// SCC is generated sequentially instead.
+    fn generate_chunks(&mut self, entries: &[(ModuleId, NodeId, NodeId)], defined: &Defined) -> Result<()> {
+        type Counts = Vec<(u64, u64)>;
+        static COUNTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<Vec<(usize, usize, usize)>, Counts>>> =
+            std::sync::OnceLock::new();
+        struct ChunkRun<'g> {
+            generator: Generator<'g>,
+            counts: Counts,
+            error: Option<GenerationError>,
+        }
+        let key: Vec<_> = entries.iter().map(|(m, v, f)| (m.0, v.0, f.0)).collect();
+        let workers = std::thread::available_parallelism().map_or(1, usize::from);
+        let chunk_count = (workers * 3).min(entries.len()).max(1);
+        let bounds: Vec<(usize, usize)> = (0..chunk_count)
+            .map(|c| (c * entries.len() / chunk_count, (c + 1) * entries.len() / chunk_count))
+            .collect();
+        let first_label = self.state.next_label;
+        let first_synthetic = self.patterns.allocator().advanced(0);
+        let run = |this: &Self, starts: &[(u64, u64)]| -> Result<Vec<ChunkRun<'a>>> {
+            let forks = bounds
+                .iter()
+                .zip(starts)
+                .map(|(&(start, _), &(label, synthetic))| {
+                    this.fork(entries, start, label, first_synthetic.advanced(synthetic))
+                        .map(|g| std::sync::Mutex::new(Some(g)))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let results: Vec<std::sync::Mutex<Option<ChunkRun<'a>>>> = bounds.iter().map(|_| Default::default()).collect();
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for _ in 0..workers.min(bounds.len()) {
+                    std::thread::Builder::new()
+                        .stack_size(crate::ordered_parallel::WORKER_STACK_BYTES)
+                        .spawn_scoped(scope, || loop {
+                            let c = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(&(start, end)) = bounds.get(c) else { break };
+                            let mut generator = forks[c].lock().unwrap().take().expect("fork");
+                            let mut counts = Vec::with_capacity(end - start);
+                            let mut error = None;
+                            for entry in &entries[start..end] {
+                                let label = generator.state.next_label;
+                                let synthetic = generator.patterns.allocation_count();
+                                if let Err(e) = generator.generate_entry(entry, defined) {
+                                    error = Some(e);
+                                    break;
+                                }
+                                counts.push((
+                                    generator.state.next_label.wrapping_sub(label),
+                                    generator.patterns.allocation_count() - synthetic,
+                                ));
+                            }
+                            *results[c].lock().unwrap() = Some(ChunkRun { generator, counts, error });
+                        })
+                        .expect("spawn generation worker");
+                }
+            });
+            Ok(results.into_iter().map(|r| r.into_inner().unwrap().expect("chunk ran")).collect())
+        };
+        let starts_from = |counts: &[(u64, u64)]| -> Vec<(u64, u64)> {
+            bounds
+                .iter()
+                .map(|&(start, _)| {
+                    counts[..start].iter().fold((first_label, 0u64), |(l, s), &(dl, ds)| (l.wrapping_add(dl), s + ds))
+                })
+                .collect()
+        };
+        let cached = COUNTS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .get(&key)
+            .filter(|counts| counts.len() == entries.len())
+            .cloned();
+        let assumed = match cached {
+            Some(counts) => counts,
+            None => {
+                // Counting pass: chunk-relative counters give each
+                // function's label use, whatever the absolute start.
+                let runs = run(self, &vec![(first_label, 0); bounds.len()])?;
+                if runs.iter().any(|r| r.error.is_some()) {
+                    return self.generate_sequential(entries, defined);
+                }
+                runs.into_iter().flat_map(|r| r.counts).collect()
+            }
+        };
+        let runs = run(self, &starts_from(&assumed))?;
+        let mut actual = Vec::with_capacity(entries.len());
+        let mut failure = None;
+        for ((start, _), chunk) in bounds.iter().zip(&runs) {
+            let complete = chunk.error.is_none();
+            if chunk.counts[..] != assumed[*start..*start + chunk.counts.len()] {
+                return self.generate_sequential(entries, defined);
+            }
+            actual.extend_from_slice(&chunk.counts);
+            if !complete {
+                failure = Some(());
+                break;
+            }
+        }
+        let verify = crate::lattice::verify_fast_paths().then(|| {
+            let mut whole = self.fork(entries, 0, first_label, first_synthetic.advanced(0))?;
+            for entry in entries {
+                whole.generate_entry(entry, defined)?;
+            }
+            Ok::<_, GenerationError>(whole)
+        });
+        for chunk in runs {
+            if let Some(error) = chunk.error {
+                debug_assert!(failure.is_some());
+                return Err(error);
+            }
+            self.merge_chunk(chunk.generator);
+        }
+        COUNTS.get().unwrap().lock().unwrap().insert(key, actual);
+        if let Some(whole) = verify {
+            let whole = whole?;
+            assert_eq!(whole.arena.debug_fingerprint(), self.arena.debug_fingerprint(), "parallel generation arena");
+            assert_eq!(format!("{:?}", whole.state.bodies), format!("{:?}", self.state.bodies), "parallel generation bodies");
+            assert_eq!(format!("{:?}", whole.state.parameters), format!("{:?}", self.state.parameters), "parallel generation parameters");
+            assert_eq!(format!("{:?}", whole.state.recursive_variables), format!("{:?}", self.state.recursive_variables), "parallel generation recursion");
+            assert_eq!(whole.state.next_label, self.state.next_label, "parallel generation labels");
+            assert_eq!(whole.patterns.allocation_count(), self.patterns.allocation_count(), "parallel generation refolds");
+            assert_eq!(whole.state.record_cache, self.state.record_cache, "parallel generation record cache");
+            assert_eq!(whole.state.missing_library_summaries, self.state.missing_library_summaries, "parallel generation summaries");
+            assert_eq!(format!("{:?}", whole.state.context), format!("{:?}", self.state.context), "parallel generation context");
+        }
+        Ok(())
+    }
+    fn generate_sequential(&mut self, entries: &[(ModuleId, NodeId, NodeId)], defined: &Defined) -> Result<()> {
+        for entry in entries {
+            self.generate_entry(entry, defined)?;
+        }
+        Ok(())
     }
     fn traverse(&mut self, root: Site, defined: Defined) -> Result<Type> {
         let mut todo = vec![Frame::Visit(root, defined)];

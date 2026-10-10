@@ -39,3 +39,19 @@ pub static PASS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize
 pub fn pass() -> usize {
     PASS.load(std::sync::atomic::Ordering::Relaxed)
 }
+thread_local! {
+    static NOTE: std::cell::RefCell<serde_json::Value> = const { std::cell::RefCell::new(serde_json::Value::Null) };
+}
+pub fn set_note(value: serde_json::Value) {
+    NOTE.with(|n| *n.borrow_mut() = value);
+}
+pub fn add_note(key: &str, value: serde_json::Value) {
+    NOTE.with(|n| {
+        if let serde_json::Value::Object(map) = &mut *n.borrow_mut() {
+            map.insert(key.into(), value);
+        }
+    });
+}
+pub fn take_note() -> serde_json::Value {
+    NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()))
+}

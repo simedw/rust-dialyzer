@@ -104,6 +104,21 @@ impl SyntheticLabels {
     pub fn allocations(&self) -> u64 {
         self.allocated
     }
+    /// The allocator after `count` further allocations, as if `allocate`
+    /// had been called that many times without using the labels.
+    pub fn advanced(&self, count: u64) -> Self {
+        let next = self.next.and_then(|next| {
+            count
+                .checked_mul(self.profile.stride.get())
+                .and_then(|step| next.get().checked_add(step))
+                .and_then(NonZeroU64::new)
+        });
+        Self {
+            profile: self.profile,
+            next,
+            allocated: self.allocated.saturating_add(count),
+        }
+    }
     pub fn allocate(&mut self) -> Result<SyntheticLabel, String> {
         let value = self.next.ok_or("synthetic label allocator exhausted")?;
         let allocated = self

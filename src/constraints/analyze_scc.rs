@@ -81,7 +81,7 @@ pub struct SccAnalysis {
 pub struct SccAnalyzer<'a> {
     pub nodes: &'a DataflowNodes<'a>,
     pub profile: &'a ClosureCodeProfile,
-    pub provider: &'a dyn SourceBifProvider,
+    pub provider: &'a (dyn SourceBifProvider + Sync),
     pub graph: &'a SourceCallGraph,
     pub phase: GenerationPhase<'a>,
 }

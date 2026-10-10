@@ -104,6 +104,12 @@ impl<'a, 'b> Patterns<'a, 'b> {
     pub fn allocation_count(&self) -> u64 {
         self.labels.allocations()
     }
+    pub fn allocator(&self) -> &SyntheticLabels {
+        &self.labels
+    }
+    pub fn set_allocator(&mut self, labels: SyntheticLabels) {
+        self.labels = labels;
+    }
     pub fn allocation_profile(&self) -> crate::dataflow_key::SyntheticAllocationProfile {
         self.labels.profile()
     }
