@@ -538,3 +538,374 @@ fn disjunction_joins_evaluated_maps_in_native_reverse_order() {
         }
     }
 }
+
+#[test]
+fn failed_disjunction_branch_checks_same_root_hit_with_unrelated_input_change() {
+    use crate::constraints::bindings::RootCatalogue;
+    let key = |n: i64| BindingKey::Label(VariableId::Integer(n.into()));
+    let mut tree = ConstraintTree::default();
+    let a = add(&mut tree, variable(1), Type::atom("a"));
+    let z = add(&mut tree, variable(1), Type::atom("z"));
+    let failed = group(&mut tree, vec![a, z]);
+    let b = add(&mut tree, variable(2), Type::atom("live"));
+    let live = group(&mut tree, vec![b]);
+    let root = tree
+        .push(Constraint::Disjunction(vec![failed, live]))
+        .unwrap();
+    let prepared = tree.finish(root).unwrap();
+    let catalogue = RootCatalogue::new(vec![key(1), key(2), key(3)].into());
+    let input = BindingMap::new();
+    let out = prepared
+        .solve(input.trace_root(catalogue.clone()), &NoBifProvider)
+        .unwrap();
+    let AtomicOutcome::Solved { bindings, updated } = out.outcome else {
+        panic!("live branch failed")
+    };
+    let cert = bindings.certificate(&input);
+    assert_eq!(
+        cert.slots
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>(),
+        vec![key(1), key(2)]
+    );
+    assert_eq!(bindings.get(&key(1)), None);
+    assert_eq!(bindings.get(&key(2)), Some(&Type::atom("live")));
+    let mut changed = input.clone();
+    changed.insert(key(3), Type::atom("unrelated"));
+    assert!(
+        cert.matches(&changed),
+        "VERIFY must exercise the normal hit"
+    );
+    let fresh = prepared
+        .solve(changed.trace_root(catalogue), &NoBifProvider)
+        .unwrap();
+    let AtomicOutcome::Solved {
+        mut bindings,
+        updated: new_updated,
+    } = fresh.outcome
+    else {
+        panic!("fresh branch failed")
+    };
+    bindings.detach_trace();
+    assert_eq!(updated, new_updated);
+    assert_eq!(out.detected_loops, fresh.detected_loops);
+    if crate::lattice::verify_fast_paths() {
+        assert_eq!(cert.replay_witness(&changed), bindings);
+    }
+}
+
+#[test]
+fn root_catalogue_rejects_changed_fixed_labels_and_raw_keys() {
+    use crate::constraints::bindings::RootCatalogue;
+    let mutable = BindingKey::Label(VariableId::Integer(1.into()));
+    let fixed = BindingKey::Label(VariableId::Integer(2.into()));
+    let raw = BindingKey::RawVariableRecord(VariableId::Integer(1.into()));
+    let catalogue = RootCatalogue::new(vec![mutable.clone()].into());
+    let input: BindingMap = [
+        (fixed.clone(), Type::atom("fixed")),
+        (raw.clone(), Type::atom("raw")),
+    ]
+    .into_iter()
+    .collect();
+    let mut allowed = input.clone();
+    allowed.insert(mutable, Type::none());
+    catalogue.assert_fixed_input(&input, &allowed);
+    for key in [fixed, raw] {
+        let mut changed = input.clone();
+        changed.remove(&key);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || catalogue.assert_fixed_input(&input, &changed)
+            ))
+            .is_err()
+        );
+    }
+}
+
+fn giant_unit_retry_tree(with_bif: bool) -> PreparedScc {
+    use crate::bifs::registry::Mfa;
+    use crate::constraints::derived::DerivedOp;
+    let mut tree = ConstraintTree::default();
+    let mut refs = Vec::new();
+    let mut functions = Vec::new();
+    for index in 0..400i64 {
+        let fid = 1000 + index;
+        let prototype = if index < 2 {
+            Type::function(
+                Some(vec![variable(2000 + index * 2)]),
+                variable(2001 + index * 2),
+            )
+        } else {
+            Type::function(Some(vec![]), Type::atom("constant"))
+        };
+        let declaration = add(&mut tree, variable(fid), prototype.clone());
+        let mut constraints = vec![declaration];
+        if index < 2 {
+            constraints.push(add(&mut tree, variable(3000 + (1 - index)), prototype));
+        }
+        if with_bif {
+            let derived = tree.push_derived(DerivedOp::BifReturn {
+                mfa: Mfa {
+                    module: "proof".into(),
+                    function: "capture".into(),
+                    arity: 1,
+                },
+                arguments: vec![Type::integer(index.into())],
+            });
+            constraints.push(
+                tree.push(Constraint::Atomic(AtomicConstraint {
+                    left: variable(4000 + index),
+                    right: ConstraintValue::Derived(derived),
+                    relation: Relation::Subtype,
+                }))
+                .unwrap(),
+            );
+        }
+        let body = group(&mut tree, constraints);
+        let function = FunctionVariable::new(VariableId::Integer(fid.into())).unwrap();
+        tree.define_function(
+            function.clone(),
+            FunctionDefinition {
+                body,
+                arity: if index < 2 { 1 } else { 0 },
+                recursive_variable: (index < 2).then(|| VariableId::Integer((3000 + index).into())),
+                propagated_domain: None,
+                self_recursive: false,
+            },
+        )
+        .unwrap();
+        let mut dependencies = vec![VariableId::Integer(fid.into())];
+        if index < 2 {
+            dependencies.extend(
+                [2000 + index * 2, 2001 + index * 2, 3000 + (1 - index)]
+                    .into_iter()
+                    .map(|n| VariableId::Integer(n.into())),
+            );
+        }
+        if with_bif {
+            dependencies.push(VariableId::Integer((4000 + index).into()));
+        }
+        refs.push(
+            tree.push(Constraint::Reference {
+                function: function.clone(),
+                dependencies: dependencies.into_iter().collect(),
+            })
+            .unwrap(),
+        );
+        functions.push(function);
+    }
+    let root = group(&mut tree, refs);
+    tree.finish(root).unwrap().prepare_scc(functions).unwrap()
+}
+
+#[test]
+fn giant_scc_replay_preserves_unit_retry_and_fixed_input() {
+    use crate::bifs::registry::Mfa;
+    use crate::constraints::derived::{BifResultProvider, EvalError};
+    struct Pure;
+    impl BifResultProvider for Pure {
+        fn replay_is_pure(&self) -> bool {
+            true
+        }
+        fn result(&self, mfa: &Mfa, arguments: &[Type]) -> Result<Type, EvalError> {
+            NoBifProvider.result(mfa, arguments)
+        }
+    }
+    let fixed = BindingKey::Label(VariableId::Integer(999999.into()));
+    let input: BindingMap = [(fixed.clone(), Type::atom("fixed"))].into_iter().collect();
+    let tree = giant_unit_retry_tree(false);
+    TEST_ROOT_HITS.with(|count| count.set((0, 0)));
+    let opaque = tree.solve(input.clone(), &NoBifProvider).unwrap();
+    assert_eq!(TEST_ROOT_HITS.with(|count| count.get()), (0, 0));
+    let replay = tree.solve(input, &Pure).unwrap();
+    let (hits, checked) = TEST_ROOT_HITS.with(|count| count.get());
+    if crate::lattice::verify_fast_paths() {
+        assert!(checked >= 398);
+        assert_eq!(hits, 0);
+    } else {
+        assert!(hits >= 398);
+        assert_eq!(checked, 0);
+    }
+    assert!(replay.tried_unit);
+    assert_eq!(replay.tried_unit, opaque.tried_unit);
+    assert_eq!(replay.iterations, opaque.iterations);
+    assert_eq!(replay.bindings, opaque.bindings);
+    assert_eq!(replay.bindings.get(&fixed), Some(&Type::atom("fixed")));
+}
+
+#[test]
+fn giant_scc_opaque_non_sync_provider_keeps_calls_and_late_error() {
+    use crate::bifs::registry::Mfa;
+    use crate::constraints::derived::{BifResultProvider, EvalError};
+    use std::cell::RefCell;
+    struct Stateful {
+        calls: RefCell<Vec<Type>>,
+        fail_repeat: bool,
+    }
+    impl BifResultProvider for Stateful {
+        fn result(&self, _: &Mfa, arguments: &[Type]) -> Result<Type, EvalError> {
+            let mut calls = self.calls.borrow_mut();
+            let repeated = calls.contains(&arguments[0]);
+            calls.push(arguments[0].clone());
+            if self.fail_repeat && repeated && arguments[0] == Type::integer(2.into()) {
+                Err(EvalError::Native(
+                    crate::lattice::LatticeError::FunctionClause,
+                ))
+            } else {
+                Ok(Type::any())
+            }
+        }
+    }
+    let tree = giant_unit_retry_tree(true);
+    TEST_ROOT_HITS.with(|count| count.set((0, 0)));
+    let normal = Stateful {
+        calls: RefCell::new(vec![]),
+        fail_repeat: false,
+    };
+    let out = tree.solve(BindingMap::new(), &normal).unwrap();
+    assert!(out.tried_unit);
+    let calls = normal.calls.borrow();
+    assert!(
+        calls
+            .iter()
+            .filter(|ty| **ty == Type::integer(2.into()))
+            .count()
+            >= 2,
+        "opaque constant root must run again during Unit retry"
+    );
+    let failing = Stateful {
+        calls: RefCell::new(vec![]),
+        fail_repeat: true,
+    };
+    assert!(matches!(
+        tree.solve(BindingMap::new(), &failing),
+        Err(SolveError::Evaluation(EvalError::Native(
+            crate::lattice::LatticeError::FunctionClause
+        )))
+    ));
+    let failed_calls = failing.calls.borrow();
+    assert_eq!(
+        &calls[..failed_calls.len()],
+        failed_calls.as_slice(),
+        "native call order through error must be preserved"
+    );
+    assert_eq!(TEST_ROOT_HITS.with(|count| count.get()), (0, 0));
+}
+
+#[test]
+fn root_guard_covers_map_value_substitution_outside_static_dependencies() {
+    use crate::bifs::registry::Mfa;
+    use crate::constraints::bindings::RootCatalogue;
+    use crate::constraints::derived::{BifResultProvider, DerivedOp, EvalError};
+    use crate::lattice::{MapTypeEntry, Presence};
+    struct Echo;
+    impl BifResultProvider for Echo {
+        fn result(&self, _: &Mfa, arguments: &[Type]) -> Result<Type, EvalError> {
+            Ok(arguments[0].clone())
+        }
+    }
+    let key = |n: i64| BindingKey::Label(VariableId::Integer(n.into()));
+    let map = Type::map_types(
+        vec![MapTypeEntry {
+            key: Type::atom("k"),
+            presence: Presence::Mandatory,
+            value: variable(2),
+        }],
+        Type::all_atoms(),
+        variable(3),
+    )
+    .unwrap();
+    let mut tree = ConstraintTree::default();
+    let operation = DerivedOp::BifReturn {
+        mfa: Mfa {
+            module: "proof".into(),
+            function: "echo".into(),
+            arity: 1,
+        },
+        arguments: vec![map],
+    };
+    let mut dependencies = DerivedArena::default();
+    let dep_id = dependencies.push(operation.clone());
+    assert!(
+        !dependencies
+            .dependencies(dep_id)
+            .unwrap()
+            .contains(&VariableId::Integer(2.into())),
+        "fixture must cover omitted static dependency"
+    );
+    let derived = tree.push_derived(operation);
+    let atom = tree
+        .push(Constraint::Atomic(AtomicConstraint {
+            left: variable(1),
+            right: ConstraintValue::Derived(derived),
+            relation: Relation::Subtype,
+        }))
+        .unwrap();
+    let root = group(&mut tree, vec![atom]);
+    let prepared = tree.finish(root).unwrap();
+    let catalogue = RootCatalogue::new(vec![key(1), key(2), key(3)].into());
+    let input: BindingMap = [
+        (key(2), Type::atom("first")),
+        (key(3), Type::atom("default")),
+    ]
+    .into_iter()
+    .collect();
+    let out = prepared
+        .solve(input.trace_root(catalogue.clone()), &Echo)
+        .unwrap();
+    let AtomicOutcome::Solved { bindings, .. } = out.outcome else {
+        panic!("map substitution failed")
+    };
+    let cert = bindings.certificate(&input);
+    assert!(cert.slots.iter().any(|(slot, _)| *slot == key(2)));
+    let mut changed = input.clone();
+    changed.insert(key(2), Type::atom("second"));
+    assert!(!cert.matches(&changed));
+    let out = prepared
+        .solve(changed.trace_root(catalogue), &Echo)
+        .unwrap();
+    let AtomicOutcome::Solved {
+        bindings: changed_bindings,
+        ..
+    } = out.outcome
+    else {
+        panic!("fresh map substitution failed")
+    };
+    assert_ne!(bindings.get(&key(1)), changed_bindings.get(&key(1)));
+}
+
+#[test]
+fn root_guard_invalidates_failed_branch_when_input_recovers() {
+    use crate::constraints::bindings::RootCatalogue;
+    let key = |n: i64| BindingKey::Label(VariableId::Integer(n.into()));
+    let mut tree = ConstraintTree::default();
+    let a = add(&mut tree, variable(1), Type::atom("a"));
+    let first = add(&mut tree, variable(2), Type::atom("first"));
+    let ba = group(&mut tree, vec![a, first]);
+    let z = add(&mut tree, variable(1), Type::atom("z"));
+    let second = add(&mut tree, variable(2), Type::atom("second"));
+    let bz = group(&mut tree, vec![z, second]);
+    let root = tree.push(Constraint::Disjunction(vec![ba, bz])).unwrap();
+    let prepared = tree.finish(root).unwrap();
+    let catalogue = RootCatalogue::new(vec![key(1), key(2), key(3)].into());
+    let input: BindingMap = [(key(1), Type::atom("z"))].into_iter().collect();
+    let out = prepared
+        .solve(input.trace_root(catalogue.clone()), &NoBifProvider)
+        .unwrap();
+    let AtomicOutcome::Solved { bindings, .. } = out.outcome else {
+        panic!("initial live branch failed")
+    };
+    assert_eq!(bindings.get(&key(2)), Some(&Type::atom("second")));
+    let cert = bindings.certificate(&input);
+    let mut changed = input;
+    changed.insert(key(1), Type::atom("a"));
+    assert!(!cert.matches(&changed));
+    let out = prepared
+        .solve(changed.trace_root(catalogue), &NoBifProvider)
+        .unwrap();
+    let AtomicOutcome::Solved { bindings, .. } = out.outcome else {
+        panic!("branch did not recover")
+    };
+    assert_eq!(bindings.get(&key(2)), Some(&Type::atom("first")));
+}

@@ -60,9 +60,7 @@ pub struct Masks {
 }
 impl Masks {
     /// The masks of a group whose children have the given dependencies.
-    pub fn from_children<'a>(
-        children: impl IntoIterator<Item = &'a [VariableId]>,
-    ) -> Self {
+    pub fn from_children<'a>(children: impl IntoIterator<Item = &'a [VariableId]>) -> Self {
         let mut pairs: Vec<(&VariableId, u32)> = Vec::new();
         for (index, deps) in children.into_iter().enumerate() {
             pairs.extend(deps.iter().map(|v| (v, index as u32)));
@@ -719,6 +717,15 @@ impl ConstraintTree {
                                 .filter(|k| maps.iter().all(|map| map.contains_key(k)))
                                 .collect();
                             if crate::lattice::verify_fast_paths() {
+                                let detached: Vec<_> = maps
+                                    .iter()
+                                    .map(|map| {
+                                        let mut out = (*map).clone();
+                                        out.detach_trace();
+                                        out
+                                    })
+                                    .collect();
+                                let maps: Vec<_> = detached.iter().collect();
                                 let mut old: BTreeSet<_> = maps[0].keys().collect();
                                 for map in &maps[1..] {
                                     old.retain(|k| map.contains_key(k));
@@ -726,9 +733,9 @@ impl ConstraintTree {
                                 let old: Vec<_> = old
                                     .into_iter()
                                     .filter(|v| {
-                                        v.label()
-                                            .and_then(|v| mask.get(v))
-                                            .is_some_and(|indices| sorted_subset(&d.survived, indices))
+                                        v.label().and_then(|v| mask.get(v)).is_some_and(|indices| {
+                                            sorted_subset(&d.survived, indices)
+                                        })
                                     })
                                     .collect();
                                 assert_eq!(keys, old, "disjunction key intersection fast path");
@@ -957,7 +964,14 @@ impl Snapshot {
             .iter()
             .all(|(key, old)| !seen.insert(key) || map.get(key) == old.as_ref());
         if let Some(old) = &self.map {
-            assert_eq!(unchanged, old == map, "conjunction write log fast path");
+            let equal = {
+                let mut a = old.clone();
+                let mut b = map.clone();
+                a.detach_trace();
+                b.detach_trace();
+                a == b
+            };
+            assert_eq!(unchanged, equal, "conjunction write log fast path");
         }
         unchanged
     }
@@ -1129,6 +1143,37 @@ impl PreparedTree {
         })
     }
 }
+struct RootEntry {
+    certificate: crate::constraints::bindings::RootCertificate,
+    updated: KeySet,
+    loops: Vec<ConstraintId>,
+    inferred: Type,
+}
+#[derive(Default)]
+struct RootCache {
+    entries: BTreeMap<FunctionVariable, RootEntry>,
+    guard_bytes: usize,
+}
+impl RootCache {
+    const MAX_GUARD_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_ENTRIES: usize = 4096;
+    fn insert(&mut self, function: FunctionVariable, entry: RootEntry) -> bool {
+        if let Some(old) = self.entries.remove(&function) {
+            self.guard_bytes -= old.certificate.guard_buffer_bytes();
+        }
+        let bytes = entry.certificate.guard_buffer_bytes();
+        if !entry.certificate.retainable()
+            || self.entries.len() >= Self::MAX_ENTRIES
+            || bytes > Self::MAX_GUARD_BYTES - self.guard_bytes
+        {
+            return false;
+        }
+        self.guard_bytes += bytes;
+        self.entries.insert(function, entry);
+        true
+    }
+}
+
 impl PreparedScc {
     pub fn solve(
         &self,
@@ -1147,6 +1192,25 @@ impl PreparedScc {
             })
             .collect();
         let mut to_solve = self.functions.clone();
+        let replay_enabled = self.functions.len() >= 400 && provider.replay_is_pure();
+        let mutable = replay_enabled.then(|| {
+            let mut keys = self
+                .functions
+                .iter()
+                .map(|f| BindingKey::Label(f.variable().clone()))
+                .collect::<Vec<_>>();
+            keys.extend(
+                recursive
+                    .iter()
+                    .map(|(_, v)| BindingKey::Label((*v).clone())),
+            );
+            keys.sort();
+            keys.dedup();
+            crate::constraints::bindings::RootCatalogue::new(keys.into())
+        });
+        let fixed_input =
+            (replay_enabled && crate::lattice::verify_fast_paths()).then(|| map.clone());
+        let mut certificates = RootCache::default();
         let mut tried_unit = false;
         let mut iterations = 0;
         loop {
@@ -1169,11 +1233,38 @@ impl PreparedScc {
                 map = enter(variable, ty, map)?.0;
             }
             for function in &to_solve {
-                let solved =
-                    self.tree
-                        .tree
-                        .solve(self.references[function], map.clone(), provider)?;
-                let AtomicOutcome::Solved { bindings, .. } = solved.outcome else {
+                if let (Some(mutable), Some(fixed)) = (&mutable, &fixed_input) {
+                    mutable.assert_fixed_input(fixed, &map);
+                }
+                if replay_enabled {
+                    if let Some(entry) = certificates.entries.get(function) {
+                        if entry.certificate.matches(&map) && !crate::lattice::verify_fast_paths() {
+                            #[cfg(test)]
+                            TEST_ROOT_HITS.with(|count| {
+                                let (hits, checked) = count.get();
+                                count.set((hits + 1, checked));
+                            });
+                            let inferred = entry.inferred.clone();
+                            map = enter(function.variable(), inferred.clone(), map)?.0;
+                            if let Some(variable) =
+                                &self.tree.tree.functions[function].recursive_variable
+                            {
+                                map = enter(variable, inferred, map)?.0;
+                            }
+                            continue;
+                        }
+                    }
+                }
+                let input = if let Some(mutable) = &mutable {
+                    map.trace_root(mutable.clone())
+                } else {
+                    map.clone()
+                };
+                let solved = self
+                    .tree
+                    .tree
+                    .solve(self.references[function], input, provider)?;
+                let AtomicOutcome::Solved { bindings, updated } = solved.outcome else {
                     unreachable!("native function reference cannot fail")
                 };
                 let inferred = bindings
@@ -1181,6 +1272,55 @@ impl PreparedScc {
                     .cloned()
                     .unwrap_or_else(Type::none)
                     .limit(4)?;
+                if replay_enabled {
+                    let matched = certificates
+                        .entries
+                        .get(function)
+                        .filter(|entry| entry.certificate.matches(&map));
+                    if let Some(entry) = matched {
+                        let expected = entry.certificate.replay_witness(&map);
+                        let mut actual = bindings.clone();
+                        actual.detach_trace();
+                        assert_eq!(
+                            expected, actual,
+                            "complete root certificate bindings witness"
+                        );
+                        assert_eq!(
+                            entry.updated, updated,
+                            "complete root certificate updated witness"
+                        );
+                        assert_eq!(
+                            entry.loops, solved.detected_loops,
+                            "complete root certificate loop witness"
+                        );
+                        assert_eq!(
+                            entry.inferred, inferred,
+                            "complete root certificate inferred witness"
+                        );
+                        #[cfg(test)]
+                        TEST_ROOT_HITS.with(|count| {
+                            let (hits, checked) = count.get();
+                            count.set((hits, checked + 1));
+                        });
+                    } else {
+                        let certificate = bindings.certificate(&map);
+                        let (updated, loops) = if crate::lattice::verify_fast_paths() {
+                            (updated, solved.detected_loops.clone())
+                        } else {
+                            (KeySet::new(), Vec::new())
+                        };
+                        certificates.insert(
+                            function.clone(),
+                            RootEntry {
+                                certificate,
+                                updated,
+                                loops,
+                                inferred: inferred.clone(),
+                            },
+                        );
+                    }
+                }
+
                 map = enter(function.variable(), inferred.clone(), map)?.0;
                 if let Some(variable) = &self.tree.tree.functions[function].recursive_variable {
                     map = enter(variable, inferred, map)?.0;
@@ -1291,5 +1431,112 @@ mod unchanged_binding_mutation_tests {
             dirty: [key(1)].into(),
         };
         assert!(restore_entry(Some(&cache), &BindingMap::new()).is_empty());
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static TEST_ROOT_HITS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+mod root_cache_observation_tests {
+    use super::*;
+    use crate::constraints::bindings::RootCatalogue;
+    #[test]
+    fn native_cache_save_restore_and_dirty_keys_keep_input_guards() {
+        let key = |n: i64| BindingKey::Label(VariableId::Integer(n.into()));
+        let input: BindingMap = [(key(1), Type::atom("cached"))].into_iter().collect();
+        let tree = ConstraintTree::default();
+        let mut state = State {
+            tree: &tree,
+            cache: BTreeMap::new(),
+            function_cache: BTreeMap::new(),
+            detected_loops: vec![],
+        };
+        let traced = input.trace_root(RootCatalogue::new(vec![key(1), key(2)].into()));
+        state.save(ConstraintId(0), &[key(1)].into(), &traced);
+        let mut changed_local = traced.clone();
+        changed_local.insert(key(1), Type::atom("local"));
+        let restored = state.restore(ConstraintId(0), &changed_local);
+        assert_eq!(restored.get(&key(1)), Some(&Type::atom("cached")));
+        if let Some(Cache::Active { dirty, .. }) = state.cache.get_mut(&ConstraintId(0)) {
+            dirty.insert(key(1));
+        }
+        let dirty = state.restore(ConstraintId(0), &changed_local);
+        assert_eq!(dirty.get(&key(1)), Some(&Type::atom("local")));
+        let cert = dirty.certificate(&input);
+        assert_eq!(cert.slots.len(), 1);
+        let mut changed_input = input.clone();
+        changed_input.remove(&key(1));
+        assert!(!cert.matches(&changed_input));
+        assert!(state.function_cache.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod root_cache_budget_tests {
+    use super::*;
+    use crate::constraints::bindings::RootCatalogue;
+    fn function(n: usize) -> FunctionVariable {
+        FunctionVariable::new(VariableId::Integer(n.into())).unwrap()
+    }
+    fn entry(guards: usize) -> RootEntry {
+        let input = BindingMap::new();
+        let keys = (0..guards)
+            .map(|n| BindingKey::Label(VariableId::Integer(n.into())))
+            .collect::<Vec<_>>();
+        let traced = input.trace_root(RootCatalogue::new(keys.clone().into()));
+        for key in &keys {
+            traced.get(key);
+        }
+        RootEntry {
+            certificate: traced.certificate(&input),
+            updated: KeySet::new(),
+            loops: vec![],
+            inferred: Type::any(),
+        }
+    }
+    #[test]
+    fn aggregate_guard_bytes_replacement_rejection_and_readmission() {
+        let mut cache = RootCache::default();
+        let bytes = entry(128).certificate.guard_buffer_bytes();
+        let count = RootCache::MAX_GUARD_BYTES / bytes;
+        assert!(count < RootCache::MAX_ENTRIES);
+        for n in 0..count {
+            assert!(cache.insert(function(n), entry(128)));
+        }
+        assert_eq!(cache.guard_bytes, count * bytes);
+        assert!(!cache.insert(function(count), entry(128)));
+        assert_eq!(cache.entries.len(), count);
+        assert_eq!(cache.guard_bytes, count * bytes);
+        assert!(cache.insert(function(0), entry(0)));
+        assert_eq!(cache.guard_bytes, (count - 1) * bytes);
+        assert!(cache.insert(function(count), entry(128)));
+        assert!(!cache.insert(function(count), entry(129)));
+        assert!(!cache.entries.contains_key(&function(count)));
+        assert_eq!(cache.guard_bytes, (count - 1) * bytes);
+        assert!(cache.insert(function(count), entry(128)));
+        assert_eq!(
+            cache.guard_bytes,
+            cache
+                .entries
+                .values()
+                .map(|e| e.certificate.guard_buffer_bytes())
+                .sum::<usize>()
+        );
+    }
+    #[test]
+    fn aggregate_entry_limit_allows_replacement_but_rejects_growth() {
+        let mut cache = RootCache::default();
+        for n in 0..RootCache::MAX_ENTRIES {
+            assert!(cache.insert(function(n), entry(0)));
+        }
+        assert_eq!(cache.guard_bytes, 0);
+        assert!(!cache.insert(function(RootCache::MAX_ENTRIES), entry(0)));
+        assert_eq!(cache.entries.len(), RootCache::MAX_ENTRIES);
+        assert!(cache.insert(function(0), entry(1)));
+        assert_eq!(cache.entries.len(), RootCache::MAX_ENTRIES);
+        assert_eq!(cache.guard_bytes, entry(1).certificate.guard_buffer_bytes());
     }
 }

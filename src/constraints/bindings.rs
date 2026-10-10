@@ -60,6 +60,7 @@ impl PartialOrd for BindingKey {
 /// `Label(0)` or above every machine integer label.
 #[derive(Clone, Default)]
 pub struct BindingMap {
+    trace: Option<Arc<RootOrigin>>,
     labels: LabelTrie,
     /// `None` until a key outside the trie is first written: an empty
     /// `im::OrdMap` allocates its root node, and most maps never need one.
@@ -81,12 +82,14 @@ impl BindingKey {
 impl BindingMap {
     pub fn new() -> Self {
         Self {
+            trace: None,
             labels: LabelTrie::default(),
             rest: None,
             shadow: crate::lattice::verify_fast_paths().then(im::OrdMap::new),
         }
     }
     pub fn get(&self, key: &BindingKey) -> Option<&Type> {
+        self.observe_key(key);
         let found = match key.trie_index() {
             Some(index) => self.labels.get(index),
             None => self.rest.as_ref().and_then(|rest| rest.get(key)),
@@ -100,6 +103,7 @@ impl BindingMap {
         self.get(key).is_some()
     }
     pub fn insert(&mut self, key: BindingKey, value: Type) -> Option<Type> {
+        self.observe_write(&key);
         if let Some(shadow) = &mut self.shadow {
             let expected = shadow.insert(key.clone(), value.clone());
             let old = self.insert_unshadowed(key, value);
@@ -118,6 +122,7 @@ impl BindingMap {
         }
     }
     pub fn remove(&mut self, key: &BindingKey) -> Option<Type> {
+        self.observe_write(key);
         let old = match key.trie_index() {
             Some(index) => self.labels.remove(index),
             None => self.rest.as_mut().and_then(|rest| rest.remove(key)),
@@ -128,12 +133,14 @@ impl BindingMap {
         old
     }
     pub fn len(&self) -> usize {
+        self.observe_shape();
         self.labels.len + self.rest.as_ref().map_or(0, |rest| rest.len())
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
     pub fn iter(&self) -> impl Iterator<Item = (BindingKey, &Type)> + '_ {
+        self.observe_shape();
         let zero = BindingKey::trie_key(0);
         fn owned<'a>((k, v): (&BindingKey, &'a Type)) -> (BindingKey, &'a Type) {
             (k.clone(), v)
@@ -159,6 +166,10 @@ impl BindingMap {
         self.iter().map(|(key, _)| key)
     }
     pub fn ptr_eq(&self, other: &Self) -> bool {
+        {
+            self.reject_identity();
+            other.reject_identity();
+        }
         self.labels.ptr_eq(&other.labels)
             && match (&self.rest, &other.rest) {
                 (None, None) => true,
@@ -169,6 +180,12 @@ impl BindingMap {
     /// Under `verify_fast_paths()`, asserts the contents and iteration order
     /// match the shadow `im::OrdMap`.
     pub fn verify_shadow(&self) {
+        if self.trace.is_some() {
+            let mut detached = self.clone();
+            detached.trace = None;
+            detached.verify_shadow();
+            return;
+        }
         if let Some(shadow) = &self.shadow {
             assert_eq!(self.len(), shadow.len(), "binding map size");
             assert!(
@@ -182,6 +199,7 @@ impl BindingMap {
 }
 impl PartialEq for BindingMap {
     fn eq(&self, other: &Self) -> bool {
+        self.observe_equality(other);
         let rest = match (&self.rest, &other.rest) {
             (None, None) => true,
             (Some(a), Some(b)) => a == b,
@@ -615,5 +633,349 @@ mod tests {
                 BindingKey::RawVariableRecord(id)
             );
         }
+    }
+}
+
+#[derive(Clone)]
+struct RootOrigin {
+    context: Arc<RootContext>,
+    touched: im::OrdSet<BindingKey>,
+}
+struct RootContext {
+    catalogue: Arc<RootCatalogue>,
+    observations: std::sync::Mutex<RootObservations>,
+}
+pub(crate) struct RootCatalogue {
+    keys: Arc<[BindingKey]>,
+    start: u64,
+    dense: Vec<u32>,
+}
+impl RootCatalogue {
+    pub(crate) fn new(keys: Arc<[BindingKey]>) -> Arc<Self> {
+        assert!(keys.windows(2).all(|x| x[0] < x[1]));
+        let indices: Vec<_> = keys.iter().filter_map(BindingKey::trie_index).collect();
+        let start = indices.iter().copied().min().unwrap_or(0);
+        let end = indices.iter().copied().max().unwrap_or(0);
+        let mut dense = if end - start <= 1_000_000 {
+            vec![u32::MAX; (end - start + 1) as usize]
+        } else {
+            Vec::new()
+        };
+        for (slot, key) in keys.iter().enumerate() {
+            if let Some(index) = key.trie_index() {
+                if let Some(cell) = dense.get_mut((index - start) as usize) {
+                    *cell = slot as u32;
+                }
+            }
+        }
+        Arc::new(Self { keys, start, dense })
+    }
+    pub(crate) fn assert_fixed_input(&self, initial: &BindingMap, current: &BindingMap) {
+        let fixed = |map: &BindingMap| {
+            map.iter()
+                .filter(|(key, _)| self.slot(key).is_none())
+                .map(|(key, ty)| (key, ty.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            fixed(initial),
+            fixed(current),
+            "root reuse fixed-input catalogue invariant"
+        );
+    }
+    fn slot(&self, key: &BindingKey) -> Option<usize> {
+        if let Some(index) = key.trie_index() {
+            if !self.dense.is_empty() {
+                let slot = *self.dense.get(index.checked_sub(self.start)? as usize)?;
+                return (slot != u32::MAX).then_some(slot as usize);
+            }
+        }
+        self.keys.binary_search(key).ok()
+    }
+}
+#[derive(Default)]
+struct RootObservations {
+    slots: std::collections::BTreeSet<usize>,
+    unsupported_identity: bool,
+}
+#[derive(Clone)]
+pub(crate) struct RootCertificate {
+    pub slots: Vec<(BindingKey, Option<Type>)>,
+    pub unsupported_identity: bool,
+    pub delta: Vec<(BindingKey, Option<Type>)>,
+}
+impl RootCertificate {
+    pub(crate) fn guard_buffer_bytes(&self) -> usize {
+        self.slots.capacity() * std::mem::size_of::<(BindingKey, Option<Type>)>()
+    }
+    pub(crate) fn retainable(&self) -> bool {
+        !self.unsupported_identity && self.slots.len() <= 128 && self.slots.iter().all(|(key, _)| {
+            matches!(key, BindingKey::Label(VariableId::Integer(n)) if n.small().is_some())
+        })
+    }
+    pub fn matches(&self, input: &BindingMap) -> bool {
+        !self.unsupported_identity
+            && self
+                .slots
+                .iter()
+                .all(|(key, value)| input.get(key) == value.as_ref())
+    }
+    pub fn replay_witness(&self, input: &BindingMap) -> BindingMap {
+        let mut out = input.clone();
+        out.trace = None;
+        for (key, value) in &self.delta {
+            match value {
+                Some(value) => {
+                    out.insert(key.clone(), value.clone());
+                }
+                None => {
+                    out.remove(key);
+                }
+            }
+        }
+        out
+    }
+}
+impl BindingMap {
+    fn raw_get(&self, key: &BindingKey) -> Option<&Type> {
+        match key.trie_index() {
+            Some(index) => self.labels.get(index),
+            None => self.rest.as_ref().and_then(|rest| rest.get(key)),
+        }
+    }
+    fn observe_key(&self, key: &BindingKey) {
+        let Some(origin) = &self.trace else { return };
+        if !origin.touched.contains(key) {
+            if let Some(slot) = origin.context.catalogue.slot(key) {
+                origin
+                    .context
+                    .observations
+                    .lock()
+                    .unwrap()
+                    .slots
+                    .insert(slot);
+            }
+        }
+    }
+    fn observe_write(&mut self, key: &BindingKey) {
+        self.observe_key(key);
+        if let Some(origin) = &mut self.trace {
+            if origin.context.catalogue.slot(key).is_some() {
+                Arc::make_mut(origin).touched.insert(key.clone());
+            }
+        }
+    }
+    fn observe_shape(&self) {
+        let Some(origin) = &self.trace else { return };
+        let mut counts = origin.context.observations.lock().unwrap();
+        for (slot, key) in origin.context.catalogue.keys.iter().enumerate() {
+            if !origin.touched.contains(key) {
+                counts.slots.insert(slot);
+            }
+        }
+    }
+    fn reject_identity(&self) {
+        if let Some(origin) = &self.trace {
+            origin
+                .context
+                .observations
+                .lock()
+                .unwrap()
+                .unsupported_identity = true;
+        }
+    }
+    fn observe_equality(&self, other: &Self) {
+        self.observe_shape();
+        other.observe_shape();
+    }
+    pub(crate) fn trace_root(&self, catalogue: Arc<RootCatalogue>) -> Self {
+        assert!(self.trace.is_none());
+        let mut out = self.clone();
+        out.trace = Some(Arc::new(RootOrigin {
+            context: Arc::new(RootContext {
+                catalogue,
+                observations: Default::default(),
+            }),
+            touched: im::OrdSet::new(),
+        }));
+        out
+    }
+    pub(crate) fn certificate(&self, initial: &Self) -> RootCertificate {
+        let origin = self
+            .trace
+            .as_ref()
+            .expect("root outcome preserves input origin");
+        let counts = origin.context.observations.lock().unwrap();
+        RootCertificate {
+            slots: counts
+                .slots
+                .iter()
+                .map(|slot| {
+                    let key = &origin.context.catalogue.keys[*slot];
+                    (key.clone(), initial.raw_get(key).cloned())
+                })
+                .collect(),
+            unsupported_identity: counts.unsupported_identity,
+            delta: if crate::lattice::verify_fast_paths() {
+                let mut actual = self.clone();
+                actual.trace = None;
+                let mut keys: Vec<_> = actual.keys().chain(initial.keys()).collect();
+                keys.sort();
+                keys.dedup();
+                keys.into_iter()
+                    .filter(|key| actual.get(key) != initial.get(key))
+                    .map(|key| {
+                        let value = actual.get(&key).cloned();
+                        (key, value)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        }
+    }
+    pub(crate) fn detach_trace(&mut self) {
+        self.trace = None;
+    }
+}
+
+#[cfg(test)]
+mod root_replay_guard_tests {
+    use super::*;
+    fn key(n: i64) -> BindingKey {
+        BindingKey::Label(VariableId::Integer(n.into()))
+    }
+    fn catalogue() -> Arc<RootCatalogue> {
+        RootCatalogue::new(vec![key(1), key(2), key(3)].into())
+    }
+    #[test]
+    fn absence_guard_rejects_explicit_any() {
+        let input = BindingMap::new();
+        let traced = input.trace_root(catalogue());
+        assert!(!traced.contains_key(&key(1)));
+        let cert = traced.certificate(&input);
+        let mut changed = input.clone();
+        changed.insert(key(1), Type::any());
+        assert!(cert.matches(&input));
+        assert!(!cert.matches(&changed));
+    }
+    #[test]
+    fn writes_observe_previous_input_even_if_equal_or_absent() {
+        let mut input = BindingMap::new();
+        input.insert(key(1), Type::atom("x"));
+        let mut traced = input.trace_root(catalogue());
+        traced.insert(key(1), Type::atom("x"));
+        traced.remove(&key(2));
+        let cert = traced.certificate(&input);
+        assert_eq!(cert.slots.len(), 2);
+        let mut changed = input.clone();
+        changed.insert(key(2), Type::any());
+        assert!(!cert.matches(&changed));
+    }
+    #[test]
+    fn structural_observations_cover_unvisited_absent_slots() {
+        let input = BindingMap::new();
+        let traced = input.trace_root(catalogue());
+        let _iterator = traced.iter();
+        assert_eq!(traced.certificate(&input).slots.len(), 3);
+        let mut changed = input.clone();
+        changed.insert(key(3), Type::atom("new"));
+        assert!(!traced.certificate(&input).matches(&changed));
+    }
+    #[test]
+    fn discarded_branch_cannot_leak_into_verify_witness() {
+        let input = BindingMap::new();
+        let traced = input.trace_root(catalogue());
+        let mut discarded = traced.clone();
+        discarded.insert(key(1), Type::atom("discarded"));
+        let mut output = traced;
+        output.insert(key(2), Type::atom("returned"));
+        let cert = output.certificate(&input);
+        assert!(cert.slots.iter().any(|(key, _)| *key == self::key(1)));
+        if crate::lattice::verify_fast_paths() {
+            let witness = cert.replay_witness(&input);
+            assert_eq!(witness.get(&key(1)), None);
+            assert_eq!(witness.get(&key(2)), Some(&Type::atom("returned")));
+        }
+    }
+    #[test]
+    fn raw_keys_stay_distinct_and_returned_witness_keeps_them() {
+        let input = BindingMap::new();
+        let mut output = input.trace_root(catalogue());
+        let raw = BindingKey::RawVariableRecord(VariableId::Integer(1.into()));
+        output.insert(raw.clone(), Type::any());
+        let cert = output.certificate(&input);
+        assert!(cert.slots.is_empty());
+        if crate::lattice::verify_fast_paths() {
+            assert_eq!(cert.replay_witness(&input).get(&raw), Some(&Type::any()));
+            assert_eq!(cert.replay_witness(&input).get(&key(1)), None);
+        }
+    }
+    #[test]
+    fn pointer_sensitive_observation_disables_replay() {
+        let input = BindingMap::new();
+        let traced = input.trace_root(catalogue());
+        assert!(traced.ptr_eq(&traced));
+        assert!(!traced.certificate(&input).matches(&input));
+    }
+    #[test]
+    fn dense_catalogue_covers_offsets_and_absent_slots() {
+        let cat = RootCatalogue::new(vec![key(10), key(99), key(100)].into());
+        assert_eq!(cat.slot(&key(10)), Some(0));
+        assert_eq!(cat.slot(&key(100)), Some(2));
+        assert_eq!(cat.slot(&key(9)), None);
+        assert_eq!(cat.slot(&key(101)), None);
+        assert_eq!(cat.slot(&key(50)), None);
+    }
+}
+
+#[cfg(test)]
+mod root_equality_and_budget_tests {
+    use super::*;
+    fn key(n: i64) -> BindingKey {
+        BindingKey::Label(VariableId::Integer(n.into()))
+    }
+    #[test]
+    fn equal_and_mixed_origin_maps_guard_unwritten_inputs_on_both_sides() {
+        let catalogue = RootCatalogue::new(vec![key(1), key(2), key(3)].into());
+        let input = BindingMap::new();
+        let traced = input.trace_root(catalogue.clone());
+        let mut left = traced.clone();
+        left.insert(key(1), Type::atom("local"));
+        let mut right = traced;
+        right.insert(key(1), Type::atom("local"));
+        assert_eq!(left, right);
+        let cert = left.certificate(&input);
+        assert_eq!(cert.slots.len(), 3);
+        let mut changed = input.clone();
+        changed.insert(key(3), Type::atom("changed"));
+        assert!(!cert.matches(&changed));
+        let mixed = input.trace_root(catalogue);
+        assert_ne!(left, mixed);
+        assert_eq!(mixed.certificate(&input).slots.len(), 3);
+    }
+    #[test]
+    fn retention_admits_only_small_keys_and_at_most_128_guards() {
+        let input = BindingMap::new();
+        let catalogue = RootCatalogue::new((0..129).map(key).collect::<Vec<_>>().into());
+        let traced = input.trace_root(catalogue);
+        for n in 0..128 {
+            traced.get(&key(n));
+        }
+        let cert = traced.certificate(&input);
+        assert!(cert.retainable());
+        assert_eq!(
+            cert.guard_buffer_bytes(),
+            cert.slots.capacity() * std::mem::size_of::<(BindingKey, Option<Type>)>()
+        );
+        traced.get(&key(128));
+        assert!(!traced.certificate(&input).retainable());
+        let large = BindingKey::Label(VariableId::Integer(
+            (num_bigint::BigInt::from(1) << 100usize).into(),
+        ));
+        let catalogue = RootCatalogue::new(vec![large.clone()].into());
+        let traced = input.trace_root(catalogue);
+        traced.get(&large);
+        assert!(!traced.certificate(&input).retainable());
     }
 }

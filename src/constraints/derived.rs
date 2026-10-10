@@ -210,9 +210,19 @@ impl From<TransferError> for EvalError {
     }
 }
 pub trait BifResultProvider {
+    /// Opt-in contract for root replay: result and error behavior
+    /// are deterministic for fixed arguments and configuration throughout a
+    /// borrowed solve, and calls have no externally observable effects. This
+    /// grants no thread-safety capability. Arbitrary providers remain opaque.
+    fn replay_is_pure(&self) -> bool {
+        false
+    }
     fn result(&self, mfa: &Mfa, arguments: &[Type]) -> Result<Type, EvalError>;
 }
 impl BifResultProvider for Registry {
+    fn replay_is_pure(&self) -> bool {
+        true
+    }
     fn result(&self, mfa: &Mfa, arguments: &[Type]) -> Result<Type, EvalError> {
         Ok(self.transfer(mfa, arguments)?.result)
     }
