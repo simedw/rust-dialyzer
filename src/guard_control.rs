@@ -109,46 +109,28 @@ pub struct GuardBound<W> {
     pub state: BinderState<W>,
 }
 /// Guard `let` bindings in scope. A binding shadows earlier bindings of the
-/// same variable; extending a scope shares its parent instead of copying it.
+/// same variable. Long `orelse` guards nest hundreds of `let`s, so lookups
+/// use a persistent map; extending a scope shares its parent.
 #[derive(Clone, Debug, Default)]
 pub struct GuardEnvironment {
-    head: Option<std::sync::Arc<EnvironmentBinding>>,
-}
-#[derive(Debug)]
-struct EnvironmentBinding {
-    key: DataflowKey,
-    expression: NodeRef,
-    parent: Option<std::sync::Arc<EnvironmentBinding>>,
+    bindings: im::OrdMap<DataflowKey, NodeRef>,
 }
 impl GuardEnvironment {
     pub fn new() -> Self {
         Self::default()
     }
-    fn bindings(&self) -> impl Iterator<Item = &EnvironmentBinding> {
-        std::iter::successors(self.head.as_deref(), |binding| binding.parent.as_deref())
-    }
     pub fn insert(&mut self, key: DataflowKey, expression: NodeRef) {
-        let parent = self.head.take();
-        self.head = Some(std::sync::Arc::new(EnvironmentBinding {
-            key,
-            expression,
-            parent,
-        }));
+        self.bindings.insert(key, expression);
     }
     pub fn get(&self, key: &DataflowKey) -> Option<&NodeRef> {
-        self.bindings()
-            .find(|binding| binding.key == *key)
-            .map(|binding| &binding.expression)
+        self.bindings.get(key)
     }
     /// The number of distinct variables bound.
     pub fn len(&self) -> usize {
-        self.bindings()
-            .map(|binding| binding.key)
-            .collect::<std::collections::BTreeSet<_>>()
-            .len()
+        self.bindings.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.head.is_none()
+        self.bindings.is_empty()
     }
 }
 pub struct GuardControl<'a, 'b, 'c> {
