@@ -55,6 +55,8 @@ The [built-in result reuse design](../reports/halving-rust-2026-10-09/bif-result
 
 ## Goal
 
+The [built-in result census](../reports/halving-rust-2026-10-09/bif-result-census/REPORT.md) now passes 289 library tests per mode and all four complete normal/VERIFY inventory outputs. Each normal inventory observes 16,990 eligible provider requests with 16,952 stable retained successful repeats, 99.78%, across nine large-SCC owners; no mismatched success, error, collision or bypass appears. VERIFY includes root-shadow calls and is reported separately. Every original provider Result executes and returns unchanged. Initial failed map-read fixture and both corrected sources/logs are preserved. The lazy table bounds slot payload to 192 KiB per owner, not process RSS. gpt-6-astra finds no source skip blocker; manual integration wrapping and recursive callback/TLS/complete read-event coverage qualifications remain. No diagnostic performance or production adoption claim applies. Next activated memo implementation has begun at /private/tmp/rust-5x-bif-memo/candidate; tests, ordinary/fresh PGO benchmarks and full adoption gates remain. Main source/PGO are unchanged, 5x unmet and the BTree panic unresolved. This supersedes the earlier unbuilt census checkpoint.
+
 A Rust reimplementation of OTP 28 Dialyzer for Elixir projects that is much faster than `mix dialyzer` (dialyxir) and reports **exactly** the same warnings. The order of warnings doesn't matter. The current focus is the **full from-scratch run** (no PLT), because that is where Rust can gain most over OTP.
 
 **Exact parity is the hard constraint.** Every change must reproduce OTP's warnings and its inferred signatures for every function, including private ones, bit for bit.
