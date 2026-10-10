@@ -343,7 +343,39 @@ fn function_term(module: &CoreModule, id: TermId) -> Result<FunctionName> {
         arity,
     })
 }
+/// `source_origin` for every node of a module: nodes share annotation
+/// lists and file names, so each distinct term is decoded once.
+pub(super) fn module_source_origins(module: &CoreModule) -> Result<Vec<SourceOrigin>> {
+    let mut by_raw: std::collections::HashMap<TermId, SourceOrigin> = Default::default();
+    let mut files: std::collections::HashMap<TermId, String> = Default::default();
+    module
+        .nodes
+        .iter()
+        .map(|node| {
+            if let Some(origin) = by_raw.get(&node.annotations) {
+                return Ok(origin.clone());
+            }
+            let origin = source_origin_with(module, node.annotations, &mut |id| {
+                if let Some(file) = files.get(&id) {
+                    return Ok(file.clone());
+                }
+                let file = characters(module, id)?;
+                files.insert(id, file.clone());
+                Ok(file)
+            })?;
+            by_raw.insert(node.annotations, origin.clone());
+            Ok(origin)
+        })
+        .collect()
+}
 pub(super) fn source_origin(module: &CoreModule, raw: TermId) -> Result<SourceOrigin> {
+    source_origin_with(module, raw, &mut |id| characters(module, id))
+}
+fn source_origin_with(
+    module: &CoreModule,
+    raw: TermId,
+    file_name: &mut dyn FnMut(TermId) -> Result<String>,
+) -> Result<SourceOrigin> {
     let mut origin = SourceOrigin {
         raw,
         file: None,
@@ -372,7 +404,7 @@ pub(super) fn source_origin(module: &CoreModule, raw: TermId) -> Result<SourceOr
                 origin.column = u64::try_from(col).ok();
             }
             if atom(module, fields[0]) == Some("file") {
-                origin.file = Some(characters(module, fields[1])?);
+                origin.file = Some(file_name(fields[1])?);
             }
             if atom(module, fields[0]) == Some("generated")
                 && atom(module, fields[1]) == Some("true")

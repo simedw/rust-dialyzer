@@ -3,7 +3,7 @@ use crate::program::{BindingId, FunctionId, FunctionName, ModuleId, NodeRef, Pro
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 type Result<T> = std::result::Result<T, String>;
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TargetSet {
     pub local: BTreeSet<FunctionId>,
     pub external: bool,
@@ -36,9 +36,9 @@ impl TargetSet {
         self.external |= other.external;
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TargetValueId(pub usize);
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TargetValue {
     Single(TargetSet),
     Values(Vec<TargetValueId>),
@@ -46,7 +46,8 @@ pub enum TargetValue {
 #[derive(Clone, Debug, Default)]
 pub struct TargetValues {
     pub values: Vec<TargetValue>,
-    interned: BTreeMap<TargetValue, TargetValueId>,
+    /// Ids follow first insertion, so the index needs no order.
+    interned: crate::fast_hash::FastHashMap<TargetValue, TargetValueId>,
 }
 impl TargetValues {
     fn intern(&mut self, value: TargetValue) -> TargetValueId {
