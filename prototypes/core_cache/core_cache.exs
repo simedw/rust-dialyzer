@@ -40,9 +40,33 @@ defmodule CoreCache do
 
   defp compile(bytes) do
     {:ok, {name, [debug_info: {:debug_info_v1, backend, metadata}, abstract_code: {:raw_abstract_v1, forms}]}} =
-      :beam_lib.chunks(bytes, [:debug_info, :abstract_code])
+      debug_and_forms(bytes)
     {:ok, unclean} = backend.debug_info(:core_v1, name, metadata, @options)
     NativeCoreTransport.build(name, forms, :dialyzer_clean_core.clean(unclean))
+  end
+
+
+  defp debug_and_forms(bytes) do
+    case :beam_lib.chunks(bytes, [~c"Dbgi", ~c"Abst"], [:allow_missing_chunks]) do
+      {:ok, {name, [{~c"Dbgi", <<131, _::binary>>}, {~c"Abst", _}]}} ->
+        case :beam_lib.chunks(bytes, [:debug_info]) do
+          {:ok, {^name, [debug_info: {:debug_info_v1, backend, metadata} = debug]}}
+              when backend in [:erl_abstract_code, :elixir_erl] ->
+            try do
+              abstract = case backend.debug_info(:erlang_v1, name, metadata, []) do
+                {:ok, forms} -> {:raw_abstract_v1, forms}
+                {:error, _} -> :no_abstract_code
+                other -> :erlang.error({:try_clause, other})
+              end
+              {:ok, {name, [debug_info: debug, abstract_code: abstract]}}
+            catch
+              :error, :undef -> {:error, :beam_lib, {:missing_backend, bytes, backend}}
+              :throw, reason -> reason
+            end
+          _ -> :beam_lib.chunks(bytes, [:debug_info, :abstract_code])
+        end
+      _ -> :beam_lib.chunks(bytes, [:debug_info, :abstract_code])
+    end
   end
 
   defp read_atoms(file), do: file |> File.read!() |> :erlang.binary_to_term()
