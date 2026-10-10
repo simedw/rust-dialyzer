@@ -1,5 +1,5 @@
 use crate::bifs::registry::{Mfa, Registry, TransferError};
-use crate::constraints::bindings::{BindingKey, BindingMap};
+use crate::constraints::bindings::{BindingAccess, BindingKey, BindingMap};
 use crate::contract_runtime::{ContractError, ContractSummary};
 use crate::lattice::VariableId;
 use crate::lattice::{Endpoint, Known, LatticeError, Type, TypeGetter, TypePredicate, TypeValue};
@@ -311,6 +311,13 @@ impl DerivedOp {
     pub fn evaluate(
         &self,
         map: &BindingMap,
+        provider: &dyn BifResultProvider,
+    ) -> Result<Type, EvalError> {
+        self.evaluate_access(map, provider)
+    }
+    pub(super) fn evaluate_access<A: BindingAccess>(
+        &self,
+        map: &A,
         provider: &dyn BifResultProvider,
     ) -> Result<Type, EvalError> {
         let bindings = |id: &VariableId| map.get(&BindingKey::Label(id.clone()));

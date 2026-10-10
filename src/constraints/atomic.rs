@@ -1,3 +1,4 @@
+use crate::constraints::bindings::BindingAccess;
 pub use crate::constraints::bindings::{BindingKey, BindingMap, KeySet};
 use crate::constraints::derived::{BifResultProvider, DerivedArena, DerivedId, EvalError};
 use crate::lattice::{LatticeError, Type, TypePredicate, UnificationError, UnificationValue};
@@ -33,6 +34,18 @@ pub enum AtomicOutcome {
         updated: KeySet,
     },
 }
+pub(super) enum AtomicStatus {
+    Failed,
+    Solved(KeySet),
+}
+impl AtomicStatus {
+    fn into_outcome(self, bindings: BindingMap) -> AtomicOutcome {
+        match self {
+            Self::Failed => AtomicOutcome::Failed,
+            Self::Solved(updated) => AtomicOutcome::Solved { bindings, updated },
+        }
+    }
+}
 impl From<LatticeError> for SolveError {
     fn from(e: LatticeError) -> Self {
         Self::Native(e)
@@ -47,14 +60,24 @@ impl AtomicConstraint {
     ) -> Result<AtomicOutcome, SolveError> {
         self.solve_logged(bindings, arena, provider, None)
     }
-    /// Solves, pushing `(key, previous value)` onto `log` before each write.
+    /// Solves, recording each written key and its previous value in write order.
     pub(crate) fn solve_logged(
         &self,
-        bindings: BindingMap,
+        mut bindings: BindingMap,
+        arena: &DerivedArena,
+        provider: &dyn BifResultProvider,
+        log: Option<&mut WriteLog>,
+    ) -> Result<AtomicOutcome, SolveError> {
+        let status = self.solve_access(&mut bindings, arena, provider, log)?;
+        Ok(status.into_outcome(bindings))
+    }
+    pub(super) fn solve_access<A: BindingAccess>(
+        &self,
+        bindings: &mut A,
         arena: &DerivedArena,
         provider: &dyn BifResultProvider,
         mut log: Option<&mut WriteLog>,
-    ) -> Result<AtomicOutcome, SolveError> {
+    ) -> Result<AtomicStatus, SolveError> {
         let lookup = |id: &crate::lattice::VariableId| bindings.get(&BindingKey::Label(id.clone()));
         let left = self.left.substitute_with(&lookup)?;
         let right = match &self.right {
@@ -62,14 +85,14 @@ impl AtomicConstraint {
             ConstraintValue::Derived(id) => arena
                 .get(*id)
                 .ok_or(SolveError::InvalidDerivedIdentity(*id))?
-                .evaluate(&bindings, provider)
+                .evaluate_access(bindings, provider)
                 .map_err(SolveError::Evaluation)?,
         };
         let intersection = left.meet(&right)?;
         if intersection.predicate(TypePredicate::None)? {
-            return Ok(AtomicOutcome::Failed);
+            return Ok(AtomicStatus::Failed);
         }
-        let first = refine_logged(
+        let first = refine_access(
             &self.left,
             &intersection,
             bindings,
@@ -77,13 +100,13 @@ impl AtomicConstraint {
             log.as_deref_mut(),
         )?;
         match (self.relation, first) {
-            (_, AtomicOutcome::Failed) => Ok(AtomicOutcome::Failed),
+            (_, AtomicStatus::Failed) => Ok(AtomicStatus::Failed),
             (Relation::Subtype, solved) => Ok(solved),
-            (Relation::Equal, AtomicOutcome::Solved { bindings, updated }) => match &self.right {
+            (Relation::Equal, AtomicStatus::Solved(updated)) => match &self.right {
                 ConstraintValue::Type(ty) => {
-                    refine_logged(ty, &intersection, bindings, updated, log)
+                    refine_access(ty, &intersection, bindings, updated, log)
                 }
-                ConstraintValue::Derived(_) => Ok(AtomicOutcome::Failed),
+                ConstraintValue::Derived(_) => Ok(AtomicStatus::Failed),
             },
         }
     }
@@ -93,21 +116,22 @@ pub(crate) type WriteLog = Vec<(BindingKey, Option<Type>)>;
 pub(crate) fn refine(
     original: &Type,
     intersection: &Type,
-    bindings: BindingMap,
+    mut bindings: BindingMap,
     updated: KeySet,
 ) -> Result<AtomicOutcome, SolveError> {
-    refine_logged(original, intersection, bindings, updated, None)
+    let status = refine_access(original, intersection, &mut bindings, updated, None)?;
+    Ok(status.into_outcome(bindings))
 }
-fn refine_logged(
+pub(super) fn refine_access<A: BindingAccess>(
     original: &Type,
     intersection: &Type,
-    bindings: BindingMap,
+    bindings: &mut A,
     updated: KeySet,
     log: Option<&mut WriteLog>,
-) -> Result<AtomicOutcome, SolveError> {
+) -> Result<AtomicStatus, SolveError> {
     if let Some(variable) = original.variable_ref() {
         if intersection.variable_ref().is_none() {
-            return refine_values_logged(
+            return refine_values_access(
                 std::iter::once((
                     BindingKey::Label(variable.clone()),
                     UnificationValue::Type(intersection.clone()),
@@ -120,13 +144,13 @@ fn refine_logged(
     }
     let unified = match original.unify_bindings(intersection) {
         Ok(v) => v,
-        Err(UnificationError::Mismatch { .. }) => return Ok(AtomicOutcome::Failed),
+        Err(UnificationError::Mismatch { .. }) => return Ok(AtomicStatus::Failed),
         Err(UnificationError::NativeError(e)) => return Err(SolveError::Native(e)),
         Err(UnificationError::NativeNonTerminating) => {
             return Err(SolveError::NonTerminatingUnification);
         }
     };
-    refine_values_logged(
+    refine_values_access(
         unified
             .into_iter()
             .map(|(variable, value)| (BindingKey::Label(variable), value)),
@@ -137,17 +161,18 @@ fn refine_logged(
 }
 pub(crate) fn refine_values(
     values: impl IntoIterator<Item = (BindingKey, UnificationValue)>,
-    bindings: BindingMap,
+    mut bindings: BindingMap,
     updated: KeySet,
 ) -> Result<AtomicOutcome, SolveError> {
-    refine_values_logged(values, bindings, updated, None)
+    let status = refine_values_access(values, &mut bindings, updated, None)?;
+    Ok(status.into_outcome(bindings))
 }
-fn refine_values_logged(
+pub(super) fn refine_values_access<A: BindingAccess>(
     values: impl IntoIterator<Item = (BindingKey, UnificationValue)>,
-    mut bindings: BindingMap,
+    bindings: &mut A,
     mut updated: KeySet,
     mut log: Option<&mut WriteLog>,
-) -> Result<AtomicOutcome, SolveError> {
+) -> Result<AtomicStatus, SolveError> {
     for (variable, value) in values {
         if matches!(&value,UnificationValue::Type(t) if *t==Type::any()) {
             if bindings.contains_key(&variable) {
@@ -162,7 +187,7 @@ fn refine_values_logged(
         if let Some(old) = bindings.get(&variable) {
             let narrowed = old.meet(&limited)?;
             if narrowed.predicate(TypePredicate::None)? {
-                return Ok(AtomicOutcome::Failed);
+                return Ok(AtomicStatus::Failed);
             }
             if *old != narrowed {
                 updated.insert(variable.clone());
@@ -184,7 +209,7 @@ fn refine_values_logged(
             bindings.insert(variable, limited);
         }
     }
-    Ok(AtomicOutcome::Solved { bindings, updated })
+    Ok(AtomicStatus::Solved(updated))
 }
 
 #[cfg(test)]
@@ -378,5 +403,126 @@ mod absent_removal_proof {
         };
         assert!(bindings.is_empty());
         assert!(updated.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod native_access_order_tests {
+    use super::*;
+    use crate::bifs::registry::Mfa;
+    use crate::constraints::derived::DerivedOp;
+    use crate::lattice::VariableId;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn key(n: i64) -> BindingKey {
+        BindingKey::Label(VariableId::Integer(n.into()))
+    }
+    struct PanicWrite(BindingMap);
+    impl BindingAccess for PanicWrite {
+        fn get(&self, key: &BindingKey) -> Option<&Type> {
+            self.0.get(key)
+        }
+        fn insert(&mut self, _: BindingKey, _: Type) -> Option<Type> {
+            panic!("write boundary");
+        }
+        fn remove(&mut self, _: &BindingKey) -> Option<Type> {
+            panic!("write boundary");
+        }
+        fn native_map(&self) -> &BindingMap {
+            &self.0
+        }
+    }
+    #[test]
+    fn absent_log_precedes_write_but_changed_and_removed_logs_follow_write() {
+        for (present, value, expected_log) in [
+            (false, Type::atom("new"), vec![(key(1), None)]),
+            (true, Type::atom("new"), vec![]),
+            (true, Type::any(), vec![]),
+        ] {
+            let initial = if present {
+                BindingMap::from(vec![(key(1), Type::any())])
+            } else {
+                BindingMap::new()
+            };
+            let mut access = PanicWrite(initial);
+            let mut log = vec![];
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                refine_values_access(
+                    [(key(1), UnificationValue::Type(value))],
+                    &mut access,
+                    KeySet::new(),
+                    Some(&mut log),
+                )
+            }));
+            assert!(result.is_err());
+            assert_eq!(log, expected_log);
+        }
+    }
+    #[test]
+    fn failed_refinement_keeps_prior_write_log_and_stops_before_later_values() {
+        let retained = BindingMap::from(vec![(key(2), Type::atom("old"))]);
+        let mut current = retained.clone();
+        let mut log = vec![];
+        let status = refine_values_access(
+            [
+                (key(1), UnificationValue::Type(Type::atom("written"))),
+                (key(2), UnificationValue::Type(Type::atom("conflict"))),
+                (key(3), UnificationValue::Type(Type::atom("unreached"))),
+            ],
+            &mut current,
+            KeySet::new(),
+            Some(&mut log),
+        )
+        .unwrap();
+        assert!(matches!(status, AtomicStatus::Failed));
+        assert_eq!(log, vec![(key(1), None)]);
+        assert_eq!(current.get(&key(1)), Some(&Type::atom("written")));
+        assert_eq!(current.get(&key(2)), Some(&Type::atom("old")));
+        assert_eq!(current.get(&key(3)), None);
+        assert_eq!(retained.get(&key(1)), None);
+    }
+    struct EffectProvider(Rc<RefCell<Vec<Vec<Type>>>>);
+    impl BifResultProvider for EffectProvider {
+        fn result(&self, _: &Mfa, arguments: &[Type]) -> Result<Type, EvalError> {
+            self.0.borrow_mut().push(arguments.to_vec());
+            Ok(Type::atom("written"))
+        }
+    }
+    #[test]
+    fn equal_derived_writes_left_then_fails_with_one_opaque_provider_call() {
+        let effects = Rc::new(RefCell::new(vec![]));
+        let provider = EffectProvider(effects.clone());
+        let mut arena = DerivedArena::default();
+        let derived = arena.push(DerivedOp::BifReturn {
+            mfa: Mfa {
+                module: "proof".into(),
+                function: "effect".into(),
+                arity: 1,
+            },
+            arguments: vec![Type::variable_integer(9.into())],
+        });
+        let atomic = AtomicConstraint {
+            left: Type::variable_integer(1.into()),
+            relation: Relation::Equal,
+            right: ConstraintValue::Derived(derived),
+        };
+        let retained = BindingMap::from(vec![(key(9), Type::atom("argument"))]);
+        let mut current = retained.clone();
+        let mut log = vec![];
+        let status = atomic
+            .solve_access(&mut current, &arena, &provider, Some(&mut log))
+            .unwrap();
+        assert!(matches!(status, AtomicStatus::Failed));
+        assert_eq!(current.get(&key(1)), Some(&Type::atom("written")));
+        assert_eq!(log, vec![(key(1), None)]);
+        assert_eq!(*effects.borrow(), vec![vec![Type::atom("argument")]]);
+        assert_eq!(retained.get(&key(1)), None);
+        assert!(matches!(
+            atomic.solve(retained.clone(), &arena, &provider).unwrap(),
+            AtomicOutcome::Failed
+        ));
+        assert_eq!(effects.borrow().len(), 2);
+        assert_eq!(retained.get(&key(1)), None);
     }
 }

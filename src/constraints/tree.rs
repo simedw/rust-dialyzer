@@ -1,7 +1,8 @@
 use crate::constraints::atomic::{
-    AtomicConstraint, AtomicOutcome, BindingKey, BindingMap, ConstraintValue, KeySet, SolveError,
-    WriteLog,
+    AtomicConstraint, AtomicOutcome, AtomicStatus, BindingKey, BindingMap, ConstraintValue, KeySet,
+    SolveError, WriteLog,
 };
+use crate::constraints::bindings::{BindingAccess, ReadView};
 use crate::constraints::derived::{BifResultProvider, DerivedArena, DerivedId, DerivedOp};
 use crate::constraints::normalize::Dependencies;
 use crate::lattice::{Type, TypePredicate, UnificationValue, VariableId};
@@ -456,18 +457,20 @@ impl ConstraintTree {
                         let flat = children.first().is_some_and(|id| {
                             matches!(self.nodes[id.0].constraint, Constraint::Atomic(_))
                         });
-                        frames.push(Frame::Conj(
-                            Box::new(Conj {
-                                id,
-                                snapshot: Snapshot::new(flat, &map),
-                                last_flags: pending.identity,
-                                flags: pending.indices,
-                                restart: Bits::default(),
-                                updated: Vec::new(),
-                                flat,
-                            }),
-                            map,
-                        ));
+                        let c = Box::new(Conj {
+                            id,
+                            snapshot: Snapshot::new(flat, &map),
+                            last_flags: pending.identity,
+                            flags: pending.indices,
+                            restart: Bits::default(),
+                            updated: Vec::new(),
+                            flat,
+                        });
+                        if flat {
+                            result = Some(state.solve_flat(c, map, provider)?);
+                        } else {
+                            frames.push(Frame::Conj(c, map));
+                        }
                     }
                     Constraint::Disjunction(_) => {
                         let Some(pending) = state.flags(id) else {
@@ -594,37 +597,23 @@ impl ConstraintTree {
                 }
                 Frame::Conj(mut c, map) => {
                     let children = children(&self.nodes[c.id.0].constraint);
-                    if let Some(index) = c.flags.pop_first() {
-                        let child = children[index];
-                        if let Some(log) = &mut c.snapshot.log {
-                            let Constraint::Atomic(a) = &self.nodes[child.0].constraint else {
-                                unreachable!("flat conjunction holds atoms")
-                            };
-                            result =
-                                Some(a.solve_logged(map, &self.derived, provider, Some(log))?);
-                            frames.push(Frame::ConjReturn(c, index));
-                        } else {
+                    let step = c.next(&map);
+                    if matches!(step, ConjStep::DetectedLoop) {
+                        state.detected_loops.push(c.id);
+                    }
+                    match step {
+                        ConjStep::Child(index) => {
+                            let child = children[index];
                             frames.push(Frame::ConjReturn(c, index));
                             frames.push(Frame::Enter(child, map));
                         }
-                    } else if c.restart.is_empty() {
-                        result = Some(AtomicOutcome::Solved {
-                            bindings: map,
-                            updated: KeySet::from_unsorted(c.updated),
-                        });
-                    } else if Some(&c.restart) == c.last_flags.as_ref()
-                        && c.snapshot.unchanged(&map)
-                    {
-                        state.detected_loops.push(c.id);
-                        result = Some(AtomicOutcome::Solved {
-                            bindings: map,
-                            updated: KeySet::from_unsorted(c.updated),
-                        });
-                    } else {
-                        c.last_flags = Some(c.restart.clone());
-                        c.snapshot.reset(&map);
-                        c.flags = std::mem::take(&mut c.restart);
-                        frames.push(Frame::Conj(c, map));
+                        ConjStep::Complete | ConjStep::DetectedLoop => {
+                            result = Some(AtomicOutcome::Solved {
+                                bindings: map,
+                                updated: KeySet::from_unsorted(c.updated),
+                            });
+                        }
+                        ConjStep::Restart => frames.push(Frame::Conj(c, map)),
                     }
                 }
                 Frame::ConjReturn(mut c, index) => match result.take().expect("child result") {
@@ -633,48 +622,7 @@ impl ConstraintTree {
                         result = Some(AtomicOutcome::Failed);
                     }
                     AtomicOutcome::Solved { bindings, updated } => {
-                        let masks = &self.nodes[c.id.0].masks;
-                        if c.flat {
-                            for var in &updated {
-                                if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
-                                    for &i in indices {
-                                        let i = i as usize;
-                                        if i < index {
-                                            c.restart.insert(i);
-                                        } else if i > index {
-                                            c.flags.insert(i);
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            // `updated` is ascending, so each list is too.
-                            let mut affected: BTreeMap<usize, Vec<BindingKey>> = BTreeMap::new();
-                            for var in &updated {
-                                if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
-                                    for &i in indices {
-                                        let i = i as usize;
-                                        if i != index {
-                                            affected.entry(i).or_default().push(var.clone());
-                                        }
-                                    }
-                                }
-                            }
-                            for (i, u) in affected {
-                                let child = children(&self.nodes[c.id.0].constraint)[i];
-                                state.invalidate(child, u);
-                                if i < index {
-                                    c.restart.insert(i);
-                                } else {
-                                    c.flags.insert(i);
-                                }
-                            }
-                        }
-                        if c.updated.is_empty() {
-                            c.updated = updated.into_vec();
-                        } else {
-                            c.updated.extend(updated);
-                        }
+                        state.accept_conj(&mut c, index, updated);
                         frames.push(Frame::Conj(c, bindings));
                     }
                 },
@@ -842,6 +790,103 @@ struct State<'a> {
     detected_loops: Vec<ConstraintId>,
 }
 impl State<'_> {
+    fn solve_flat(
+        &mut self,
+        c: Box<Conj>,
+        map: BindingMap,
+        provider: &dyn BifResultProvider,
+    ) -> Result<AtomicOutcome, SolveError> {
+        let mut flat = Flat {
+            c,
+            view: ReadView::new(map),
+        };
+        loop {
+            let step = flat.c.next(&flat.view);
+            if matches!(step, ConjStep::DetectedLoop) {
+                self.detected_loops.push(flat.c.id);
+            }
+            match step {
+                ConjStep::Child(index) => {
+                    let child = children(&self.tree.nodes[flat.c.id.0].constraint)[index];
+                    let Constraint::Atomic(a) = &self.tree.nodes[child.0].constraint else {
+                        unreachable!("flat conjunction holds atoms")
+                    };
+                    let status = a.solve_access(
+                        &mut flat.view,
+                        &self.tree.derived,
+                        provider,
+                        flat.c.snapshot.log.as_mut(),
+                    );
+                    match status {
+                        Err(error) => {
+                            drop(flat);
+                            return Err(error);
+                        }
+                        Ok(AtomicStatus::Failed) => {
+                            let id = flat.c.id;
+                            drop(flat);
+                            self.cache.insert(id, Cache::Failed);
+                            return Ok(AtomicOutcome::Failed);
+                        }
+                        Ok(AtomicStatus::Solved(updated)) => {
+                            self.accept_conj(&mut flat.c, index, updated);
+                        }
+                    }
+                }
+                ConjStep::Restart => (),
+                ConjStep::Complete | ConjStep::DetectedLoop => {
+                    return Ok(AtomicOutcome::Solved {
+                        bindings: flat.view.into_native(),
+                        updated: KeySet::from_unsorted(flat.c.updated),
+                    });
+                }
+            }
+        }
+    }
+    fn accept_conj(&mut self, c: &mut Conj, index: usize, updated: KeySet) {
+        let masks = &self.tree.nodes[c.id.0].masks;
+        if c.flat {
+            for var in &updated {
+                if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
+                    for &i in indices {
+                        let i = i as usize;
+                        if i < index {
+                            c.restart.insert(i);
+                        } else if i > index {
+                            c.flags.insert(i);
+                        }
+                    }
+                }
+            }
+        } else {
+            // `updated` is ascending, so each list is too.
+            let mut affected: BTreeMap<usize, Vec<BindingKey>> = BTreeMap::new();
+            for var in &updated {
+                if let Some(indices) = var.label().and_then(|v| masks.get(v)) {
+                    for &i in indices {
+                        let i = i as usize;
+                        if i != index {
+                            affected.entry(i).or_default().push(var.clone());
+                        }
+                    }
+                }
+            }
+            for (i, u) in affected {
+                let child = children(&self.tree.nodes[c.id.0].constraint)[i];
+                self.invalidate(child, u);
+                if i < index {
+                    c.restart.insert(i);
+                } else {
+                    c.flags.insert(i);
+                }
+            }
+        }
+        if c.updated.is_empty() {
+            c.updated = updated.into_vec();
+        } else {
+            c.updated.extend(updated);
+        }
+    }
     fn flags(&mut self, id: ConstraintId) -> Option<Pending> {
         match self.cache.get_mut(&id) {
             Some(Cache::Failed) => None,
@@ -922,6 +967,10 @@ impl State<'_> {
         }
     }
 }
+struct Flat {
+    c: Box<Conj>,
+    view: ReadView,
+}
 struct Conj {
     id: ConstraintId,
     snapshot: Snapshot,
@@ -931,6 +980,31 @@ struct Conj {
     /// Every key the children updated, in any order and with repeats.
     updated: Vec<BindingKey>,
     flat: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConjStep {
+    Child(usize),
+    Restart,
+    Complete,
+    DetectedLoop,
+}
+impl Conj {
+    fn next<A: BindingAccess>(&mut self, map: &A) -> ConjStep {
+        if let Some(index) = self.flags.pop_first() {
+            ConjStep::Child(index)
+        } else if self.restart.is_empty() {
+            ConjStep::Complete
+        } else if Some(&self.restart) == self.last_flags.as_ref()
+            && self.snapshot.unchanged_access(map)
+        {
+            ConjStep::DetectedLoop
+        } else {
+            self.last_flags = Some(self.restart.clone());
+            self.snapshot.reset(map.native_map());
+            self.flags = std::mem::take(&mut self.restart);
+            ConjStep::Restart
+        }
+    }
 }
 /// The map a conjunction last (re)started from, compared to detect a loop.
 /// Atom lists log the old value of each binding they write instead of holding
@@ -955,9 +1029,9 @@ impl Snapshot {
             *old = map.clone();
         }
     }
-    fn unchanged(&self, map: &BindingMap) -> bool {
+    fn unchanged_access<A: BindingAccess>(&self, map: &A) -> bool {
         let Some(log) = &self.log else {
-            return self.map.as_ref() == Some(map);
+            return self.map.as_ref() == Some(map.native_map());
         };
         let mut seen = BTreeSet::new();
         let unchanged = log
@@ -966,7 +1040,7 @@ impl Snapshot {
         if let Some(old) = &self.map {
             let equal = {
                 let mut a = old.clone();
-                let mut b = map.clone();
+                let mut b = map.native_map().clone();
                 a.detach_trace();
                 b.detach_trace();
                 a == b
@@ -1538,5 +1612,404 @@ mod root_cache_budget_tests {
         assert!(cache.insert(function(0), entry(1)));
         assert_eq!(cache.entries.len(), RootCache::MAX_ENTRIES);
         assert_eq!(cache.guard_bytes, entry(1).certificate.guard_buffer_bytes());
+    }
+}
+
+#[cfg(test)]
+mod native_binding_access_tests {
+    use super::*;
+    use crate::bifs::registry::Mfa;
+    use crate::constraints::atomic::{AtomicStatus, Relation};
+    use crate::constraints::bindings::RootCatalogue;
+    use crate::constraints::derived::EvalError;
+    use crate::lattice::LatticeError;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn key(n: i64) -> BindingKey {
+        BindingKey::Label(VariableId::Integer(n.into()))
+    }
+    fn conj(map: &BindingMap) -> Conj {
+        Conj {
+            id: ConstraintId(0),
+            snapshot: Snapshot::new(true, map),
+            last_flags: None,
+            flags: Bits::default(),
+            restart: Bits::default(),
+            updated: vec![],
+            flat: true,
+        }
+    }
+    #[test]
+    fn conj_child_complete_restart_and_loop_keep_snapshot_short_circuit_order() {
+        let initial = BindingMap::new();
+        let map = initial.trace_root(RootCatalogue::new(vec![key(1)].into()));
+        let mut c = conj(&map);
+        c.snapshot.log.as_mut().unwrap().push((key(1), None));
+        c.flags.insert(2);
+        c.restart.insert(0);
+        c.last_flags = Some(c.restart.clone());
+        assert_eq!(c.next(&map), ConjStep::Child(2));
+        assert_eq!(c.snapshot.log.as_ref().unwrap().len(), 1);
+        assert!(map.certificate(&initial).slots.is_empty());
+        c.last_flags = None;
+        assert_eq!(c.next(&map), ConjStep::Restart);
+        assert!(map.certificate(&initial).slots.is_empty());
+        assert!(c.snapshot.log.as_ref().unwrap().is_empty());
+        assert!(c.restart.is_empty());
+        assert_eq!(c.next(&map), ConjStep::Child(0));
+        c.snapshot.log.as_mut().unwrap().push((key(1), None));
+        assert_eq!(c.next(&map), ConjStep::Complete);
+        assert!(map.certificate(&initial).slots.is_empty());
+        c.restart.insert(0);
+        assert_eq!(c.next(&map), ConjStep::DetectedLoop);
+        assert_eq!(map.certificate(&initial).slots.len(), 1);
+        assert_eq!(c.snapshot.log.as_ref().unwrap().len(), 1);
+    }
+    #[test]
+    fn snapshot_first_old_value_and_reset_remain_native() {
+        let mut map = BindingMap::new();
+        let mut snapshot = Snapshot::new(true, &map);
+        let old = map.insert(key(1), Type::atom("first"));
+        snapshot.log.as_mut().unwrap().push((key(1), old));
+        let old = map.insert(key(1), Type::atom("second"));
+        snapshot.log.as_mut().unwrap().push((key(1), old));
+        assert!(!snapshot.unchanged_access(&map));
+        let old = map.remove(&key(1));
+        snapshot.log.as_mut().unwrap().push((key(1), old));
+        assert!(snapshot.unchanged_access(&map));
+        snapshot.reset(&map);
+        assert!(snapshot.log.as_ref().unwrap().is_empty());
+        assert!(snapshot.unchanged_access(&map));
+        let retained = map.clone();
+        assert!(map.ptr_eq(&retained));
+    }
+    fn dependent_atom(tree: &mut ConstraintTree) -> ConstraintId {
+        tree.push(Constraint::Atomic(AtomicConstraint {
+            left: Type::variable_integer(1.into()),
+            relation: Relation::Subtype,
+            right: ConstraintValue::Type(Type::any()),
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn accept_conj_preserves_flat_masks_and_nonflat_cache_invalidation() {
+        for flat in [true, false] {
+            let mut tree = ConstraintTree::default();
+            let mut children_ids = vec![];
+            for _ in 0..3 {
+                let atom = dependent_atom(&mut tree);
+                children_ids.push(if flat {
+                    atom
+                } else {
+                    tree.push(Constraint::Conjunction(vec![atom])).unwrap()
+                });
+            }
+            let root = tree
+                .push(Constraint::Conjunction(children_ids.clone()))
+                .unwrap();
+            let mut state = State {
+                tree: &tree,
+                cache: BTreeMap::new(),
+                function_cache: BTreeMap::new(),
+                detected_loops: vec![],
+            };
+            for &child in &children_ids {
+                state.cache.insert(
+                    child,
+                    Cache::Active {
+                        local: BindingMap::new(),
+                        dirty: BTreeSet::new(),
+                    },
+                );
+            }
+            let mut c = conj(&BindingMap::new());
+            c.id = root;
+            c.flat = flat;
+            let updated = KeySet::from([key(1)]);
+            state.accept_conj(&mut c, 1, updated.clone());
+            assert!(c.restart.contains(0));
+            assert!(!c.restart.contains(1));
+            assert!(c.flags.contains(2));
+            assert!(!c.flags.contains(1));
+            assert_eq!(c.updated, vec![key(1)]);
+            state.accept_conj(&mut c, 1, updated);
+            assert_eq!(c.updated, vec![key(1), key(1)]);
+            for (index, child) in children_ids.iter().enumerate() {
+                let Cache::Active { dirty, .. } = &state.cache[child] else {
+                    panic!("active")
+                };
+                assert_eq!(dirty.contains(&key(1)), !flat && index != 1);
+            }
+        }
+    }
+    struct EffectProvider(Rc<RefCell<Vec<String>>>);
+    impl BifResultProvider for EffectProvider {
+        fn result(&self, mfa: &Mfa, arguments: &[Type]) -> Result<Type, EvalError> {
+            self.0.borrow_mut().push(mfa.function.as_str().to_owned());
+            assert_eq!(arguments, &[Type::any()]);
+            if mfa.function.as_str() == "fail" {
+                Err(EvalError::Native(LatticeError::BadArg))
+            } else {
+                Ok(Type::atom("written"))
+            }
+        }
+    }
+    #[test]
+    fn reached_nested_frame_error_preserves_effect_order_and_stops_later_calls() {
+        let calls = Rc::new(RefCell::new(vec![]));
+        let provider = EffectProvider(calls.clone());
+        let mut tree = ConstraintTree::default();
+        let mut scopes = vec![];
+        for (n, name) in [(1, "emit"), (2, "fail"), (3, "unreached")] {
+            let derived = tree.push_derived(DerivedOp::BifReturn {
+                mfa: Mfa {
+                    module: "proof".into(),
+                    function: name.into(),
+                    arity: 1,
+                },
+                arguments: vec![Type::variable_integer(99.into())],
+            });
+            let atom = tree
+                .push(Constraint::Atomic(AtomicConstraint {
+                    left: Type::variable_integer(n.into()),
+                    relation: Relation::Subtype,
+                    right: ConstraintValue::Derived(derived),
+                }))
+                .unwrap();
+            scopes.push(tree.push(Constraint::Conjunction(vec![atom])).unwrap());
+        }
+        let root = tree.push(Constraint::Conjunction(scopes)).unwrap();
+        let input = BindingMap::from(vec![(key(100), Type::atom("retained"))]);
+        assert!(matches!(
+            tree.solve(root, input.clone(), &provider),
+            Err(SolveError::Evaluation(EvalError::Native(
+                LatticeError::BadArg
+            )))
+        ));
+        assert_eq!(*calls.borrow(), vec!["emit".to_owned(), "fail".to_owned()]);
+        assert_eq!(input.get(&key(1)), None);
+        assert_eq!(input.get(&key(100)), Some(&Type::atom("retained")));
+    }
+    #[test]
+    fn native_binding_access_layout() {
+        use std::mem::{align_of, size_of};
+        println!(
+            concat!(
+                "NATIVE_BINDING_ACCESS_LAYOUT {{",
+                "\"binding_map_bytes\":{},\"binding_map_align\":{},",
+                "\"binding_access_ref_bytes\":{},\"atomic_status_bytes\":{},",
+                "\"atomic_outcome_bytes\":{},\"frame_bytes\":{},\"frame_align\":{},",
+                "\"conj_bytes\":{},\"conj_align\":{},\"conj_box_bytes\":{},",
+                "\"conj_step_bytes\":{},\"snapshot_bytes\":{},\"bits_bytes\":{}",
+                "}}"
+            ),
+            size_of::<BindingMap>(),
+            align_of::<BindingMap>(),
+            size_of::<&mut BindingMap>(),
+            size_of::<AtomicStatus>(),
+            size_of::<AtomicOutcome>(),
+            size_of::<Frame>(),
+            align_of::<Frame>(),
+            size_of::<Conj>(),
+            align_of::<Conj>(),
+            size_of::<Box<Conj>>(),
+            size_of::<ConjStep>(),
+            size_of::<Snapshot>(),
+            size_of::<Bits>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod read_view_integration_tests {
+    use super::*;
+    use crate::bifs::registry::Mfa;
+    use crate::constraints::atomic::Relation;
+    use crate::constraints::derived::EvalError;
+    use crate::lattice::LatticeError;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn key(n: i64) -> BindingKey {
+        BindingKey::Label(VariableId::Integer(n.into()))
+    }
+    struct Effects(Rc<RefCell<Vec<(String, Vec<Type>)>>>);
+    impl BifResultProvider for Effects {
+        fn result(&self, mfa: &Mfa, args: &[Type]) -> Result<Type, EvalError> {
+            self.0
+                .borrow_mut()
+                .push((mfa.function.as_str().to_owned(), args.to_vec()));
+            if mfa.function.as_str() == "fail" {
+                Err(EvalError::Native(LatticeError::BadArg))
+            } else {
+                Ok(Type::all_atoms())
+            }
+        }
+    }
+    fn derived_atom(tree: &mut ConstraintTree, name: &str, relation: Relation) -> ConstraintId {
+        let derived = tree.push_derived(DerivedOp::BifReturn {
+            mfa: Mfa {
+                module: "proof".into(),
+                function: name.into(),
+                arity: 1,
+            },
+            arguments: vec![Type::variable_integer(1.into())],
+        });
+        tree.push(Constraint::Atomic(AtomicConstraint {
+            left: Type::variable_integer(1.into()),
+            relation,
+            right: ConstraintValue::Derived(derived),
+        }))
+        .unwrap()
+    }
+    fn flat(tree: &ConstraintTree, id: ConstraintId, map: &BindingMap) -> Box<Conj> {
+        Box::new(Conj {
+            id,
+            snapshot: Snapshot::new(true, map),
+            last_flags: None,
+            flags: Bits::all(children(&tree.nodes[id.0].constraint).len()),
+            restart: Bits::default(),
+            updated: vec![],
+            flat: true,
+        })
+    }
+    fn state(tree: &ConstraintTree) -> State<'_> {
+        State {
+            tree,
+            cache: BTreeMap::new(),
+            function_cache: BTreeMap::new(),
+            detected_loops: vec![],
+        }
+    }
+    #[test]
+    fn flat_restart_reads_current_values_and_preserves_ordered_opaque_provider_effects() {
+        let mut tree = ConstraintTree::default();
+        let first = derived_atom(&mut tree, "emit", Relation::Subtype);
+        let second = tree
+            .push(Constraint::Atomic(AtomicConstraint {
+                left: Type::variable_integer(1.into()),
+                relation: Relation::Subtype,
+                right: ConstraintValue::Type(Type::atom("narrowed")),
+            }))
+            .unwrap();
+        let root = tree
+            .push(Constraint::Conjunction(vec![first, second]))
+            .unwrap();
+        let effects = Rc::new(RefCell::new(vec![]));
+        let input = BindingMap::new();
+        let result = tree
+            .solve(root, input.clone(), &Effects(effects.clone()))
+            .unwrap();
+        let AtomicOutcome::Solved { bindings, updated } = result.outcome else {
+            panic!("solved")
+        };
+        assert_eq!(bindings.get(&key(1)), Some(&Type::atom("narrowed")));
+        assert_eq!(updated, KeySet::from([key(1)]));
+        assert_eq!(
+            *effects.borrow(),
+            vec![
+                ("emit".to_owned(), vec![Type::any()]),
+                ("emit".to_owned(), vec![Type::atom("narrowed")]),
+            ]
+        );
+        assert!(result.detected_loops.is_empty());
+        assert_eq!(input.get(&key(1)), None);
+    }
+    #[test]
+    fn flat_failed_and_error_exits_discard_owner_before_publication_and_later_calls() {
+        for error in [false, true] {
+            let mut tree = ConstraintTree::default();
+            let first = derived_atom(&mut tree, "emit", Relation::Subtype);
+            let second = derived_atom(
+                &mut tree,
+                if error { "fail" } else { "equal" },
+                if error {
+                    Relation::Subtype
+                } else {
+                    Relation::Equal
+                },
+            );
+            let third = derived_atom(&mut tree, "unreached", Relation::Subtype);
+            let root = tree
+                .push(Constraint::Conjunction(vec![first, second, third]))
+                .unwrap();
+            let input = BindingMap::new();
+            let effects = Rc::new(RefCell::new(vec![]));
+            let mut state = state(&tree);
+            let outcome = state.solve_flat(
+                flat(&tree, root, &input),
+                input.clone(),
+                &Effects(effects.clone()),
+            );
+            if error {
+                assert!(matches!(
+                    outcome,
+                    Err(SolveError::Evaluation(EvalError::Native(
+                        LatticeError::BadArg
+                    )))
+                ));
+                assert!(!state.cache.contains_key(&root));
+            } else {
+                assert!(matches!(outcome, Ok(AtomicOutcome::Failed)));
+                assert!(matches!(state.cache.get(&root), Some(Cache::Failed)));
+            }
+            assert_eq!(
+                effects
+                    .borrow()
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["emit", if error { "fail" } else { "equal" }]
+            );
+            assert_eq!(effects.borrow()[1].1, vec![Type::all_atoms()]);
+            assert_eq!(input.get(&key(1)), None);
+        }
+    }
+    #[test]
+    fn flat_detected_loop_returns_native_owner_and_records_original_id() {
+        let mut tree = ConstraintTree::default();
+        let atom = derived_atom(&mut tree, "unreached", Relation::Subtype);
+        let root = tree.push(Constraint::Conjunction(vec![atom])).unwrap();
+        let input = BindingMap::from(vec![(key(1), Type::any())]);
+        let mut c = flat(&tree, root, &input);
+        c.flags = Bits::default();
+        c.restart.insert(0);
+        c.last_flags = Some(c.restart.clone());
+        c.snapshot
+            .log
+            .as_mut()
+            .unwrap()
+            .push((key(1), Some(Type::any())));
+        let effects = Rc::new(RefCell::new(vec![]));
+        let mut state = state(&tree);
+        let result = state
+            .solve_flat(c, input.clone(), &Effects(effects.clone()))
+            .unwrap();
+        let AtomicOutcome::Solved { bindings, updated } = result else {
+            panic!("solved")
+        };
+        assert!(bindings.ptr_eq(&input));
+        assert!(updated.is_empty());
+        assert_eq!(state.detected_loops, vec![root]);
+        assert!(effects.borrow().is_empty());
+    }
+    #[test]
+    fn read_view_layout() {
+        use std::mem::{align_of, size_of};
+        let mut values = crate::constraints::bindings::read_view_layout_values();
+        let object = values.as_object_mut().unwrap();
+        for (key, value) in [
+            ("frame_bytes", size_of::<Frame>()),
+            ("frame_align", align_of::<Frame>()),
+            ("conj_bytes", size_of::<Conj>()),
+            ("conj_align", align_of::<Conj>()),
+            ("flat_bytes", size_of::<Flat>()),
+            ("flat_align", align_of::<Flat>()),
+            ("binding_map_bytes", size_of::<BindingMap>()),
+        ] {
+            object.insert(key.into(), serde_json::json!(value));
+        }
+        println!("READ_VIEW_LAYOUT {}", values);
     }
 }

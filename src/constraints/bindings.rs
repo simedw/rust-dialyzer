@@ -1,6 +1,10 @@
+mod read_view;
 #[cfg(test)]
 use crate::lattice::NativeValue;
 use crate::lattice::{Type, VariableId};
+pub(super) use read_view::ReadView;
+#[cfg(test)]
+pub(super) use read_view::layout as read_view_layout_values;
 use std::cmp::Ordering;
 use std::sync::Arc;
 /// Integer/atom names used by substitution and raw records used by the pinned
@@ -79,6 +83,29 @@ impl BindingKey {
         Self::Label(VariableId::Integer((index as i64).into()))
     }
 }
+pub(super) trait BindingAccess {
+    fn get(&self, key: &BindingKey) -> Option<&Type>;
+    fn contains_key(&self, key: &BindingKey) -> bool {
+        self.get(key).is_some()
+    }
+    fn insert(&mut self, key: BindingKey, value: Type) -> Option<Type>;
+    fn remove(&mut self, key: &BindingKey) -> Option<Type>;
+    fn native_map(&self) -> &BindingMap;
+}
+impl BindingAccess for BindingMap {
+    fn get(&self, key: &BindingKey) -> Option<&Type> {
+        BindingMap::get(self, key)
+    }
+    fn insert(&mut self, key: BindingKey, value: Type) -> Option<Type> {
+        BindingMap::insert(self, key, value)
+    }
+    fn remove(&mut self, key: &BindingKey) -> Option<Type> {
+        BindingMap::remove(self, key)
+    }
+    fn native_map(&self) -> &BindingMap {
+        self
+    }
+}
 impl BindingMap {
     pub fn new() -> Self {
         Self {
@@ -89,11 +116,15 @@ impl BindingMap {
         }
     }
     pub fn get(&self, key: &BindingKey) -> Option<&Type> {
+        self.lookup_visible(key, || self.raw_get(key))
+    }
+    pub(super) fn lookup_visible<'a>(
+        &'a self,
+        key: &BindingKey,
+        visible: impl FnOnce() -> Option<&'a Type>,
+    ) -> Option<&'a Type> {
         self.observe_key(key);
-        let found = match key.trie_index() {
-            Some(index) => self.labels.get(index),
-            None => self.rest.as_ref().and_then(|rest| rest.get(key)),
-        };
+        let found = visible();
         if let Some(shadow) = &self.shadow {
             assert_eq!(found, shadow.get(key), "binding map lookup");
         }
@@ -977,5 +1008,41 @@ mod root_equality_and_budget_tests {
         let traced = input.trace_root(catalogue);
         traced.get(&large);
         assert!(!traced.certificate(&input).retainable());
+    }
+}
+
+#[cfg(test)]
+mod native_access_lookup_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn visible_lookup_observes_before_running_once_and_checks_shadow_afterward() {
+        let key = BindingKey::Label(VariableId::Integer(7.into()));
+        let initial = BindingMap::from(vec![(key.clone(), Type::atom("native"))]);
+        let traced = initial.trace_root(RootCatalogue::new(vec![key.clone()].into()));
+        let calls = Cell::new(0);
+        let actual = traced.lookup_visible(&key, || {
+            calls.set(calls.get() + 1);
+            assert_eq!(traced.certificate(&initial).slots.len(), 1);
+            traced.raw_get(&key)
+        });
+        assert_eq!(actual, Some(&Type::atom("native")));
+        assert_eq!(calls.get(), 1);
+        let mut shadowed = initial;
+        shadowed.shadow = Some(
+            vec![(key.clone(), Type::atom("native"))]
+                .into_iter()
+                .collect(),
+        );
+        let wrong = Type::atom("different");
+        let mismatch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            shadowed.lookup_visible(&key, || {
+                calls.set(calls.get() + 1);
+                Some(&wrong)
+            });
+        }));
+        assert!(mismatch.is_err());
+        assert_eq!(calls.get(), 2);
     }
 }
