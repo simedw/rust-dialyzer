@@ -453,8 +453,14 @@ impl AnalysisPhases for CorePhases<'_> {
                     next_core_label: graph.next_core_label,
                     previous: job.previous,
                 };
+                let t0 = crate::job_trace::now();
                 let result = this.analyze_scc_in(&request, &library);
                 let early = library.early.into_inner();
+                if crate::job_trace::enabled() {
+                    let t1 = crate::job_trace::now();
+                    let retry = !early.is_empty();
+                    crate::job_trace::record(|| serde_json::json!({"ev":"scc","pass":crate::job_trace::pass(),"i":i,"t0":t0,"t1":t1,"retry":retry}));
+                }
                 if early.is_empty() {
                     crate::ordered_parallel::Attempt::Done(result)
                 } else {
@@ -494,7 +500,16 @@ impl AnalysisPhases for CorePhases<'_> {
         let core = self.nodes.core();
         let mut order: Vec<usize> = (0..requests.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(core.modules[requests[i].module.0].nodes.len()));
-        let ordered = crate::ordered_parallel::parallel_map(&order, |&i| this.refine_module_shared(&requests[i]));
+        let ordered = crate::ordered_parallel::parallel_map(&order, |&i| {
+            let t0 = crate::job_trace::now();
+            let result = this.refine_module_shared(&requests[i]);
+            if crate::job_trace::enabled() {
+                let t1 = crate::job_trace::now();
+                crate::job_trace::record(|| serde_json::json!({"ev":"mod","pass":crate::job_trace::pass(),"m":requests[i].module.0,"t0":t0,"t1":t1}));
+            }
+            result
+        });
+        crate::job_trace::flush();
         timings.label(|| self.module_memo_counts.describe(requests.len()));
         let mut results: Vec<_> = (0..requests.len()).map(|_| None).collect();
         for (i, result) in order.into_iter().zip(ordered) {

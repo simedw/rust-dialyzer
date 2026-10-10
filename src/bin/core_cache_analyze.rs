@@ -145,8 +145,56 @@ fn main() {
         .join()
         .expect("analysis thread panicked outside catch_unwind");
     let ok = output["status"] == "ok";
+    let mut output = output;
     let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
-    serde_json::to_writer(&mut stdout, &output).expect("write analysis result");
+    // The signature array is most of the output: serialize its rows on all
+    // cores, then splice the bytes where serde_json would have written them.
+    const PLACEHOLDER: &str = "\u{0}signatures\u{0}";
+    let signatures = match output.get_mut("signatures") {
+        Some(slot @ Value::Array(_)) => Some(std::mem::replace(slot, Value::String(PLACEHOLDER.into()))),
+        _ => None,
+    };
+    let text = serde_json::to_string(&output).expect("serialize analysis result");
+    match signatures {
+        Some(Value::Array(rows)) => {
+            let marker = serde_json::to_string(PLACEHOLDER).expect("placeholder");
+            let at = text.find(&marker).expect("signature placeholder");
+            stdout.write_all(text[..at].as_bytes()).expect("write analysis result");
+            let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+            let chunk = rows.len().div_ceil(workers).max(1);
+            let parts: Vec<Vec<u8>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = rows
+                    .chunks(chunk)
+                    .map(|rows| {
+                        scope.spawn(move || {
+                            let mut out = Vec::new();
+                            for (i, row) in rows.iter().enumerate() {
+                                if i > 0 {
+                                    out.push(b',');
+                                }
+                                serde_json::to_writer(&mut out, row).expect("serialize signature");
+                            }
+                            out
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().expect("signature writer")).collect()
+            });
+            stdout.write_all(b"[").expect("write analysis result");
+            for (i, part) in parts.iter().enumerate() {
+                if i > 0 {
+                    stdout.write_all(b",").expect("write analysis result");
+                }
+                stdout.write_all(part).expect("write analysis result");
+            }
+            stdout.write_all(b"]").expect("write analysis result");
+            stdout.write_all(text[at + marker.len()..].as_bytes()).expect("write analysis result");
+            std::mem::forget(parts);
+            std::mem::forget(rows);
+        }
+        _ => stdout.write_all(text.as_bytes()).expect("write analysis result"),
+    }
+    std::mem::forget(output);
     stdout.write_all(b"\n").expect("write analysis newline");
     stdout.flush().expect("flush analysis result");
     std::process::exit(if ok { 0 } else { 1 });

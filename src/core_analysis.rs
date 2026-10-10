@@ -437,6 +437,27 @@ impl CoreAnalyzer<'_> {
             levels: &levels,
             schedule: crate::ordered_parallel::JobGraph { callers: &callers, priority: &priority, rank: &ranks },
         };
+        if crate::job_trace::enabled() {
+            crate::job_trace::record(|| {
+                let sccs_json: Vec<serde_json::Value> = sccs
+                    .iter()
+                    .map(|scc| {
+                        let mut mods: Vec<&str> = scc
+                            .members
+                            .iter()
+                            .filter_map(|v| match v {
+                                GraphVertex::Named { module, .. } => Some(module.as_str()),
+                                _ => None,
+                            })
+                            .collect();
+                        mods.sort_unstable();
+                        mods.dedup();
+                        serde_json::json!({"id":scc.identity,"mods":mods,"n":scc.members.len()})
+                    })
+                    .collect();
+                serde_json::json!({"ev":"pass","pass":iteration,"sccs":sccs_json,"callers":callers,"modules":self.graph.module_names})
+            });
+        }
         let mut changed_by_scc = vec![false; sccs.len()];
         phases.analyze_scc_graph(graph, failed, |i, generated| {
             let generated = generated.map_err(AnalysisError::Phase)?;
@@ -517,6 +538,7 @@ impl CoreAnalyzer<'_> {
         let mut iteration = 0usize;
         loop {
             iteration += 1;
+            crate::job_trace::PASS.store(iteration, std::sync::atomic::Ordering::Relaxed);
             let mut scc_changed = Vec::new();
             let graph = if phases.parallel() && phases.dependency_scheduled() {
                 self.levels(&sccs)

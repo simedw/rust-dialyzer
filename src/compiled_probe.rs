@@ -102,8 +102,8 @@ pub fn analyze(
         })
         .collect::<Vec<_>>();
     let signatures = crate::ordered_parallel::setup_map(&signature_rows, |(name, signature)| {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| json!({
-            "module":name.module,"function":name.function,"arity":name.arity,
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::jobj!({
+            "module":json!(name.module),"function":json!(name.function),"arity":name.arity,
             "arguments":signature.arguments.iter().map(Type::to_value).collect::<Vec<_>>(),
             "result":signature.result.to_value(),
         })))
@@ -115,12 +115,13 @@ pub fn analyze(
     })
     .collect::<Vec<_>>();
     drop(signature_rows);
-    let result = json!({"id":row["id"],"warnings":crate::type_exports::arena_to_value(&raw.arena().terms,raw.id()),
+    let result = crate::jobj!({"id":row["id"].clone(),"warnings":crate::type_exports::arena_to_value(&raw.arena().terms,raw.id()),
         "public_warning_count":output.warnings.raw.len(), "signatures":signatures,
         "cleanup_warning_count":output.cleanup.missing_calls.len(),
         "unknown_warning_count":output.unknown.by_module.len(),
-        "module_dependencies":output.module_dependencies.named_projection()?});
+        "module_dependencies":serde_json::to_value(output.module_dependencies.named_projection()?).map_err(|e| e.to_string())?});
     timings.mark("signatures_and_output_projection");
     crate::teardown::release(output);
+    crate::teardown::release(raw);
     Ok(result)
 }
