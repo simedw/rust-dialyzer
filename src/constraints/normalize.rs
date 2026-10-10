@@ -216,6 +216,42 @@ impl NativeConstraintArena {
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
+    /// Appends `other` after this arena, as if its nodes had been pushed
+    /// here in order; returns the constraint id offset of its nodes.
+    pub(crate) fn append(&mut self, other: NativeConstraintArena) -> usize {
+        let node_offset = self.nodes.len();
+        let derived_offset = self.derived.len();
+        let semantic_offset = self.semantics.append(other.semantics);
+        self.nodes.reserve(other.nodes.len());
+        for mut node in other.nodes {
+            match &mut node {
+                NativeConstraint::Atomic { right: NativeOperand::Derived(id), .. } => id.0 += derived_offset,
+                NativeConstraint::Group { children, .. } => {
+                    for child in children {
+                        child.0 += node_offset;
+                    }
+                }
+                _ => {}
+            }
+            self.nodes.push(node);
+        }
+        self.order_keys.extend(other.order_keys);
+        for mut derived in other.derived {
+            derived.semantic = DerivedId(derived.semantic.0 + semantic_offset);
+            self.derived.push(derived);
+        }
+        node_offset
+    }
+    /// A structural rendering of every node, for verifying that two arenas
+    /// were built identically.
+    pub(crate) fn debug_fingerprint(&self) -> String {
+        let derived: Vec<_> = self
+            .derived
+            .iter()
+            .map(|d| (format!("{:?}", self.semantics.get(d.semantic)), &d.key, d.origin, &d.deps))
+            .collect();
+        format!("{:?}\n{:?}", self.nodes, derived)
+    }
     pub fn node(&self, id: NativeConstraintId) -> Option<&NativeConstraint> {
         self.nodes.get(id.0)
     }

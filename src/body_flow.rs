@@ -275,6 +275,25 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
         }
         Ok(state)
     }
+    /// The warning half of `analyze_module(_, true)`, from the state its
+    /// inference loop returned.
+    pub fn resume_warning_loop<
+        W: Clone
+            + PartialEq
+            + From<OpaqueMatch>
+            + From<BodyWarning>
+            + From<crate::guard_warning::GuardWarning>
+            + From<crate::call_warning::CallWarning>
+            + From<CaseWarning>,
+    >(
+        &mut self,
+        inferred: &BinderState<W>,
+    ) -> Result<BinderState<W>> {
+        let mut state = inferred.clone();
+        self.functions.set_warning_mode();
+        state.warnings.warning_mode = true;
+        self.analyze_loop(&state)
+    }
     pub fn analyze_loop<
         W: Clone
             + PartialEq

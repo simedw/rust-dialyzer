@@ -148,7 +148,7 @@ fn run(r: &Value, library_raw: &str, profile: &ClosureCodeProfile) -> Result<Vec
             .map_err(|e| format!("{e:?}"))?;
         let diagnostics = phases
             .module_bodies()
-            .module_diagnostics(module, &previous)
+            .module_diagnostics(module, &previous, None)
             .map_err(|e| format!("{e:?}"))?;
         let warnings = NativeWarning::list(&diagnostics.warnings);
         let expected = ErlangTerms::parse(&r["warnings"])?;

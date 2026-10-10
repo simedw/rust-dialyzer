@@ -15,7 +15,7 @@ use crate::{
         closure_order::ClosureCodeProfile,
         generation::{
             ActiveContract as GenerationActiveContract, CallSignature, CoreCaptureStore, GenerationCallGraph,
-            GenerationCaptureInputs, GenerationOutput, GenerationPhase, LibraryTypes, PropagatedTypes,
+            GenerationCaptureInputs, GenerationLibraryQuery, GenerationOutput, GenerationPhase, LibraryTypes, PropagatedTypes,
         },
     },
     core_analysis::{AnalysisPhases, ModuleRequest, Published, SccGraph, SccRequest},
@@ -36,6 +36,11 @@ use crate::{
     warning_payload::NativeWarning,
 };
 use std::collections::BTreeMap;
+static DIAGNOSTIC_SNAPSHOT_RESUMES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub fn diagnostic_snapshot_resumes() -> u64 {
+    DIAGNOSTIC_SNAPSHOT_RESUMES.load(std::sync::atomic::Ordering::Relaxed)
+}
 #[derive(Debug)]
 pub enum CorePhaseError {
     Boundary(String),
@@ -134,7 +139,7 @@ pub struct CorePhases<'a> {
     function_names: BTreeMap<CoreLabel, Mfa>,
     core_captures: CoreCaptureStore<'a>,
     scc_memo: std::sync::Mutex<BTreeMap<Vec<Mfa>, std::sync::Arc<SccMemo>>>,
-    module_memo: std::sync::Mutex<BTreeMap<ModuleId, std::sync::Arc<ModuleMemo>>>,
+    module_memo: std::sync::Mutex<BTreeMap<ModuleId, std::sync::Arc<ModuleMemo<'a>>>>,
     module_memo_counts: ModuleMemoCounts,
     /// Generation's view of each entry of `world.active_contracts`, converted
     /// once when the contract is activated instead of at every call site.
@@ -282,25 +287,44 @@ pub struct ModuleBodies<'phase, 'input> {
     letrec: &'phase BTreeMap<ModuleId, crate::letrec_types::LetrecLinks>,
     binder_states: &'phase [std::sync::OnceLock<Result<BinderState<AnalysisWarning>, ModuleBinderError>>],
 }
-impl ModuleBodies<'_, '_> {
+/// A module body analysis stopped after its inference loop: what the
+/// warning loop of a diagnostic run with the same inputs continues from.
+pub struct ModuleSnapshot<'input> {
+    functions: crate::function_state::FunctionState,
+    patterns: Patterns<'input, 'input>,
+    state: BinderState<AnalysisWarning>,
+}
+impl<'input> ModuleBodies<'_, 'input> {
+    /// Analyzes `module`'s bodies; with `warnings`, then collects warnings.
+    /// `resume` continues a diagnostic run from a refinement's inference
+    /// loop with identical inputs instead of repeating it. Refinement runs
+    /// return their snapshot when `keep` is set.
     fn module_body(
         &self,
         module: ModuleId,
         previous: &FunctionTypes,
         calls: &dyn CallLookup,
         warnings: bool,
-    ) -> Result<(FunctionTypes, Vec<NativeWarning>), CorePhaseError> {
+        resume: Option<ModuleSnapshot<'input>>,
+        keep: bool,
+    ) -> Result<(FunctionTypes, Vec<NativeWarning>, Option<ModuleSnapshot<'input>>), CorePhaseError> {
         let mut timings = crate::phase_timings::PhaseTimings::new(if warnings {
             "module_diagnostics"
         } else {
             "module_refinement"
         });
-        let inputs = self
-            .graph
-            .function_inputs(module, self.program, self.nodes.labels(), previous.clone())
-            .map_err(CorePhaseError::Boundary)?;
-        let mut functions =
-            build_function_state(self.nodes, module, &inputs).map_err(CorePhaseError::Boundary)?;
+        let (mut functions, mut patterns, inferred) = match resume {
+            Some(snapshot) => (snapshot.functions, snapshot.patterns, Some(snapshot.state)),
+            None => {
+                let inputs = self
+                    .graph
+                    .function_inputs(module, self.program, self.nodes.labels(), previous.clone())
+                    .map_err(CorePhaseError::Boundary)?;
+                let functions = build_function_state(self.nodes, module, &inputs)
+                    .map_err(CorePhaseError::Boundary)?;
+                (functions, Patterns::new(self.nodes), None)
+            }
+        };
         let folded_patterns = Patterns::new(&self.folded_nodes);
         let producer = GuardProducer {
             original: self.nodes,
@@ -313,7 +337,6 @@ impl ModuleBodies<'_, '_> {
             literals: &self.guard_literals,
             registry: self.bifs,
         };
-        let mut patterns = Patterns::new(self.nodes);
         let build = || {
             BinderState::<AnalysisWarning>::for_module(
                 self.nodes.core(),
@@ -342,9 +365,11 @@ impl ModuleBodies<'_, '_> {
             letrec,
         };
         timings.mark("prepare_module_body");
-        let mut bound = flow
-            .analyze_module(initial, warnings)
-            .map_err(|error| CorePhaseError::Body(Box::new(error)))?;
+        let mut bound = match inferred {
+            Some(state) => flow.resume_warning_loop(&state),
+            None => flow.analyze_module(initial, warnings),
+        }
+        .map_err(|error| CorePhaseError::Body(Box::new(error)))?;
         timings.mark("analyze_module");
         if warnings {
             bound = flow
@@ -354,26 +379,34 @@ impl ModuleBodies<'_, '_> {
         timings.mark("function_warnings");
         let signatures = functions.function_types();
         timings.mark("signatures");
-        Ok((
-            signatures,
-            bound
-                .warnings
-                .warnings
-                .into_iter()
-                .map(|warning| warning.0)
-                .collect(),
-        ))
+        let warnings_out = bound
+            .warnings
+            .warnings
+            .iter()
+            .map(|warning| warning.0.clone())
+            .collect();
+        let snapshot = (keep && !warnings).then(|| ModuleSnapshot { functions, patterns, state: bound });
+        Ok((signatures, warnings_out, snapshot))
     }
     pub fn module_diagnostics(
         &self,
         module: ModuleId,
         previous: &FunctionTypes,
+        resume: Option<ModuleSnapshot<'input>>,
     ) -> Result<ModuleDiagnostics, CorePhaseError> {
-        self.module_body(module, previous, self.world, true)
-            .map(|(signatures, warnings)| ModuleDiagnostics {
-                signatures,
-                warnings,
-            })
+        let resumed = resume.is_some();
+        let result = self
+            .module_body(module, previous, self.world, true, resume, false)
+            .map(|(signatures, warnings, _)| ModuleDiagnostics { signatures, warnings })?;
+        if resumed && crate::lattice::verify_fast_paths() {
+            let (signatures, warnings, _) = self.module_body(module, previous, self.world, true, None, false)?;
+            assert!(signatures == result.signatures, "resumed diagnostic signatures differ: {module:?}");
+            assert!(warnings == result.warnings, "resumed diagnostic warnings differ: {module:?}");
+        }
+        if resumed {
+            DIAGNOSTIC_SNAPSHOT_RESUMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(result)
     }
 }
 
@@ -445,6 +478,7 @@ impl AnalysisPhases for CorePhases<'_> {
                     contracts: &this.generation_contracts,
                     reads: Default::default(),
                     overlay: Some((&overlay, graph.levels[i])),
+                    frozen_owners: Default::default(),
                     early: Default::default(),
                 };
                 let request = SccInput {
@@ -453,8 +487,15 @@ impl AnalysisPhases for CorePhases<'_> {
                     next_core_label: graph.next_core_label,
                     previous: job.previous,
                 };
+                let t0 = crate::job_trace::now();
                 let result = this.analyze_scc_in(&request, &library);
-                let early = library.early.into_inner();
+                let early = library.early.into_inner().unwrap();
+                if crate::job_trace::enabled() {
+                    let t1 = crate::job_trace::now();
+                    let retry = !early.is_empty();
+                    let note = crate::job_trace::take_note();
+                    crate::job_trace::record(|| serde_json::json!({"ev":"scc","pass":crate::job_trace::pass(),"i":i,"t0":t0,"t1":t1,"retry":retry,"note":note}));
+                }
                 if early.is_empty() {
                     crate::ordered_parallel::Attempt::Done(result)
                 } else {
@@ -494,7 +535,16 @@ impl AnalysisPhases for CorePhases<'_> {
         let core = self.nodes.core();
         let mut order: Vec<usize> = (0..requests.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(core.modules[requests[i].module.0].nodes.len()));
-        let ordered = crate::ordered_parallel::parallel_map(&order, |&i| this.refine_module_shared(&requests[i]));
+        let ordered = crate::ordered_parallel::parallel_map(&order, |&i| {
+            let t0 = crate::job_trace::now();
+            let result = this.refine_module_shared(&requests[i]);
+            if crate::job_trace::enabled() {
+                let t1 = crate::job_trace::now();
+                crate::job_trace::record(|| serde_json::json!({"ev":"mod","pass":crate::job_trace::pass(),"m":requests[i].module.0,"t0":t0,"t1":t1}));
+            }
+            result
+        });
+        crate::job_trace::flush();
         timings.label(|| self.module_memo_counts.describe(requests.len()));
         let mut results: Vec<_> = (0..requests.len()).map(|_| None).collect();
         for (i, result) in order.into_iter().zip(ordered) {
@@ -504,12 +554,23 @@ impl AnalysisPhases for CorePhases<'_> {
     }
 }
 
-impl CorePhases<'_> {
+impl<'a> CorePhases<'a> {
     /// Module refinement is memoized across fixpoint iterations like SCCs.
     /// The body analysis depends on the module's Core, the fixed run inputs
     /// (definitions, call sites, guards, letrec links), `previous` and the
     /// signatures and contracts it reads from the call world; with identical
     /// values for all of these it computes the same types.
+    /// The inference state of `module`'s last refinement, if that run had
+    /// `previous` and read exactly the call-world values a body analysis
+    /// would read now: a diagnostic run's inference loop would repeat it.
+    pub fn take_module_snapshot(&self, module: ModuleId, previous: &FunctionTypes) -> Option<ModuleSnapshot<'a>> {
+        let memo = self.module_memo.lock().unwrap().get(&module).cloned()?;
+        if memo.previous == *previous && memo.reads.still_valid(&self.world) {
+            memo.snapshot.lock().unwrap().take()
+        } else {
+            None
+        }
+    }
     fn refine_module_shared(&self, request: &ModuleRequest<'_>) -> Result<FunctionTypes, CorePhaseError> {
         let memo = self.module_memo.lock().unwrap().get(&request.module).cloned();
         if let Some(memo) = memo
@@ -519,30 +580,36 @@ impl CorePhases<'_> {
             if memo.reads.still_valid(&self.world) {
                 self.module_memo_counts.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if crate::lattice::verify_fast_paths() {
-                    let (fresh, _) = self.refine_module_uncached(request)?;
+                    let (fresh, _, _) = self.refine_module_uncached(request, false)?;
                     assert_eq!(fresh, memo.result, "memoized module result differs: {:?}", request.module);
                 }
                 return Ok(memo.result.clone());
             }
         }
-        let (result, reads) = self.refine_module_uncached(request)?;
+        let (result, reads, snapshot) = self.refine_module_uncached(request, true)?;
         self.module_memo.lock().unwrap().insert(
             request.module,
             std::sync::Arc::new(ModuleMemo {
                 previous: request.previous.clone(),
                 reads,
                 result: result.clone(),
+                snapshot: std::sync::Mutex::new(snapshot),
             }),
         );
         Ok(result)
     }
-    fn refine_module_uncached(&self, request: &ModuleRequest<'_>) -> Result<(FunctionTypes, CallReads), CorePhaseError> {
+    fn refine_module_uncached(
+        &self,
+        request: &ModuleRequest<'_>,
+        keep_snapshot: bool,
+    ) -> Result<(FunctionTypes, CallReads, Option<ModuleSnapshot<'a>>), CorePhaseError> {
         let calls = RecordingCalls {
             world: &self.world,
             reads: Default::default(),
         };
-        let (signatures, _) = self.module_bodies().module_body(request.module, request.previous, &calls, false)?;
-        Ok((signatures, calls.reads.into_inner()))
+        let (signatures, _, snapshot) =
+            self.module_bodies().module_body(request.module, request.previous, &calls, false, None, keep_snapshot)?;
+        Ok((signatures, calls.reads.into_inner(), snapshot))
     }
     /// SCC results are memoized across fixpoint iterations. Generation and
     /// solving depend on the Core, the fixed run inputs, `previous` (the
@@ -558,6 +625,7 @@ impl CorePhases<'_> {
             contracts: &self.generation_contracts,
             reads: Default::default(),
             overlay: None,
+            frozen_owners: Default::default(),
             early: Default::default(),
         };
         let request = SccInput {
@@ -570,7 +638,21 @@ impl CorePhases<'_> {
     }
     fn analyze_scc_in(&self, request: &SccInput<'_>, library: &RecordingWorld<'_, '_>) -> Result<FunctionTypes, CorePhaseError> {
         let memo = self.scc_memo.lock().unwrap().get(request.ordered_mfas).cloned();
-        if let Some(memo) = memo
+        if crate::job_trace::enabled() {
+            let outcome = match &memo {
+                None => "none",
+                Some(memo) if memo.previous != *request.previous => {
+                    if memo.reads.still_valid(library) { "previous" } else { "previous+reads" }
+                }
+                Some(memo) if !memo.reads.still_valid(library) => "reads",
+                Some(_) => "hit",
+            };
+            let changed_previous = memo.as_ref().map_or(0, |memo| {
+                request.previous.iter().filter(|(label, sig)| memo.previous.get(label) != Some(sig)).count()
+            });
+            crate::job_trace::set_note(serde_json::json!({"memo":outcome,"changed_previous":changed_previous,"functions":request.previous.len()}));
+        }
+        if let Some(memo) = memo.clone()
             && memo.next_core_label == request.next_core_label
             && memo.previous == *request.previous
             && memo.reads.still_valid(library)
@@ -582,12 +664,16 @@ impl CorePhases<'_> {
             return Ok(memo.result.clone());
         }
         let result = self.analyze_scc_uncached(request, library)?;
+        if crate::job_trace::enabled() {
+            let same = memo.as_ref().is_some_and(|memo| memo.result == result);
+            crate::job_trace::add_note("same_result", serde_json::json!(same));
+        }
         self.scc_memo.lock().unwrap().insert(
             request.ordered_mfas.to_vec(),
             std::sync::Arc::new(SccMemo {
                 next_core_label: request.next_core_label,
                 previous: request.previous.clone(),
-                reads: library.reads.take(),
+                reads: std::mem::take(&mut *library.reads.lock().unwrap()),
                 result: result.clone(),
             }),
         );
@@ -758,29 +844,33 @@ fn contract_source(world: &CallWorld<'_>, mfa: &Mfa) -> ContractSource {
 struct RecordingWorld<'w, 'l> {
     world: &'w CallWorld<'l>,
     contracts: &'w BTreeMap<Mfa, Result<GenerationActiveContract, String>>,
-    reads: std::cell::RefCell<LibraryReads>,
+    reads: std::sync::Mutex<LibraryReads>,
     /// Unpublished results of the current phase and the reader's wave.
     overlay: Option<(&'w PhaseOverlay<'w>, usize)>,
+    frozen_owners: std::sync::Mutex<BTreeMap<usize, Option<&'w OverlayEntry>>>,
     /// Lower-wave SCCs read before they committed; the reading SCC must
     /// run again after them.
-    early: std::cell::RefCell<std::collections::BTreeSet<usize>>,
+    early: std::sync::Mutex<std::collections::BTreeSet<usize>>,
 }
-impl RecordingWorld<'_, '_> {
-    /// The committed overlay entry owning `mfa`, if the reader may see it.
-    fn visible(&self, mfa: &Mfa) -> Option<&OverlayEntry> {
+impl<'w, 'l> RecordingWorld<'w, 'l> {
+    fn frozen_visible(&self, mfa: &Mfa, observing: bool) -> Option<&'w OverlayEntry> {
         let (overlay, level) = self.overlay?;
         let &owner = overlay.owner.get(mfa)?;
         if overlay.levels[owner] >= level {
             return None;
         }
-        let entry = overlay.slots[owner].get();
-        if entry.is_none() {
-            self.early.borrow_mut().insert(owner);
+        let entry = *self.frozen_owners.lock().unwrap()
+            .entry(owner).or_insert_with(|| overlay.slots[owner].get());
+        if observing && entry.is_none() {
+            self.early.lock().unwrap().insert(owner);
         }
         entry
     }
-    fn current_signature(&self, mfa: &Mfa) -> Result<Option<CallSignature>, String> {
-        if let Some(signature) = self.visible(mfa).and_then(|entry| entry.signatures.get(mfa)) {
+    fn visible(&self, mfa: &Mfa) -> Option<&'w OverlayEntry> {
+        self.frozen_visible(mfa, true)
+    }
+    fn signature_at(&self, mfa: &Mfa, observing: bool) -> Result<Option<CallSignature>, String> {
+        if let Some(signature) = self.frozen_visible(mfa, observing).and_then(|entry| entry.signatures.get(mfa)) {
             return Ok(Some(CallSignature {
                 arguments: signature.arguments.clone(),
                 returns: signature.result.clone(),
@@ -788,37 +878,81 @@ impl RecordingWorld<'_, '_> {
         }
         LibraryTypes::signature(self.world, mfa)
     }
-    fn current_contract_source(&self, mfa: &Mfa) -> ContractSource {
-        if self.visible(mfa).is_some_and(|entry| entry.contracts.contains_key(mfa)) {
+    fn current_signature(&self, mfa: &Mfa) -> Result<Option<CallSignature>, String> {
+        self.signature_at(mfa, true)
+    }
+    fn contract_source_at(&self, mfa: &Mfa, observing: bool) -> ContractSource {
+        if self.frozen_visible(mfa, observing).is_some_and(|entry| entry.contracts.contains_key(mfa)) {
             ContractSource::Active
         } else {
             contract_source(self.world, mfa)
         }
     }
+    fn current_contract_source(&self, mfa: &Mfa) -> ContractSource {
+        self.contract_source_at(mfa, true)
+    }
+    fn contract_at(&self, mfa: &Mfa, observing: bool) -> Result<Option<GenerationActiveContract>, String> {
+        let overlay = self.frozen_visible(mfa, observing).and_then(|entry| entry.contracts.get(mfa));
+        match overlay.or_else(|| self.contracts.get(mfa)) {
+            Some(contract) => Ok(Some(contract.clone()?)),
+            None => LibraryTypes::active_contract(self.world, mfa),
+        }
+    }
+}
+struct NonobservingWorld<'s, 'w, 'l>(&'s RecordingWorld<'w, 'l>);
+impl LibraryTypes for NonobservingWorld<'_, '_, '_> {
+    fn signature(&self, mfa: &Mfa) -> Result<Option<CallSignature>, String> {
+        self.0.signature_at(mfa, false)
+    }
+    fn active_contract(&self, mfa: &Mfa) -> Result<Option<GenerationActiveContract>, String> {
+        self.0.contract_at(mfa, false)
+    }
 }
 impl LibraryTypes for RecordingWorld<'_, '_> {
     fn signature(&self, mfa: &Mfa) -> Result<Option<CallSignature>, String> {
         let signature = self.current_signature(mfa)?;
-        self.reads.borrow_mut().signatures.entry(mfa.clone()).or_insert_with(|| {
+        self.reads.lock().unwrap().signatures.entry(mfa.clone()).or_insert_with(|| {
             signature.as_ref().map(|signature| (signature.arguments.clone(), signature.returns.clone()))
         });
         Ok(signature)
     }
     fn active_contract(&self, mfa: &Mfa) -> Result<Option<GenerationActiveContract>, String> {
-        let overlay = self.visible(mfa).and_then(|entry| entry.contracts.get(mfa));
-        let contract = match overlay.or_else(|| self.contracts.get(mfa)) {
-            Some(contract) => Some(contract.clone()?),
-            None => LibraryTypes::active_contract(self.world, mfa)?,
-        };
-        self.reads.borrow_mut().contracts.entry(mfa.clone()).or_insert_with(|| self.current_contract_source(mfa));
+        let contract = self.contract_at(mfa, true)?;
+        let source = self.current_contract_source(mfa);
+        self.reads.lock().unwrap().contracts.entry(mfa.clone()).or_insert(source);
         Ok(contract)
+    }
+    fn parallel_generation_snapshot(&self) -> Option<Box<dyn LibraryTypes + Send + Sync + '_>> {
+        Some(Box::new(NonobservingWorld(self)))
+    }
+    fn commit_generation_queries(&self, queries: &[GenerationLibraryQuery]) {
+        for query in queries {
+            match query {
+                GenerationLibraryQuery::Signature { mfa, result } => {
+                    self.visible(mfa);
+                    if let Ok(signature) = result {
+                        self.reads.lock().unwrap().signatures.entry(mfa.clone())
+                            .or_insert_with(|| call_signature_value(signature.clone()));
+                    }
+                }
+                GenerationLibraryQuery::ActiveContract { mfa, succeeded } => {
+                    self.visible(mfa);
+                    if *succeeded {
+                        let source = self.current_contract_source(mfa);
+                        self.reads.lock().unwrap().contracts.entry(mfa.clone()).or_insert(source);
+                    }
+                }
+            }
+        }
     }
 }
 
-struct ModuleMemo {
+struct ModuleMemo<'a> {
     previous: FunctionTypes,
     reads: CallReads,
     result: FunctionTypes,
+    /// The run's inference state, until a diagnostic run resumes from it.
+    snapshot: std::sync::Mutex<Option<ModuleSnapshot<'a>>>,
 }
 #[derive(Default)]
 struct ModuleMemoCounts {
@@ -939,4 +1073,199 @@ mod lookup_index_tests {
         println!("lookup population: 1024 named, 1024 anonymous; legacy_ns={legacy_ns}; indexed_ns={indexed_ns}; exact_match=true");
     }
 
+}
+
+#[cfg(test)]
+mod frozen_generation_world_tests {
+    use super::*;
+    fn name(function: &str) -> Mfa {
+        Mfa { module: "frozen".into(), function: function.into(), arity: 0 }
+    }
+    fn signature(value: &str) -> Signature {
+        Signature { arguments: vec![], result: Type::atom(value) }
+    }
+    fn overlay<'a>(levels: &'a [usize], names: &[Mfa]) -> PhaseOverlay<'a> {
+        PhaseOverlay {
+            owner: names.iter().cloned().map(|mfa| (mfa, 0)).collect(),
+            levels,
+            slots: vec![Default::default()],
+        }
+    }
+    fn recording<'a>(world: &'a CallWorld<'a>, contracts: &'a BTreeMap<Mfa, Result<GenerationActiveContract, String>>,
+                     overlay: &'a PhaseOverlay<'a>) -> RecordingWorld<'a, 'a> {
+        RecordingWorld { world, contracts, reads: Default::default(), overlay: Some((overlay, 1)),
+                         frozen_owners: Default::default(), early: Default::default() }
+    }
+    fn published(signatures: BTreeMap<Mfa, Signature>, contracts: BTreeMap<Mfa, Result<GenerationActiveContract, String>>) -> OverlayEntry {
+        OverlayEntry { published: Published { signatures: vec![], contracts: vec![] }, signatures, contracts }
+    }
+    #[test]
+    fn missing_owner_stays_frozen_after_publication_and_actual_commit_marks_retry() {
+        let mfa = name("signature");
+        let mut world = CallWorld::default();
+        world.named_signatures.insert(mfa.clone(), signature("base"));
+        let contracts = BTreeMap::new();
+        let levels = [0];
+        let overlay = overlay(&levels, &[mfa.clone()]);
+        let owner = recording(&world, &contracts, &overlay);
+        let snapshot = owner.parallel_generation_snapshot().unwrap();
+        let first = snapshot.signature(&mfa).unwrap();
+        assert!(overlay.slots[0].set(published(BTreeMap::from([(mfa.clone(), signature("new"))]), BTreeMap::new())).is_ok());
+        assert!(call_signature_value(snapshot.signature(&mfa).unwrap()) == call_signature_value(first.clone()));
+        assert!(owner.early.lock().unwrap().is_empty());
+        assert!(owner.reads.lock().unwrap().signatures.is_empty());
+        owner.commit_generation_queries(&[GenerationLibraryQuery::Signature { mfa: mfa.clone(), result: Ok(first) }]);
+        assert!(owner.early.lock().unwrap().contains(&0));
+        assert!(owner.reads.lock().unwrap().signatures[&mfa] == Some((vec![], Type::atom("base"))));
+        let retry = recording(&world, &contracts, &overlay);
+        assert!(call_signature_value(retry.signature(&mfa).unwrap()) == Some((vec![], Type::atom("new"))));
+        assert!(retry.early.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn owner_classification_is_shared_between_names_and_contract_source() {
+        let sig = name("signature");
+        let contract = name("contract");
+        let world = CallWorld::default();
+        let contracts = BTreeMap::new();
+        let levels = [0];
+        let overlay = overlay(&levels, &[sig.clone(), contract.clone()]);
+        let owner = recording(&world, &contracts, &overlay);
+        let snapshot = owner.parallel_generation_snapshot().unwrap();
+        assert!(snapshot.signature(&sig).unwrap().is_none());
+        assert!(overlay.slots[0].set(published(BTreeMap::from([(sig, signature("new"))]),
+             BTreeMap::from([(contract.clone(), Err("overlay contract failure".into()))]))).is_ok());
+        assert!(snapshot.active_contract(&contract).unwrap().is_none());
+        assert!(owner.contract_source_at(&contract, false) == ContractSource::Absent);
+        assert_eq!(owner.frozen_owners.lock().unwrap().len(), 1);
+        assert!(owner.early.lock().unwrap().is_empty());
+        owner.commit_generation_queries(&[GenerationLibraryQuery::ActiveContract { mfa: contract.clone(), succeeded: true }]);
+        assert!(owner.early.lock().unwrap().contains(&0));
+        assert!(owner.reads.lock().unwrap().contracts[&contract] == ContractSource::Absent);
+    }
+    #[test]
+    fn speculative_queries_do_not_log_and_actual_prefix_commits_only_successes() {
+        let first = name("first");
+        let later = name("later");
+        let contract = name("contract");
+        let world = CallWorld::default();
+        let contracts = BTreeMap::new();
+        let levels = [0];
+        let overlay = overlay(&levels, &[first.clone(), later.clone(), contract.clone()]);
+        assert!(overlay.slots[0].set(published(BTreeMap::from([(first.clone(), signature("first")), (later.clone(), signature("later"))]),
+             BTreeMap::from([(contract.clone(), Err("native contract failure".into()))]))).is_ok());
+        let owner = recording(&world, &contracts, &overlay);
+        let snapshot = owner.parallel_generation_snapshot().unwrap();
+        let actual_first = snapshot.signature(&first);
+        let _discarded_count = snapshot.signature(&later).unwrap();
+        assert!(matches!(snapshot.active_contract(&contract), Err(e) if e == "native contract failure"));
+        assert!(owner.contract_source_at(&contract, false) == ContractSource::Active);
+        assert!(owner.reads.lock().unwrap().signatures.is_empty());
+        assert!(owner.reads.lock().unwrap().contracts.is_empty());
+        assert!(owner.early.lock().unwrap().is_empty());
+        owner.commit_generation_queries(&[
+            GenerationLibraryQuery::Signature { mfa: first.clone(), result: actual_first },
+            GenerationLibraryQuery::ActiveContract { mfa: contract, succeeded: false },
+        ]);
+        let reads = owner.reads.lock().unwrap();
+        assert_eq!(reads.signatures.len(), 1);
+        assert!(reads.signatures.contains_key(&first));
+        assert!(!reads.signatures.contains_key(&later));
+        assert!(reads.contracts.is_empty());
+    }
+    #[test]
+    fn memo_validation_and_failed_actual_queries_preserve_missing_owner_retry() {
+        let mfa = name("missing");
+        let world = CallWorld::default();
+        let contracts = BTreeMap::new();
+        let levels = [0];
+        let overlay = overlay(&levels, &[mfa.clone()]);
+        let owner = recording(&world, &contracts, &overlay);
+        let mut memo = LibraryReads::default();
+        memo.signatures.insert(mfa.clone(), None);
+        assert!(memo.still_valid(&owner));
+        assert!(owner.early.lock().unwrap().contains(&0));
+        assert!(owner.reads.lock().unwrap().signatures.is_empty());
+        owner.early.lock().unwrap().clear();
+        owner.commit_generation_queries(&[
+            GenerationLibraryQuery::Signature { mfa: mfa.clone(), result: Err("stored generation failure".into()) },
+            GenerationLibraryQuery::ActiveContract { mfa, succeeded: false },
+        ]);
+        assert!(owner.early.lock().unwrap().contains(&0));
+        let reads = owner.reads.lock().unwrap();
+        assert!(reads.signatures.is_empty() && reads.contracts.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_snapshot_tests {
+    use super::*;
+    use crate::{core::{CompilerProfile, CoreExpr, CoreModule, CoreNode, CoreProgram, CoreVersion, ErlangTerm, NodeId, TermId, TermMapOrder},
+                function_state::{FunctionDefinition, FunctionState}, program::FunctionName, worklist::FunctionKey};
+    fn literal_function() -> CoreProgram {
+        let terms = vec![ErlangTerm::Nil, ErlangTerm::Atom("snapshot".into()), ErlangTerm::Atom("f".into()),
+                         ErlangTerm::Integer("0".into()), ErlangTerm::Tuple(vec![TermId(2), TermId(3)]), ErlangTerm::Atom("ok".into())];
+        let expressions = vec![CoreExpr::Literal(TermId(1)), CoreExpr::Var(TermId(4)), CoreExpr::Literal(TermId(5)),
+            CoreExpr::Fun { params: vec![], body: NodeId(2) }, CoreExpr::Module { name: NodeId(0), exports: vec![NodeId(1)],
+                attributes: vec![], definitions: vec![(NodeId(1), NodeId(3))] }];
+        let nodes = expressions.into_iter().enumerate().map(|(id, expr)| CoreNode { id: NodeId(id), annotations: TermId(0), expr }).collect();
+        CoreProgram { version: CoreVersion::V6, profile: CompilerProfile { otp: "28".into(), erts: "16".into(),
+            elixir: "1.20.4".into(), dialyzer: "5".into(), core_options: vec![], term_map_order: TermMapOrder::NativeToListWithIterator },
+            atom_layout: None, contract_closure_profile: None, modules: vec![CoreModule { name: "snapshot".into(), source_forms: TermId(0),
+            core: NodeId(4), terms: terms.into(), nodes, map_iterator_orders: BTreeMap::new(), contract_variable_maps: BTreeMap::new() }],
+            node_count: 5, term_count: 6, kinds: BTreeMap::new() }
+    }
+    #[test]
+    fn saved_owners_resume_warning_loop_matches_fresh_called_function() {
+        let core = literal_function();
+        let labels = crate::labels::Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let function = NodeRef { module: ModuleId(0), node: 3 };
+        let label = nodes.label(function).unwrap();
+        let initial_functions = FunctionState::new(vec![FunctionDefinition { key: FunctionKey::Label(label), node: Some(function),
+            arity: 0, escaping: true, name: Some(FunctionName { module: "snapshot".into(), name: "f".into(), arity: 0 }),
+            raw_signature: None, callers: vec![] }]);
+        let registry = Registry::load(include_str!("../corpus/bifs.json")).unwrap();
+        let letrec = crate::letrec_types::LetrecLinks::default();
+        let initial = BinderState::<AnalysisWarning>::for_compiler_module(&core, ModuleId(0), false).unwrap();
+        let mut functions = initial_functions.clone();
+        let mut patterns = Patterns::new(&nodes);
+        let inferred = BodyFlow { patterns: &mut patterns, functions: &mut functions, bifs: &registry,
+            calls: None, guards: None, letrec: &letrec }.analyze_module(&initial, false).unwrap();
+        assert!(!functions.warning_mode() && !inferred.warnings.warning_mode);
+        assert!(matches!(inferred.current_fun, crate::binder::WarningFunction::Undefined));
+        assert!(functions.function_types()[&label].result == Type::atom("ok"));
+        let saved = ModuleSnapshot { functions, patterns, state: inferred };
+        let ModuleSnapshot { mut functions, mut patterns, state } = saved;
+        let resumed = BodyFlow { patterns: &mut patterns, functions: &mut functions, bifs: &registry,
+            calls: None, guards: None, letrec: &letrec }.resume_warning_loop(&state).unwrap();
+        let mut fresh_functions = initial_functions;
+        let mut fresh_patterns = Patterns::new(&nodes);
+        let fresh = BodyFlow { patterns: &mut fresh_patterns, functions: &mut fresh_functions, bifs: &registry,
+            calls: None, guards: None, letrec: &letrec }.analyze_module(&initial, true).unwrap();
+        assert!(functions.function_types() == fresh_functions.function_types());
+        assert_eq!(resumed.warnings, fresh.warnings);
+        assert!(resumed.warnings.warning_mode && functions.warning_mode());
+        assert!(matches!(resumed.current_fun, crate::binder::WarningFunction::Undefined));
+        assert_eq!(patterns.allocation_count(), fresh_patterns.allocation_count());
+    }
+    #[test]
+    fn recorded_call_reads_reject_changed_arguments_returns_and_presence() {
+        let mfa = Mfa { module: "snapshot".into(), function: "callee".into(), arity: 1 };
+        let original = Signature { arguments: vec![Type::atom("arg")], result: Type::atom("ret") };
+        let mut world = CallWorld::default();
+        world.named_signatures.insert(mfa.clone(), original.clone());
+        let mut reads = CallReads::default();
+        reads.named.insert(mfa.clone(), Some(original.clone()));
+        assert!(reads.still_valid(&world));
+        world.named_signatures.insert(mfa.clone(), Signature { arguments: vec![Type::any()], result: original.result.clone() });
+        assert!(!reads.still_valid(&world));
+        world.named_signatures.insert(mfa.clone(), Signature { arguments: original.arguments.clone(), result: Type::any() });
+        assert!(!reads.still_valid(&world));
+        world.named_signatures.remove(&mfa);
+        assert!(!reads.still_valid(&world));
+        reads.named.insert(mfa.clone(), None);
+        assert!(reads.still_valid(&world));
+        world.named_signatures.insert(mfa, original);
+        assert!(!reads.still_valid(&world));
+    }
 }

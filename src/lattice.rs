@@ -662,9 +662,9 @@ impl Integers {
         match self {
             Self::All => json!({"kind":"integer"}),
             Self::Set(s) => {
-                json!({"kind":"integers","values":s.iter().map(ToString::to_string).collect::<Vec<_>>()})
+                crate::jobj!({"kind":"integers","values":s.iter().map(ToString::to_string).collect::<Vec<_>>()})
             }
-            Self::Range(a, b) => json!({"kind":"range","from":a.value(),"to":b.value()}),
+            Self::Range(a, b) => crate::jobj!({"kind":"range","from":a.value(),"to":b.value()}),
         }
     }
 }
@@ -1460,7 +1460,7 @@ impl Lists {
                 tail,
                 nonempty,
             } => {
-                json!({"kind":"list","elements":elements.to_value(),"tail":tail.to_value(),"nonempty":nonempty})
+                crate::jobj!({"kind":"list","elements":elements.to_value(),"tail":tail.to_value(),"nonempty":*nonempty})
             }
         }
     }
@@ -1688,11 +1688,11 @@ impl Tuples {
         match self {
             Self::Any => json!({"kind":"tuple_any"}),
             Self::Set(groups) => {
-                let values:Vec<_>=groups.values().flat_map(|v|v.iter()).map(|v|json!({"kind":"tuple","elements":v.elements.iter().map(Type::to_value).collect::<Vec<_>>()})).collect();
+                let values:Vec<_>=groups.values().flat_map(|v|v.iter()).map(|v|crate::jobj!({"kind":"tuple","elements":v.elements.iter().map(Type::to_value).collect::<Vec<_>>()})).collect();
                 if values.len() == 1 {
                     values.into_iter().next().unwrap()
                 } else {
-                    json!({"kind":"tuple_set","values":values})
+                    crate::jobj!({"kind":"tuple_set","values":values})
                 }
             }
         }
@@ -1862,10 +1862,10 @@ impl Functions {
     fn value(&self) -> Value {
         let domain = match &self.domain.repr {
             Repr::Any => Value::Null,
-            Repr::Product(es) => json!(es.iter().map(Type::to_value).collect::<Vec<_>>()),
+            Repr::Product(es) => Value::from(es.iter().map(Type::to_value).collect::<Vec<_>>()),
             _ => unreachable!("function domain is a product or any"),
         };
-        json!({"kind":"function","domain":domain,"range":self.range.to_value()})
+        crate::jobj!({"kind":"function","domain":domain,"range":self.range.to_value()})
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1973,6 +1973,10 @@ struct ActivePair {
     b: Type,
 }
 thread_local! {static ACTIVE_PAIRS:std::cell::RefCell<Vec<ActivePair>>=const{std::cell::RefCell::new(Vec::new())};}
+/// Native recurrence context cannot be transferred to a generation worker.
+pub(crate) fn generation_ambient_is_empty() -> bool {
+    ACTIVE_PAIRS.with(|pairs| pairs.borrow().is_empty())
+}
 struct ActivePairGuard;
 impl ActivePairGuard {
     fn enter(operation: Operation, a: &Type, b: &Type) -> Result<Option<Self>, LatticeError> {
@@ -2748,7 +2752,7 @@ impl Maps {
         Self::canonical(entries, dk.limit_aux(k - 1)?, dv.limit_aux(k - 1)?)
     }
     fn value(&self) -> Value {
-        json!({"kind":"map","entries":self.entries.iter().map(|e|json!({"key":e.key.as_type().to_value(),"presence":if e.presence==Presence::Mandatory{"mandatory"}else{"optional"},"value":e.value.to_value()})).collect::<Vec<_>>(),"default_key":self.default_key.to_value(),"default_value":self.default_value.to_value()})
+        crate::jobj!({"kind":"map","entries":self.entries.iter().map(|e|crate::jobj!({"key":e.key.as_type().to_value(),"presence":if e.presence==Presence::Mandatory{"mandatory"}else{"optional"},"value":e.value.to_value()})).collect::<Vec<_>>(),"default_key":self.default_key.to_value(),"default_value":self.default_value.to_value()})
     }
     fn get(&self, key: &Type) -> Result<Type, LatticeError> {
         if let Ok(k) = MapKey::from_type(key)
@@ -3648,10 +3652,10 @@ impl Type {
     pub fn to_value(&self) -> Value {
         match &self.repr {
             Repr::Nominal(n) => {
-                json!({"kind":if n.inner.is_impossible(){"nominal_raw"}else{"nominal"},"name":n.name.value(),"inner":n.inner.to_value()})
+                crate::jobj!({"kind":if n.inner.is_impossible(){"nominal_raw"}else{"nominal"},"name":n.name.value(),"inner":n.inner.to_value()})
             }
             Repr::NominalSet(ns) => {
-                json!({"kind":"nominal_set","nominals":ns.nominals.iter().map(|n|n.as_type().to_value()).collect::<Vec<_>>(),"structural":ns.structural.to_value()})
+                crate::jobj!({"kind":"nominal_set","nominals":ns.nominals.iter().map(|n|n.as_type().to_value()).collect::<Vec<_>>(),"structural":ns.structural.to_value()})
             }
             Repr::Any => json!({"kind":"any"}),
             Repr::None => json!({"kind":"none"}),
@@ -3659,11 +3663,11 @@ impl Type {
             Repr::Opaque => json!({"kind":"opaque"}),
             Repr::Var(id) => json!({"kind":"var","id":id.value()}),
             Repr::Product(es) => {
-                json!({"kind":if es.len()==1 {"product_raw"}else{"product"},"values":es.iter().map(Type::to_value).collect::<Vec<_>>()})
+                crate::jobj!({"kind":if es.len()==1 {"product_raw"}else{"product"},"values":es.iter().map(Type::to_value).collect::<Vec<_>>()})
             }
             Repr::Families(s) => {
                 if s.union_record() && s.count() < 2 {
-                    return json!({"kind":"union_raw","values":s.slot_values()});
+                    return crate::jobj!({"kind":"union_raw","values":s.slot_values()});
                 }
                 let mut values = Vec::new();
                 if let Some(a) = s.atoms() {
@@ -3693,7 +3697,7 @@ impl Type {
                 if values.len() == 1 {
                     values.pop().unwrap()
                 } else {
-                    json!({"kind":"union","values":values})
+                    crate::jobj!({"kind":"union","values":values})
                 }
             }
         }

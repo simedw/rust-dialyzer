@@ -369,6 +369,18 @@ pub fn collect(
         .flat_map(|module| module.ordered_contracts.iter().map(move |entry| (module, entry)))
         .collect::<Vec<_>>();
     let results = crate::ordered_parallel::parallel_map(&work, |(module, entry)| {
+        let t0 = crate::job_trace::now();
+        let _trace = crate::job_trace::enabled().then(|| {
+            struct Done(u64, String);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    let t1 = crate::job_trace::now();
+                    let (t0, name) = (self.0, std::mem::take(&mut self.1));
+                    crate::job_trace::record(|| serde_json::json!({"ev":"contract","name":name,"t0":t0,"t1":t1}));
+                }
+            }
+            Done(t0, format!("{:?}", entry.name.callable_mfa()))
+        });
         let mut found = Vec::new();
         collect_entry(module, entry, signatures, bifs, &mut found).map_err(|error| {
             FormError::Transport(format!(

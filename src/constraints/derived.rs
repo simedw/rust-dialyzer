@@ -233,6 +233,13 @@ pub struct DerivedArena {
     dependencies: Vec<BTreeSet<VariableId>>,
 }
 impl DerivedArena {
+    /// Appends `other`'s nodes after this arena's; returns the id offset.
+    pub fn append(&mut self, other: DerivedArena) -> usize {
+        let offset = self.nodes.len();
+        self.nodes.extend(other.nodes);
+        self.dependencies.extend(other.dependencies);
+        offset
+    }
     pub fn push(&mut self, op: DerivedOp) -> DerivedId {
         let inputs = op.inputs();
         let mut dependencies = BTreeSet::new();

@@ -1,4 +1,16 @@
+/// Like `serde_json::json!` for objects, but moves each value in with
+/// `Value::from` instead of re-serializing it, so nested `Value`s are not
+/// deep-copied at every level.
+#[macro_export]
+macro_rules! jobj {
+    ({ $($key:literal : $value:expr),* $(,)? }) => {{
+        let mut map = serde_json::Map::new();
+        $( map.insert(String::from($key), serde_json::Value::from($value)); )*
+        serde_json::Value::Object(map)
+    }};
+}
 pub mod bifs;
+pub mod job_trace;
 pub mod compiled_analysis;
 pub mod contracts;
 pub mod core;

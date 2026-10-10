@@ -10,7 +10,7 @@ use metadata::{function_variable, literal_atom, source_origin, variable};
 type Result<T> = std::result::Result<T, String>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct ModuleId(pub usize);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct FunctionId(pub usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct BindingId(pub usize);
@@ -216,13 +216,7 @@ impl Program {
             named: BTreeMap::new(),
             function_nodes: Vec::new(),
         };
-        let mut origins = crate::ordered_parallel::setup_map(&core.modules, |module| {
-            module
-                .nodes
-                .iter()
-                .map(|node| source_origin(module, node.annotations))
-                .collect::<Result<Vec<_>>>()
-        })
+        let mut origins = crate::ordered_parallel::setup_map(&core.modules, metadata::module_source_origins)
         .into_iter();
         for (i, module) in core.modules.iter().enumerate() {
             let mid = ModuleId(i);

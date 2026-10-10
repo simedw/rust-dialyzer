@@ -57,8 +57,17 @@ pub struct BifConstruction {
 }
 pub trait SourceBifProvider: BifResultProvider {
     fn construction(&self, mfa: &Mfa) -> std::result::Result<BifConstruction, EvalError>;
+    /// Admits repeated, concurrent construction and ground-result queries.
+    /// Complete values/errors must be fixed, independent of caller TLS and
+    /// query chronology, with no externally observable query effects.
+    fn parallel_generation_is_stable(&self) -> bool {
+        false
+    }
 }
 impl SourceBifProvider for Registry {
+    fn parallel_generation_is_stable(&self) -> bool {
+        true
+    }
     fn construction(&self, mfa: &Mfa) -> std::result::Result<BifConstruction, EvalError> {
         let known = self.is_known(mfa);
         let arguments = if known {
@@ -79,6 +88,9 @@ impl SourceBifProvider for Registry {
     }
 }
 impl SourceBifProvider for crate::constraints::derived::NoBifProvider {
+    fn parallel_generation_is_stable(&self) -> bool {
+        true
+    }
     fn construction(&self, mfa: &Mfa) -> std::result::Result<BifConstruction, EvalError> {
         self.result(mfa, &[]).map(|generic_return| BifConstruction {
             known: false,
@@ -115,9 +127,34 @@ impl ActiveContract {
 pub trait LibraryTypes {
     fn signature(&self, mfa: &Mfa) -> std::result::Result<Option<CallSignature>, String>;
     fn active_contract(&self, mfa: &Mfa) -> std::result::Result<Option<ActiveContract>, String>;
+    /// A nonobserving view for speculative generation. Construction itself has
+    /// no native-observable effects. Once admitted, availability and complete
+    /// values/errors agree across every view and native queries throughout the
+    /// owner attempt, independently of thread, repetition and query chronology.
+    /// Views admit repeated concurrent queries without observable effects.
+    /// None preserves the original native sequential query chronology.
+    fn parallel_generation_snapshot(&self) -> Option<Box<dyn LibraryTypes + Send + Sync + '_>> {
+        None
+    }
+    /// Commit reached native queries from an admitted view without requerying
+    /// live inputs. Counting and unreached suffix journals are never committed.
+    fn commit_generation_queries(&self, _queries: &[GenerationLibraryQuery]) {}
+}
+pub enum GenerationLibraryQuery {
+    Signature {
+        mfa: Mfa,
+        result: std::result::Result<Option<CallSignature>, String>,
+    },
+    ActiveContract {
+        mfa: Mfa,
+        succeeded: bool,
+    },
 }
 pub struct EmptyLibrary;
 impl LibraryTypes for EmptyLibrary {
+    fn parallel_generation_snapshot(&self) -> Option<Box<dyn LibraryTypes + Send + Sync + '_>> {
+        Some(Box::new(EmptyLibrary))
+    }
     fn active_contract(&self, _: &Mfa) -> std::result::Result<Option<ActiveContract>, String> {
         Ok(None)
     }
@@ -128,6 +165,100 @@ impl LibraryTypes for EmptyLibrary {
 /// Inputs arise from the preceding native success-typing phase, never from own specifications.
 #[derive(Default)]
 pub struct PropagatedTypes(pub BTreeMap<CoreLabel, Type>);
+/// SCCs with at least this many functions generate their constraints on all
+/// cores (`RUST_DIALYZER_PARALLEL_GENERATION=N`, 0 to disable; never in
+/// sequential mode).
+fn parallel_generation_min() -> Option<usize> {
+    static MIN: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *MIN.get_or_init(|| {
+        if std::env::var_os("RUST_DIALYZER_SEQUENTIAL").is_some_and(|v| v == "1") {
+            return None;
+        }
+        match std::env::var("RUST_DIALYZER_PARALLEL_GENERATION") {
+            Ok(value) => value.parse().ok().filter(|&n: &usize| n > 0),
+            Err(_) => Some(48),
+        }
+    })
+}
+// The flag remains set even if a native error suppresses a later speculative
+// panic or a wrong-seed count pass is followed by successful native generation.
+static GENERATION_PARALLEL_ADMITTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub fn generation_parallel_admitted_sccs() -> u64 {
+    GENERATION_PARALLEL_ADMITTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+static GENERATION_PARALLEL_FAULTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub fn generation_parallel_faulted() -> bool {
+    GENERATION_PARALLEL_FAULTED.load(std::sync::atomic::Ordering::Acquire)
+}
+struct GenerationParallelFault {
+    phase: &'static str,
+    ordinal: usize,
+    next_label: u64,
+    synthetic_allocations: u64,
+    payload: Box<dyn std::any::Any + Send>,
+}
+fn retain_generation_fault(fault: GenerationParallelFault) {
+    static FAULTS: std::sync::OnceLock<std::sync::Mutex<Vec<GenerationParallelFault>>> =
+        std::sync::OnceLock::new();
+    // Retain the original owned payload for suppressed/counting failures.
+    let _ = (
+        &fault.phase,
+        fault.ordinal,
+        fault.next_label,
+        fault.synthetic_allocations,
+    );
+    FAULTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(fault);
+}
+fn observe_generation_fault(
+    phase: &'static str,
+    ordinal: usize,
+    next_label: u64,
+    synthetic: u64,
+    payload: &(dyn std::any::Any + Send),
+) {
+    GENERATION_PARALLEL_FAULTED.store(true, std::sync::atomic::Ordering::Release);
+    let summary = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("opaque owned panic payload");
+    eprintln!(
+        "parallel_generation_fault phase={phase} ordinal={ordinal} freshseed={next_label} synthetic={synthetic} payload={summary:?}"
+    );
+}
+fn checked_generation_starts(
+    bounds: &[(usize, usize)],
+    counts: &[(u64, u64)],
+    first_label: u64,
+    first_synthetic: u64,
+) -> Option<Vec<(u64, u64)>> {
+    let mut labels = first_label;
+    let mut synthetic = 0u64;
+    let mut starts = Vec::with_capacity(bounds.len());
+    let mut next_bound = 0;
+    for position in 0..=counts.len() {
+        while bounds
+            .get(next_bound)
+            .is_some_and(|&(start, _)| start == position)
+        {
+            first_synthetic.checked_add(synthetic)?;
+            starts.push((labels, synthetic));
+            next_bound += 1;
+        }
+        if let Some(&(fresh, refold)) = counts.get(position) {
+            labels = labels.checked_add(fresh)?;
+            synthetic = synthetic.checked_add(refold)?;
+            first_synthetic.checked_add(synthetic)?;
+        }
+    }
+    (starts.len() == bounds.len()).then_some(starts)
+}
 #[derive(Clone, Default)]
 struct State {
     context: Vec<NativeConstraintId>,
@@ -332,8 +463,10 @@ pub struct Generator<'a> {
     labels: &'a Labels,
     profile: &'a ClosureCodeProfile,
     propagated: &'a PropagatedTypes,
-    provider: &'a dyn SourceBifProvider,
-    library: &'a dyn LibraryTypes,
+    provider: &'a (dyn SourceBifProvider + Sync),
+    library: &'a (dyn LibraryTypes + Sync),
+    parallel_library: Option<Box<dyn LibraryTypes + Send + Sync + 'a>>,
+    library_queries: Vec<GenerationLibraryQuery>,
     callgraph: GenerationCallGraph<'a>,
     capture_inputs: Option<&'a GenerationCaptureInputs<'a>>,
     phase_entries: Vec<(ModuleId, NodeId, NodeId)>,
@@ -356,6 +489,11 @@ pub enum GenerationCallGraph<'a> {
     },
 }
 pub trait RecordTableCaptures {
+    /// Admits duplicate concurrent table queries only for immutable,
+    /// deterministic, caller-independent tables with no query effects.
+    fn parallel_generation_is_stable(&self) -> bool {
+        false
+    }
     /// Singleton environment containing the original prepared module record table.
     fn module_table(&self, module: ModuleId) -> std::result::Result<&CaptureEnvironment, String>;
 }
@@ -363,7 +501,8 @@ pub trait RecordTableCaptures {
 pub struct CoreCaptureStore<'a> {
     core: &'a CoreProgram,
     labels: &'a Labels,
-    modules: Vec<std::sync::OnceLock<std::result::Result<crate::core_capture::CoreCaptures, String>>>,
+    modules:
+        Vec<std::sync::OnceLock<std::result::Result<crate::core_capture::CoreCaptures, String>>>,
     checked: Vec<std::sync::OnceLock<std::result::Result<(), String>>>,
 }
 impl<'a> CoreCaptureStore<'a> {
@@ -371,8 +510,12 @@ impl<'a> CoreCaptureStore<'a> {
         Self {
             core,
             labels,
-            modules: (0..core.modules.len()).map(|_| std::sync::OnceLock::new()).collect(),
-            checked: (0..core.modules.len()).map(|_| std::sync::OnceLock::new()).collect(),
+            modules: (0..core.modules.len())
+                .map(|_| std::sync::OnceLock::new())
+                .collect(),
+            checked: (0..core.modules.len())
+                .map(|_| std::sync::OnceLock::new())
+                .collect(),
         }
     }
     /// Same outcome as `get(module)` then `append_selected(&[variable])` followed
@@ -383,14 +526,21 @@ impl<'a> CoreCaptureStore<'a> {
         variable: NodeId,
     ) -> std::result::Result<Option<String>, String> {
         self.check_module(module)?;
-        crate::core_capture::CoreCaptures::selected_variable_error(self.core, self.labels, module, variable)
+        crate::core_capture::CoreCaptures::selected_variable_error(
+            self.core,
+            self.labels,
+            module,
+            variable,
+        )
     }
     /// The error `get(module)` would return, without building the module.
     pub(super) fn check_module(&self, module: ModuleId) -> std::result::Result<(), String> {
         self.checked
             .get(module.0)
             .ok_or("capture module outside Core arena")?
-            .get_or_init(|| crate::core_capture::CoreCaptures::check_module(self.core, self.labels, module))
+            .get_or_init(|| {
+                crate::core_capture::CoreCaptures::check_module(self.core, self.labels, module)
+            })
             .clone()
     }
     fn matches(&self, core: &CoreProgram, labels: &Labels) -> bool {
@@ -413,7 +563,7 @@ impl<'a> CoreCaptureStore<'a> {
 pub struct GenerationCaptureInputs<'a> {
     pub core_captures: Option<&'a CoreCaptureStore<'a>>,
     pub runtime: &'a crate::constraints::generation_capture_headers::GenerationRuntimeCaptures,
-    pub records: &'a dyn RecordTableCaptures,
+    pub records: &'a (dyn RecordTableCaptures + Sync),
     pub initial_record_cache: &'a [ModuleId],
     pub solvers: &'a [String],
 }
@@ -421,7 +571,7 @@ pub struct GenerationPhase<'a> {
     pub captures: Option<&'a GenerationCaptureInputs<'a>>,
     pub callgraph: GenerationCallGraph<'a>,
     pub propagated: &'a PropagatedTypes,
-    pub library: &'a dyn LibraryTypes,
+    pub library: &'a (dyn LibraryTypes + Sync),
     pub records: &'a BTreeMap<(ModuleId, String, usize), Type>,
     pub self_recursive: Option<CoreLabel>,
 }
@@ -429,7 +579,7 @@ impl<'a> Generator<'a> {
     pub fn new(
         nodes: &'a DataflowNodes<'a>,
         profile: &'a ClosureCodeProfile,
-        provider: &'a dyn SourceBifProvider,
+        provider: &'a (dyn SourceBifProvider + Sync),
         phase: GenerationPhase<'a>,
     ) -> Result<Self> {
         let GenerationPhase {
@@ -459,6 +609,8 @@ impl<'a> Generator<'a> {
             propagated,
             provider,
             library,
+            parallel_library: None,
+            library_queries: Vec::new(),
             callgraph,
             capture_inputs: captures,
             phase_entries: Vec::new(),
@@ -687,36 +839,21 @@ impl<'a> Generator<'a> {
             let mfa = self.core.modules[module.0]
                 .named_mfa(*variable)
                 .map_err(GenerationError::Boundary)?;
-            self.scc_variables.insert(
-                mfa,
-                Type::variable_id(r.clone()),
-            );
+            self.scc_variables.insert(mfa, Type::variable_id(r.clone()));
             self.state
                 .scc
                 .insert(FunctionVariable::new(f.clone()).map_err(GenerationError::Boundary)?);
             defined.insert(r.clone());
         }
-        for (module, variable, function) in entries {
-            let function_id = self.variable_id(&Site {
-                module: *module,
-                node: *function,
-            })?;
-            let recursive_id = self.variable_id(&Site {
-                module: *module,
-                node: *variable,
-            })?;
-            self.state
-                .recursive_variables
-                .insert(function_id, recursive_id);
-            self.state.module = Some(*module);
-            self.state.context.clear();
-            self.traverse(
-                Site {
-                    module: *module,
-                    node: *function,
-                },
-                defined.clone(),
-            )?;
+        if matches!(output, GenerationOutput::BindingsOnly)
+            && parallel_generation_min().is_some_and(|min| entries.len() >= min)
+            && self.parallel_generation_admitted(entries, state_capture::exact_captures())
+        {
+            self.generate_chunks(entries, &defined)?;
+        } else {
+            for entry in entries {
+                self.generate_entry(entry, &defined)?;
+            }
         }
         let functions = self
             .state
@@ -750,6 +887,488 @@ impl<'a> Generator<'a> {
             missing_library_summaries: self.state.missing_library_summaries,
         })
     }
+    /// Generates the constraints of one SCC function, after the functions
+    /// before it.
+    fn generate_entry(
+        &mut self,
+        entry: &(ModuleId, NodeId, NodeId),
+        defined: &Defined,
+    ) -> Result<()> {
+        let (module, variable, function) = entry;
+        let function_id = self.variable_id(&Site {
+            module: *module,
+            node: *function,
+        })?;
+        let recursive_id = self.variable_id(&Site {
+            module: *module,
+            node: *variable,
+        })?;
+        self.state
+            .recursive_variables
+            .insert(function_id, recursive_id);
+        self.state.module = Some(*module);
+        self.state.context.clear();
+        self.traverse(
+            Site {
+                module: *module,
+                node: *function,
+            },
+            defined.clone(),
+        )?;
+        Ok(())
+    }
+    /// A generator for the functions from `entries[start]` on, in the state
+    /// sequential generation would have reached there: fresh labels from
+    /// `next_label`, synthetic pattern labels from `synthetic`, and the
+    /// recursion links of the functions before it. Constraint ids start at
+    /// zero; `merge_chunk` rebases them.
+    fn fork(
+        &self,
+        entries: &[(ModuleId, NodeId, NodeId)],
+        start: usize,
+        next_label: u64,
+        synthetic: crate::dataflow_key::SyntheticLabels,
+    ) -> Result<Generator<'a>> {
+        let mut recursive_variables = self.state.recursive_variables.clone();
+        for (module, variable, function) in &entries[..start] {
+            recursive_variables.insert(
+                self.variable_id(&Site {
+                    module: *module,
+                    node: *function,
+                })?,
+                self.variable_id(&Site {
+                    module: *module,
+                    node: *variable,
+                })?,
+            );
+        }
+        Ok(Generator {
+            dependency_retention: self.dependency_retention,
+            core: self.core,
+            labels: self.labels,
+            profile: self.profile,
+            propagated: self.propagated,
+            provider: self.provider,
+            library: self.library,
+            parallel_library: None,
+            library_queries: Vec::new(),
+            callgraph: self.callgraph,
+            capture_inputs: self.capture_inputs,
+            phase_entries: self.phase_entries.clone(),
+            scc_variables: self.scc_variables.clone(),
+            named_variables: self.named_variables,
+            self_recursive: self.self_recursive,
+            records: self.records,
+            literal_types: self.literal_types,
+            patterns: Patterns::with_allocator(self.patterns.nodes, synthetic),
+            core_captures: BTreeMap::new(),
+            arena: NativeConstraintArena::default(),
+            state: State {
+                next_label,
+                scc: self.state.scc.clone(),
+                recursive_variables,
+                record_cache: self.state.record_cache.clone(),
+                in_guard: self.state.in_guard,
+                in_match: self.state.in_match,
+                ..State::default()
+            },
+        })
+    }
+    /// Appends a fork's output as if its functions had been generated here.
+    fn merge_chunk(&mut self, chunk: Generator<'a>) {
+        let offset = self.arena.append(chunk.arena);
+        let state = chunk.state;
+        for (function, body) in state.bodies {
+            self.state
+                .bodies
+                .insert(function, NativeConstraintId(body.0 + offset));
+        }
+        for (function, parameters) in state.parameters {
+            self.state.parameters.insert(function, parameters);
+        }
+        for (function, recursive) in state.recursive_variables {
+            self.state.recursive_variables.insert(function, recursive);
+        }
+        for function in state.scc {
+            self.state.scc.insert(function);
+        }
+        self.state
+            .missing_library_summaries
+            .extend(state.missing_library_summaries);
+        // The fork pushed each newly seen module to the front, so its oldest
+        // first sighting is last.
+        for module in state.record_cache.into_iter().rev() {
+            if !self.state.record_cache.contains(&module) {
+                self.state.record_cache.insert(0, module);
+            }
+        }
+        self.state.context = state
+            .context
+            .into_iter()
+            .map(|id| NativeConstraintId(id.0 + offset))
+            .collect();
+        self.state.module = state.module;
+        self.state.in_guard = state.in_guard;
+        self.state.in_match = state.in_match;
+        self.state.next_label = state.next_label;
+        self.patterns
+            .set_allocator(chunk.patterns.allocator().advanced(0));
+    }
+    fn generate_sequential(
+        &mut self,
+        entries: &[(ModuleId, NodeId, NodeId)],
+        defined: &Defined,
+    ) -> Result<()> {
+        for entry in entries {
+            self.generate_entry(entry, defined)?;
+        }
+        Ok(())
+    }
+    fn function_nodes_are_exclusive(&self, entries: &[(ModuleId, NodeId, NodeId)]) -> bool {
+        let mut owners = BTreeMap::<CoreLabel, usize>::new();
+        for (owner, &(module, _, function)) in entries.iter().enumerate() {
+            let Some(module_nodes) = self.core.modules.get(module.0) else {
+                return false;
+            };
+            let mut seen = std::collections::BTreeSet::new();
+            let mut pending = vec![function];
+            while let Some(node) = pending.pop() {
+                if !seen.insert(node.0) {
+                    continue;
+                }
+                let Some(node_value) = module_nodes.nodes.get(node.0) else {
+                    return false;
+                };
+                if matches!(node_value.expr, CoreExpr::Fun { .. }) {
+                    let reference = NodeRef {
+                        module,
+                        node: node.0,
+                    };
+                    let Some(label) = self.labels.label(reference) else {
+                        return false;
+                    };
+                    if owners
+                        .insert(label, owner)
+                        .is_some_and(|prior| prior != owner)
+                    {
+                        return false;
+                    }
+                }
+                pending.extend(node_value.expr.children());
+            }
+        }
+        true
+    }
+    fn parallel_generation_admitted(
+        &self,
+        entries: &[(ModuleId, NodeId, NodeId)],
+        exact: bool,
+    ) -> bool {
+        !exact
+            && crate::lattice::generation_ambient_is_empty()
+            && self.provider.parallel_generation_is_stable()
+            && self
+                .capture_inputs
+                .is_none_or(|c| c.records.parallel_generation_is_stable())
+            && self.function_nodes_are_exclusive(entries)
+            && self.library.parallel_generation_snapshot().is_some()
+    }
+    /// Generates the SCC's functions in contiguous chunks on all cores, with
+    /// exactly the constraints, ids and labels of the sequential loop.
+    ///
+    /// Each function's constraints depend only on its own Core and the fixed
+    /// inputs; what the functions before it contribute is a count of fresh
+    /// and synthetic labels, constraint ids, and set/map entries. So a chunk
+    /// starting from the right label counters, with ids rebased when merged
+    /// in order, equals the sequential result. The label counts of each
+    /// function come from an earlier visit of the same SCC or else from a
+    /// counting pass; the counts of the real pass must equal them, or the
+    /// SCC is generated sequentially instead.
+    fn generate_chunks(
+        &mut self,
+        entries: &[(ModuleId, NodeId, NodeId)],
+        defined: &Defined,
+    ) -> Result<()> {
+        let _ = GENERATION_PARALLEL_ADMITTED.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |count| count.checked_add(1),
+        );
+        type Counts = Vec<(u64, u64)>;
+        static COUNTS: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<Vec<(usize, usize, usize)>, Counts>>,
+        > = std::sync::OnceLock::new();
+        enum Failure {
+            Error(GenerationError),
+            Panic(GenerationParallelFault),
+        }
+        struct ChunkRun<'g> {
+            generator: Generator<'g>,
+            counts: Counts,
+            failure: Option<Failure>,
+        }
+        let key: Vec<_> = entries.iter().map(|(m, v, f)| (m.0, v.0, f.0)).collect();
+        let workers = std::thread::available_parallelism().map_or(1, usize::from);
+        let chunk_count = workers.saturating_mul(3).min(entries.len()).max(1);
+        let bounds: Vec<(usize, usize)> = (0..chunk_count)
+            .map(|c| {
+                (
+                    c * entries.len() / chunk_count,
+                    (c + 1) * entries.len() / chunk_count,
+                )
+            })
+            .collect();
+        let first_label = self.state.next_label;
+        let first_synthetic = self.patterns.allocator().advanced(0);
+        let initial_state = self.state.clone();
+        let run = |this: &Self,
+                   starts: &[(u64, u64)],
+                   phase: &'static str|
+         -> Result<Option<Vec<ChunkRun<'a>>>> {
+            let mut forks = Vec::with_capacity(bounds.len());
+            for (&(start, _), &(label, synthetic)) in bounds.iter().zip(starts) {
+                // Each fork owns its facade. It never borrows another fork or
+                // references its own owned field through the live-library ref.
+                let mut generator =
+                    this.fork(entries, start, label, first_synthetic.advanced(synthetic))?;
+                let Some(snapshot) = this.library.parallel_generation_snapshot() else {
+                    return Ok(None);
+                };
+                generator.parallel_library = Some(snapshot);
+                forks.push(std::sync::Mutex::new(Some(generator)));
+            }
+            let results: Vec<std::sync::Mutex<Option<ChunkRun<'a>>>> =
+                bounds.iter().map(|_| Default::default()).collect();
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let work = || loop {
+                let c = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&(start, end)) = bounds.get(c) else {
+                    break;
+                };
+                let mut generator = forks[c].lock().unwrap().take().expect("fork");
+                let mut counts = Vec::with_capacity(end - start);
+                let mut failure = None;
+                for (ordinal, entry) in entries[start..end].iter().enumerate() {
+                    let label = generator.state.next_label;
+                    let synthetic = generator.patterns.allocation_count();
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        generator.generate_entry(entry, defined)
+                    })) {
+                        Ok(Ok(())) => counts.push((
+                            generator.state.next_label - label,
+                            generator.patterns.allocation_count() - synthetic,
+                        )),
+                        Ok(Err(error)) => {
+                            failure = Some(Failure::Error(error));
+                            break;
+                        }
+                        Err(payload) => {
+                            observe_generation_fault(
+                                phase,
+                                start + ordinal,
+                                label,
+                                synthetic,
+                                payload.as_ref(),
+                            );
+                            failure = Some(Failure::Panic(GenerationParallelFault {
+                                phase,
+                                ordinal: start + ordinal,
+                                next_label: label,
+                                synthetic_allocations: synthetic,
+                                payload,
+                            }));
+                            break;
+                        }
+                    }
+                }
+                *results[c].lock().unwrap() = Some(ChunkRun {
+                    generator,
+                    counts,
+                    failure,
+                });
+            };
+            std::thread::scope(|scope| {
+                for _ in 0..workers.min(bounds.len()) {
+                    if std::thread::Builder::new()
+                        .stack_size(crate::ordered_parallel::WORKER_STACK_BYTES)
+                        .spawn_scoped(scope, &work)
+                        .is_err()
+                    {
+                        // Resource refusal cannot replace an earlier native
+                        // error. Existing workers and the owner drain the same
+                        // indexed jobs, with identical catch/ordering behavior.
+                        work();
+                        break;
+                    }
+                }
+            });
+            Ok(Some(
+                results
+                    .into_iter()
+                    .map(|r| r.into_inner().unwrap().expect("chunk ran"))
+                    .collect(),
+            ))
+        };
+        let retain_panics = |runs: &mut Vec<ChunkRun<'a>>| {
+            for chunk in runs {
+                if let Some(Failure::Panic(fault)) = chunk.failure.take() {
+                    retain_generation_fault(fault);
+                }
+            }
+        };
+        let cached = COUNTS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .get(&key)
+            .filter(|counts| counts.len() == entries.len())
+            .cloned();
+        let assumed = match cached {
+            Some(counts) => counts,
+            None => {
+                let Some(mut runs) = run(self, &vec![(first_label, 0); bounds.len()], "count")?
+                else {
+                    return self.generate_sequential(entries, defined);
+                };
+                if runs.iter().any(|r| r.failure.is_some()) {
+                    retain_panics(&mut runs);
+                    return self.generate_sequential(entries, defined);
+                }
+                runs.into_iter().flat_map(|r| r.counts).collect()
+            }
+        };
+        let Some(starts) = checked_generation_starts(
+            &bounds,
+            &assumed,
+            first_label,
+            first_synthetic.allocations(),
+        ) else {
+            return self.generate_sequential(entries, defined);
+        };
+        let Some(mut runs) = run(self, &starts, "actual")? else {
+            return self.generate_sequential(entries, defined);
+        };
+        let mut actual = Vec::with_capacity(entries.len());
+        for ((start, _), chunk) in bounds.iter().zip(&runs) {
+            if chunk.counts[..] != assumed[*start..*start + chunk.counts.len()] {
+                retain_panics(&mut runs);
+                return self.generate_sequential(entries, defined);
+            }
+            actual.extend_from_slice(&chunk.counts);
+            if chunk.failure.is_some() {
+                break;
+            }
+        }
+        let mut verify = None;
+        if crate::lattice::verify_fast_paths() && runs.iter().all(|r| r.failure.is_none()) {
+            let Some(snapshot) = self.library.parallel_generation_snapshot() else {
+                retain_panics(&mut runs);
+                return self.generate_sequential(entries, defined);
+            };
+            let mut whole = self.fork(entries, 0, first_label, first_synthetic.advanced(0))?;
+            whole.state = initial_state;
+            whole.parallel_library = Some(snapshot);
+            verify = Some(whole);
+        }
+        // Commit exactly the actual reached native prefix, including the query
+        // that returned an error. No count or later chunk journal reaches owner.
+        let mut terminal = None;
+        for mut chunk in runs {
+            if terminal.is_none() {
+                self.library
+                    .commit_generation_queries(&chunk.generator.library_queries);
+                if let Some(failure) = chunk.failure.take() {
+                    terminal = Some(failure);
+                } else {
+                    self.merge_chunk(chunk.generator);
+                }
+            } else if let Some(Failure::Panic(fault)) = chunk.failure.take() {
+                retain_generation_fault(fault);
+            }
+        }
+        if let Some(failure) = terminal {
+            return match failure {
+                Failure::Error(error) => Err(error),
+                Failure::Panic(fault) => std::panic::resume_unwind(fault.payload),
+            };
+        }
+        COUNTS.get().unwrap().lock().unwrap().insert(key, actual);
+        if let Some(mut whole) = verify {
+            // Independent original entry loop and initial state. Its fresh
+            // facade prevents duplicate owner observations; journal is dropped.
+            for (ordinal, entry) in entries.iter().enumerate() {
+                let label = whole.state.next_label;
+                let synthetic = whole.patterns.allocation_count();
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    whole.generate_entry(entry, defined)
+                })) {
+                    Ok(result) => result?,
+                    Err(payload) => {
+                        observe_generation_fault(
+                            "verify",
+                            ordinal,
+                            label,
+                            synthetic,
+                            payload.as_ref(),
+                        );
+                        std::panic::resume_unwind(payload);
+                    }
+                }
+            }
+            assert_eq!(
+                whole.arena.debug_fingerprint(),
+                self.arena.debug_fingerprint(),
+                "parallel generation arena"
+            );
+            assert_eq!(
+                format!("{:?}", whole.state.bodies),
+                format!("{:?}", self.state.bodies),
+                "parallel generation bodies"
+            );
+            assert_eq!(
+                format!("{:?}", whole.state.parameters),
+                format!("{:?}", self.state.parameters),
+                "parallel generation parameters"
+            );
+            assert_eq!(
+                format!("{:?}", whole.state.recursive_variables),
+                format!("{:?}", self.state.recursive_variables),
+                "parallel generation recursion"
+            );
+            assert_eq!(
+                whole.state.next_label, self.state.next_label,
+                "parallel generation labels"
+            );
+            assert_eq!(
+                whole.patterns.allocation_count(),
+                self.patterns.allocation_count(),
+                "parallel generation refolds"
+            );
+            assert_eq!(
+                whole.state.record_cache, self.state.record_cache,
+                "parallel generation record cache"
+            );
+            assert_eq!(
+                whole.state.missing_library_summaries, self.state.missing_library_summaries,
+                "parallel generation summaries"
+            );
+            assert_eq!(
+                whole.state.in_guard, self.state.in_guard,
+                "parallel generation guard flag"
+            );
+            assert_eq!(
+                whole.state.in_match, self.state.in_match,
+                "parallel generation match flag"
+            );
+            assert_eq!(
+                format!("{:?}", whole.state.context),
+                format!("{:?}", self.state.context),
+                "parallel generation context"
+            );
+        }
+        Ok(())
+    }
+
     fn traverse(&mut self, root: Site, defined: Defined) -> Result<Type> {
         let mut todo = vec![Frame::Visit(root, defined)];
         let mut values = Vec::new();
@@ -843,7 +1462,8 @@ impl<'a> Generator<'a> {
                                                 site.reference()
                                             ))
                                         })?;
-                                    let sig=self.library.signature(mfa).map_err(GenerationError::Boundary)?.ok_or_else(||GenerationError::Boundary(format!("undefined named Core variable without PLT signature: {:?}",site.reference())))?;
+                                    let mfa = mfa.clone();
+                                    let sig=self.library_signature(&mfa).map_err(GenerationError::Boundary)?.ok_or_else(||GenerationError::Boundary(format!("undefined named Core variable without PLT signature: {:?}",site.reference())))?;
                                     let fresh = self.fresh()?;
                                     self.atomic(
                                         fresh.clone(),
@@ -1691,16 +2311,46 @@ fn capture_values(values: &[NativeValue]) -> std::result::Result<CaptureEnvironm
 mod bifs;
 
 impl Generator<'_> {
+    fn library_signature(
+        &mut self,
+        mfa: &Mfa,
+    ) -> std::result::Result<Option<CallSignature>, String> {
+        if let Some(library) = &self.parallel_library {
+            let result = library.signature(mfa);
+            self.library_queries
+                .push(GenerationLibraryQuery::Signature {
+                    mfa: mfa.clone(),
+                    result: result.clone(),
+                });
+            result
+        } else {
+            self.library.signature(mfa)
+        }
+    }
+    fn library_active_contract(
+        &mut self,
+        mfa: &Mfa,
+    ) -> std::result::Result<Option<ActiveContract>, String> {
+        if let Some(library) = &self.parallel_library {
+            let result = library.active_contract(mfa);
+            self.library_queries
+                .push(GenerationLibraryQuery::ActiveContract {
+                    mfa: mfa.clone(),
+                    succeeded: result.is_ok(),
+                });
+            result
+        } else {
+            self.library.active_contract(mfa)
+        }
+    }
     fn plt_constraints(&mut self, mfa: &Mfa, dst: &Type, args: &[Type]) -> Result<()> {
         let signature = self
-            .library
-            .signature(mfa)
+            .library_signature(mfa)
             .map_err(GenerationError::Boundary)?;
         let contract = if self.scc_variables.contains_key(mfa) {
             None
         } else {
-            self.library
-                .active_contract(mfa)
+            self.library_active_contract(mfa)
                 .map_err(GenerationError::Boundary)?
         };
         if let Some(contract) = contract {
@@ -2116,21 +2766,37 @@ mod capture_store_tests {
                 let root = CaptureId(terms.len());
                 terms.push(CaptureTerm::List { items, tail: nil });
                 assert_eq!(TermOrderArena::captures_error(&terms), None);
-                CaptureEnvironment::new(Arc::new(TermOrderArena::from_captures(&terms).unwrap()), root)
-                    .unwrap()
+                CaptureEnvironment::new(
+                    Arc::new(TermOrderArena::from_captures(&terms).unwrap()),
+                    root,
+                )
+                .unwrap()
             };
             let mut old = vec![CaptureTerm::Atom("existing".into())];
             let mut new = old.clone();
             let old_items = full.append_selected(&selected, &mut old).unwrap();
             let new_items = crate::core_capture::CoreCaptures::append_selected_from_source(
-                &core, &labels, ModuleId(0), &selected, &mut new,
+                &core,
+                &labels,
+                ModuleId(0),
+                &selected,
+                &mut new,
             )
             .unwrap();
-            assert!(environment(old, old_items).compare(&environment(new, new_items)).unwrap().is_eq());
+            assert!(
+                environment(old, old_items)
+                    .compare(&environment(new, new_items))
+                    .unwrap()
+                    .is_eq()
+            );
         }
         assert_eq!(
             crate::core_capture::CoreCaptures::append_selected_from_source(
-                &core, &labels, ModuleId(0), &[NodeId(5)], &mut Vec::new(),
+                &core,
+                &labels,
+                ModuleId(0),
+                &[NodeId(5)],
+                &mut Vec::new(),
             ),
             full.append_selected(&[NodeId(5)], &mut Vec::new())
         );
@@ -2184,6 +2850,72 @@ mod capture_store_tests {
     }
 
     #[test]
+    fn chunk_fork_preserves_seeded_record_query_suppression() {
+        let core = program();
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let program = crate::program::Program::build(&core).unwrap();
+        let runtime = crate::constraints::generation_capture_headers::GenerationRuntimeCaptures::for_analysis(
+            "record-seed-test".into(), labels.next_label, &program,
+        ).unwrap();
+        let profile = ClosureCodeProfile::parse(&serde_json::json!({
+            "module":"dialyzer_typesig", "original_sha256":"0000000000000000000000000000000000000000000000000000000000000000", "fun_table":[]
+        })).unwrap();
+        let registry = Registry::load(include_str!("../../corpus/bifs.json")).unwrap();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let seed = [ModuleId(0), ModuleId(0)];
+        let inputs = GenerationCaptureInputs {
+            core_captures: None,
+            runtime: &runtime,
+            records: &NoRecords,
+            initial_record_cache: &seed,
+            solvers: &[],
+        };
+        let mut native = Generator::new(
+            &nodes,
+            &profile,
+            &registry,
+            GenerationPhase {
+                captures: Some(&inputs),
+                callgraph: GenerationCallGraph::Absent,
+                propagated: &propagated,
+                library: &EmptyLibrary,
+                records: &records,
+                self_recursive: None,
+            },
+        )
+        .unwrap();
+        assert!(!native.parallel_generation_admitted(&[], false));
+        let mut fork = native
+            .fork(
+                &[],
+                0,
+                native.state.next_label,
+                native.patterns.allocator().advanced(0),
+            )
+            .unwrap();
+        // The adapter rejects every query. A prevalidated module must never
+        // call it, including from a counting or real chunk fork.
+        assert!(
+            native
+                .lookup_record(ModuleId(0), "record", 1)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fork.lookup_record(ModuleId(0), "record", 1)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fork.state.record_cache, seed);
+        assert_eq!(
+            format!("{:?}", native.lookup_record(ModuleId(1), "record", 1)),
+            format!("{:?}", fork.lookup_record(ModuleId(1), "record", 1))
+        );
+    }
+
+    #[test]
     fn shared_tables_preserve_fresh_evolving_generator_state() {
         let core = program();
         let labels = Labels::build(&core, CoreLabel(0)).unwrap();
@@ -2205,6 +2937,14 @@ mod capture_store_tests {
         let cached_inputs = GenerationCaptureInputs {
             core_captures: Some(&store),
             runtime: &runtime,
+            records: &NoRecords,
+            initial_record_cache: &[],
+            solvers: &[],
+        };
+        let other_runtime = crate::constraints::generation_capture_headers::GenerationRuntimeCaptures::for_analysis("new-runtime-scope".into(), labels.next_label, &program).unwrap();
+        let other_inputs = GenerationCaptureInputs {
+            core_captures: Some(&store),
+            runtime: &other_runtime,
             records: &NoRecords,
             initial_record_cache: &[],
             solvers: &[],
@@ -2268,14 +3008,6 @@ mod capture_store_tests {
                 .unwrap()
                 .is_eq()
         );
-        let other_runtime = crate::constraints::generation_capture_headers::GenerationRuntimeCaptures::for_analysis("new-runtime-scope".into(), labels.next_label, &program).unwrap();
-        let other_inputs = GenerationCaptureInputs {
-            core_captures: Some(&store),
-            runtime: &other_runtime,
-            records: &NoRecords,
-            initial_record_cache: &[],
-            solvers: &[],
-        };
         let mut other = make(&other_inputs);
         other.phase_entries = old.phase_entries.clone();
         let other_state = other.capture_state_exact().unwrap();
@@ -2374,5 +3106,615 @@ mod capture_store_tests {
         assert_eq!(store.get(ModuleId(0)).err().unwrap(), expected);
         assert_eq!(store.get(ModuleId(0)).err().unwrap(), expected);
         assert!(store.modules[0].get().is_some());
+    }
+
+    fn generation_program(
+        count: usize,
+        mode: u8,
+    ) -> (CoreProgram, Vec<(ModuleId, NodeId, NodeId)>) {
+        let mut core = program();
+        let module = &mut core.modules[0];
+        let mut expressions = vec![CoreExpr::Literal(TermId(1)), CoreExpr::Literal(TermId(5))];
+        let shared = NodeId(expressions.len());
+        expressions.push(CoreExpr::Fun {
+            params: vec![],
+            body: NodeId(1),
+        });
+        let mut entries = Vec::new();
+        let mut definitions = Vec::new();
+        let add_term = |terms: &mut crate::shared_vec::SharedVec<ErlangTerm>, term| {
+            let id = TermId(terms.len());
+            terms.push(term);
+            id
+        };
+        let external = add_term(&mut module.terms, ErlangTerm::Atom("external".into()));
+        let external_node = NodeId(expressions.len());
+        expressions.push(CoreExpr::Literal(external));
+        let stacktrace = add_term(
+            &mut module.terms,
+            ErlangTerm::Atom("build_stacktrace".into()),
+        );
+        let stacktrace_node = NodeId(expressions.len());
+        expressions.push(CoreExpr::Literal(stacktrace));
+        for i in 0..count {
+            let name = add_term(&mut module.terms, ErlangTerm::Atom(format!("owner_{i}")));
+            let named = add_term(&mut module.terms, ErlangTerm::Tuple(vec![name, TermId(3)]));
+            let variable = NodeId(expressions.len());
+            expressions.push(CoreExpr::Var(named));
+            let body = match mode {
+                0 => NodeId(1),
+                1 => {
+                    let n = NodeId(expressions.len());
+                    expressions.push(CoreExpr::Primop {
+                        name: stacktrace_node,
+                        args: vec![],
+                    });
+                    n
+                }
+                2 => {
+                    let name = add_term(&mut module.terms, ErlangTerm::Atom(format!("callee_{i}")));
+                    let name_node = NodeId(expressions.len());
+                    expressions.push(CoreExpr::Literal(name));
+                    let call = NodeId(expressions.len());
+                    expressions.push(CoreExpr::Call {
+                        module: external_node,
+                        name: name_node,
+                        args: vec![],
+                    });
+                    call
+                }
+                3 => shared,
+                4 => {
+                    let map = NodeId(expressions.len());
+                    expressions.push(CoreExpr::Map {
+                        base: shared,
+                        pairs: vec![],
+                        pattern: false,
+                    });
+                    map
+                }
+                _ => unreachable!(),
+            };
+            let function = NodeId(expressions.len());
+            expressions.push(CoreExpr::Fun {
+                params: vec![],
+                body,
+            });
+            definitions.push((variable, function));
+            entries.push((ModuleId(0), variable, function));
+        }
+        module.core = NodeId(expressions.len());
+        expressions.push(CoreExpr::Module {
+            name: NodeId(0),
+            exports: definitions.iter().map(|p| p.0).collect(),
+            attributes: vec![],
+            definitions,
+        });
+        module.nodes = expressions
+            .into_iter()
+            .enumerate()
+            .map(|(id, expr)| CoreNode {
+                id: NodeId(id),
+                annotations: TermId(0),
+                expr,
+            })
+            .collect();
+        core.node_count = module.nodes.len();
+        core.term_count = module.terms.len();
+        (core, entries)
+    }
+    fn empty_generation_profile() -> ClosureCodeProfile {
+        ClosureCodeProfile::parse(&serde_json::json!({"module":"dialyzer_typesig","original_sha256":"0000000000000000000000000000000000000000000000000000000000000000","fun_table":[]})).unwrap()
+    }
+    fn fixture_generator<'a>(
+        nodes: &'a DataflowNodes<'a>,
+        profile: &'a ClosureCodeProfile,
+        provider: &'a (dyn SourceBifProvider + Sync),
+        library: &'a (dyn LibraryTypes + Sync),
+        propagated: &'a PropagatedTypes,
+        records: &'a BTreeMap<(ModuleId, String, usize), Type>,
+    ) -> Generator<'a> {
+        Generator::new(
+            nodes,
+            profile,
+            provider,
+            GenerationPhase {
+                captures: None,
+                callgraph: GenerationCallGraph::Absent,
+                propagated,
+                library,
+                records,
+                self_recursive: None,
+            },
+        )
+        .unwrap()
+    }
+    fn fixture_initialize(
+        generator: &mut Generator<'_>,
+        entries: &[(ModuleId, NodeId, NodeId)],
+    ) -> Defined {
+        generator.phase_entries = entries.to_vec();
+        let mut defined = Defined::new();
+        for &(module, variable, function) in entries {
+            let recursive = generator
+                .variable_id(&Site {
+                    module,
+                    node: variable,
+                })
+                .unwrap();
+            let function = generator
+                .variable_id(&Site {
+                    module,
+                    node: function,
+                })
+                .unwrap();
+            generator
+                .state
+                .scc
+                .insert(FunctionVariable::new(function).unwrap());
+            generator.scc_variables.insert(
+                generator.core.modules[module.0]
+                    .named_mfa(variable)
+                    .unwrap(),
+                Type::variable_id(recursive.clone()),
+            );
+            defined.insert(recursive);
+        }
+        defined
+    }
+    struct StableUnknown;
+    impl BifResultProvider for StableUnknown {
+        fn result(&self, _: &Mfa, _: &[Type]) -> std::result::Result<Type, EvalError> {
+            Ok(Type::any())
+        }
+    }
+    impl SourceBifProvider for StableUnknown {
+        fn parallel_generation_is_stable(&self) -> bool {
+            true
+        }
+        fn construction(&self, _: &Mfa) -> std::result::Result<BifConstruction, EvalError> {
+            Ok(BifConstruction {
+                known: false,
+                generic_return: Type::any(),
+                arguments: vec![],
+            })
+        }
+    }
+    struct NativeThreadProvider {
+        thread: std::thread::ThreadId,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl BifResultProvider for NativeThreadProvider {
+        fn result(&self, _: &Mfa, _: &[Type]) -> std::result::Result<Type, EvalError> {
+            Ok(Type::any())
+        }
+    }
+    impl SourceBifProvider for NativeThreadProvider {
+        fn construction(&self, _: &Mfa) -> std::result::Result<BifConstruction, EvalError> {
+            assert_eq!(
+                self.thread,
+                std::thread::current().id(),
+                "opaque provider moved threads"
+            );
+            thread_local! { static VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+            let visit = VISITS.with(|v| {
+                let n = v.get();
+                v.set(n + 1);
+                n
+            });
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(BifConstruction {
+                known: true,
+                generic_return: Type::atom(format!("native_{visit}")),
+                arguments: vec![],
+            })
+        }
+    }
+    #[test]
+    fn opaque_changing_tls_provider_keeps_48_native_queries() {
+        let (core, entries) = generation_program(48, 1);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let provider = NativeThreadProvider {
+            thread: std::thread::current().id(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let generator = fixture_generator(
+            &nodes,
+            &profile,
+            &provider,
+            &EmptyLibrary,
+            &propagated,
+            &records,
+        );
+        assert!(!generator.parallel_generation_admitted(&entries, false));
+        generator
+            .generate(&entries, GenerationOutput::BindingsOnly)
+            .unwrap();
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            48
+        );
+    }
+    #[test]
+    fn stable_generation_cold_and_warm_match_complete_native_state() {
+        let (core, entries) = generation_program(48, 0);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let registry = Registry::load(include_str!("../../corpus/bifs.json")).unwrap();
+        let make = || {
+            fixture_generator(
+                &nodes,
+                &profile,
+                &registry,
+                &EmptyLibrary,
+                &propagated,
+                &records,
+            )
+        };
+        let mut native = make();
+        let defined = fixture_initialize(&mut native, &entries);
+        native.generate_sequential(&entries, &defined).unwrap();
+        for _ in 0..2 {
+            let mut parallel = make();
+            let defined = fixture_initialize(&mut parallel, &entries);
+            assert!(parallel.parallel_generation_admitted(&entries, false));
+            parallel.generate_chunks(&entries, &defined).unwrap();
+            assert_eq!(
+                native.arena.debug_fingerprint(),
+                parallel.arena.debug_fingerprint()
+            );
+            assert_eq!(
+                format!("{:?}", native.state.bodies),
+                format!("{:?}", parallel.state.bodies)
+            );
+            assert_eq!(
+                format!("{:?}", native.state.parameters),
+                format!("{:?}", parallel.state.parameters)
+            );
+            assert_eq!(
+                native.state.recursive_variables,
+                parallel.state.recursive_variables
+            );
+            assert_eq!(native.state.scc, parallel.state.scc);
+            assert_eq!(native.state.context, parallel.state.context);
+            assert_eq!(native.state.record_cache, parallel.state.record_cache);
+            assert_eq!(native.state.next_label, parallel.state.next_label);
+            assert_eq!(
+                native.patterns.allocation_count(),
+                parallel.patterns.allocation_count()
+            );
+            assert_eq!(
+                native.state.missing_library_summaries,
+                parallel.state.missing_library_summaries
+            );
+            assert_eq!(
+                (native.state.in_guard, native.state.in_match),
+                (parallel.state.in_guard, parallel.state.in_match)
+            );
+        }
+    }
+    #[test]
+    fn shared_nested_fun_nodes_refuse_parallel_generation() {
+        let (core, entries) = generation_program(48, 3);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let generator = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &EmptyLibrary,
+            &propagated,
+            &records,
+        );
+        assert!(!generator.function_nodes_are_exclusive(&entries));
+        assert!(!generator.parallel_generation_admitted(&entries, false));
+    }
+    #[test]
+    fn exact_capture_admission_refuses_without_changing_native_selector() {
+        let (core, entries) = generation_program(48, 0);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let generator = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &EmptyLibrary,
+            &propagated,
+            &records,
+        );
+        assert!(!generator.parallel_generation_admitted(&entries, true));
+        assert_eq!(
+            state_capture::exact_captures(),
+            state_capture::exact_captures()
+        );
+    }
+    #[test]
+    fn checked_prefix_starts_refuse_fresh_and_synthetic_overflow() {
+        assert_eq!(
+            checked_generation_starts(&[(0, 1), (1, 2)], &[(2, 3), (4, 5)], 10, 7),
+            Some(vec![(10, 0), (12, 3)])
+        );
+        assert!(checked_generation_starts(&[(0, 1)], &[(1, 0)], u64::MAX, 0).is_none());
+        assert!(checked_generation_starts(&[(0, 1)], &[(0, 1)], 0, u64::MAX).is_none());
+        assert!(
+            checked_generation_starts(&[(0, 1), (1, 2)], &[(0, u64::MAX), (0, 1)], 0, 0).is_none()
+        );
+    }
+    #[test]
+    fn fork_carries_initial_flags_and_nonunit_synthetic_allocator() {
+        let core = program();
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let mut native = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &EmptyLibrary,
+            &propagated,
+            &records,
+        );
+        native.state.in_guard = true;
+        native.state.in_match = true;
+        let allocator = crate::dataflow_key::SyntheticLabels::with_profile(
+            crate::dataflow_key::SyntheticAllocationProfile::new(u64::MAX - 64, 64).unwrap(),
+        );
+        let mut fork = native.fork(&[], 0, 73, allocator.advanced(1)).unwrap();
+        assert!(fork.state.in_guard && fork.state.in_match);
+        assert_eq!(fork.state.next_label, 73);
+        assert_eq!(fork.patterns.allocator().profile().stride(), 64);
+        assert_eq!(fork.patterns.allocation_count(), 1);
+        let exhausted = fork.patterns.allocator().advanced(1);
+        fork.patterns.set_allocator(exhausted);
+        assert_eq!(fork.patterns.allocation_count(), 2);
+        // A refold containing a map needs a label and reports true exhaustion.
+        let mut allocator = fork.patterns.allocator().advanced(0);
+        assert!(allocator.allocate().is_err());
+    }
+    struct PrefixFaultLibrary {
+        fail: bool,
+        observed: std::sync::atomic::AtomicUsize,
+        committed: std::sync::Mutex<Vec<String>>,
+    }
+    struct PrefixFaultView(bool);
+    impl LibraryTypes for PrefixFaultView {
+        fn signature(&self, mfa: &Mfa) -> std::result::Result<Option<CallSignature>, String> {
+            if self.0 && mfa.function == "callee_0" {
+                return Err("native-first-error".into());
+            }
+            if self.0 && mfa.function == "callee_47" {
+                std::panic::panic_any(47usize);
+            }
+            Ok(None)
+        }
+        fn active_contract(&self, _: &Mfa) -> std::result::Result<Option<ActiveContract>, String> {
+            Ok(None)
+        }
+    }
+    impl LibraryTypes for PrefixFaultLibrary {
+        fn signature(&self, mfa: &Mfa) -> std::result::Result<Option<CallSignature>, String> {
+            self.observed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            PrefixFaultView(self.fail).signature(mfa)
+        }
+        fn active_contract(&self, _: &Mfa) -> std::result::Result<Option<ActiveContract>, String> {
+            self.observed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(None)
+        }
+        fn parallel_generation_snapshot(&self) -> Option<Box<dyn LibraryTypes + Send + Sync + '_>> {
+            Some(Box::new(PrefixFaultView(self.fail)))
+        }
+        fn commit_generation_queries(&self, queries: &[GenerationLibraryQuery]) {
+            let mut committed = self.committed.lock().unwrap();
+            for query in queries {
+                match query {
+                    GenerationLibraryQuery::Signature { mfa, result } => {
+                        committed.push(format!("signature:{}:{}", mfa.function, result.is_ok()))
+                    }
+                    GenerationLibraryQuery::ActiveContract { mfa, succeeded } => {
+                        committed.push(format!("contract:{}:{succeeded}", mfa.function))
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn actual_native_error_precedes_later_panic_and_commits_only_failed_prefix() {
+        let (core, entries) = generation_program(48, 2);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let warm = PrefixFaultLibrary {
+            fail: false,
+            observed: Default::default(),
+            committed: Default::default(),
+        };
+        let mut generator = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &warm,
+            &propagated,
+            &records,
+        );
+        let defined = fixture_initialize(&mut generator, &entries);
+        generator.generate_chunks(&entries, &defined).unwrap();
+        let fault = PrefixFaultLibrary {
+            fail: true,
+            observed: Default::default(),
+            committed: Default::default(),
+        };
+        let mut generator = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &fault,
+            &propagated,
+            &records,
+        );
+        let defined = fixture_initialize(&mut generator, &entries);
+        assert!(
+            matches!(generator.generate_chunks(&entries, &defined), Err(GenerationError::Boundary(s)) if s == "native-first-error")
+        );
+        assert_eq!(
+            *fault.committed.lock().unwrap(),
+            vec!["signature:callee_0:false"]
+        );
+        assert!(generation_parallel_faulted());
+    }
+
+    #[test]
+    fn count_panic_is_retained_when_native_first_error_suppresses_it() {
+        let (core, entries) = generation_program(53, 2);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let library = PrefixFaultLibrary {
+            fail: true,
+            observed: Default::default(),
+            committed: Default::default(),
+        };
+        let mut generator = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &library,
+            &propagated,
+            &records,
+        );
+        let defined = fixture_initialize(&mut generator, &entries);
+        assert!(
+            matches!(generator.generate_chunks(&entries, &defined), Err(GenerationError::Boundary(s)) if s == "native-first-error")
+        );
+        assert!(
+            library.committed.lock().unwrap().is_empty(),
+            "count journal committed"
+        );
+        assert!(generation_parallel_faulted());
+    }
+    struct FirstPanicLibrary;
+    impl LibraryTypes for FirstPanicLibrary {
+        fn signature(&self, _: &Mfa) -> std::result::Result<Option<CallSignature>, String> {
+            std::panic::panic_any(String::from("owned-first-native-panic"));
+        }
+        fn active_contract(&self, _: &Mfa) -> std::result::Result<Option<ActiveContract>, String> {
+            Ok(None)
+        }
+        fn parallel_generation_snapshot(&self) -> Option<Box<dyn LibraryTypes + Send + Sync + '_>> {
+            Some(Box::new(FirstPanicLibrary))
+        }
+    }
+    #[test]
+    fn first_actual_panic_resumes_original_owned_payload() {
+        let (core, entries) = generation_program(48, 2);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let mut warm = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &EmptyLibrary,
+            &propagated,
+            &records,
+        );
+        let defined = fixture_initialize(&mut warm, &entries);
+        warm.generate_chunks(&entries, &defined).unwrap();
+        let mut generator = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &FirstPanicLibrary,
+            &propagated,
+            &records,
+        );
+        let defined = fixture_initialize(&mut generator, &entries);
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generator.generate_chunks(&entries, &defined)
+        }))
+        .err()
+        .expect("first native panic lost");
+        assert_eq!(
+            *payload
+                .downcast::<String>()
+                .expect("panic payload identity/type changed"),
+            "owned-first-native-panic"
+        );
+        assert!(generation_parallel_faulted());
+    }
+    #[test]
+    fn verify_original_loop_discards_journal_without_duplicate_native_observations() {
+        let (core, entries) = generation_program(48, 2);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let library = PrefixFaultLibrary {
+            fail: false,
+            observed: Default::default(),
+            committed: Default::default(),
+        };
+        let mut generator = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &library,
+            &propagated,
+            &records,
+        );
+        let defined = fixture_initialize(&mut generator, &entries);
+        generator.generate_chunks(&entries, &defined).unwrap();
+        assert_eq!(
+            library.observed.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            library.committed.lock().unwrap().len(),
+            96,
+            "VERIFY committed its shadow journal"
+        );
+    }
+    #[test]
+    fn shared_fun_in_expression_map_base_refuses_parallel_generation() {
+        let (core, entries) = generation_program(48, 4);
+        let labels = Labels::build(&core, CoreLabel(0)).unwrap();
+        let nodes = DataflowNodes::build(&core, &labels).unwrap();
+        let profile = empty_generation_profile();
+        let propagated = PropagatedTypes::default();
+        let records = BTreeMap::new();
+        let generator = fixture_generator(
+            &nodes,
+            &profile,
+            &StableUnknown,
+            &EmptyLibrary,
+            &propagated,
+            &records,
+        );
+        assert!(!generator.function_nodes_are_exclusive(&entries));
+        assert!(!generator.parallel_generation_admitted(&entries, false));
     }
 }

@@ -22,7 +22,7 @@ struct Prefetch<T, E> {
 // Reached failures are exposed only after all speculative workers join.
 /// Stack for prefetch workers. Reserved virtual memory; pages are only touched
 /// by unusually deep guards.
-const WORKER_STACK_BYTES: usize = 1 << 30;
+pub(crate) const WORKER_STACK_BYTES: usize = 1 << 30;
 
 pub fn ordered_prefetch<T: Send, U, E: Send>(
     count: usize,

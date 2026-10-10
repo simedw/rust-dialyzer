@@ -28,34 +28,51 @@ impl Generator<'_> {
         // Conversion errors originally surface after all structural capture checks.
         let mut deferred = TermOrderArena::captures_error(&headers);
         for index in 0..self.arena.len() {
-            let node = self.arena.node(NativeConstraintId(index))
+            let node = self
+                .arena
+                .node(NativeConstraintId(index))
                 .ok_or_else(|| GenerationError::Boundary("constraint arena gap".into()))?;
             match node {
-                NativeConstraint::Atomic { right: NativeOperand::Derived(id), .. } => {
-                    let (key, _, _) = self.arena.derived_capture(*id)
-                        .ok_or_else(|| GenerationError::Boundary("foreign derived capture".into()))?;
+                NativeConstraint::Atomic {
+                    right: NativeOperand::Derived(id),
+                    ..
+                } => {
+                    let (key, _, _) = self.arena.derived_capture(*id).ok_or_else(|| {
+                        GenerationError::Boundary("foreign derived capture".into())
+                    })?;
                     if deferred.is_none() {
                         deferred = match key {
-                            ClosureOrderKey::Local(value) if value.arity > 255 =>
-                                Some("capture local function arity outside native range".into()),
-                            ClosureOrderKey::External { arity, .. } if *arity > 255 =>
-                                Some("capture external function arity outside native range".into()),
+                            ClosureOrderKey::Local(value) if value.arity > 255 => {
+                                Some("capture local function arity outside native range".into())
+                            }
+                            ClosureOrderKey::External { arity, .. } if *arity > 255 => {
+                                Some("capture external function arity outside native range".into())
+                            }
                             _ => None,
                         };
                     }
                 }
                 NativeConstraint::Group { children, .. } => {
                     if children.iter().any(|id| id.0 >= index) {
-                        return Err(GenerationError::Boundary("non-postorder constraint child".into()));
+                        return Err(GenerationError::Boundary(
+                            "non-postorder constraint child".into(),
+                        ));
                     }
                 }
                 _ => {}
             }
         }
-        for id in self.state.context.iter().rev()
-            .chain(self.state.bodies.values()) {
+        for id in self
+            .state
+            .context
+            .iter()
+            .rev()
+            .chain(self.state.bodies.values())
+        {
             if id.0 >= self.arena.len() {
-                return Err(GenerationError::Boundary("foreign constraint capture".into()));
+                return Err(GenerationError::Boundary(
+                    "foreign constraint capture".into(),
+                ));
             }
         }
         if let (true, Some(store)) = (crate::lattice::verify_fast_paths(), inputs.core_captures) {
@@ -70,7 +87,9 @@ impl Generator<'_> {
             let full = (|| -> std::result::Result<_, String> {
                 let mut names = Vec::new();
                 for (module, variable, _) in &self.phase_entries {
-                    store.get(*module)?.append_selected(&[*variable], &mut names)?;
+                    store
+                        .get(*module)?
+                        .append_selected(&[*variable], &mut names)?;
                 }
                 Ok(TermOrderArena::from_captures(&names).err())
             })();
@@ -83,17 +102,21 @@ impl Generator<'_> {
                 .named_mfa(*variable)
                 .map_err(GenerationError::Boundary)?;
             if let Some(store) = inputs.core_captures {
-                let error = store.selected_variable_error(*module, *variable)
+                let error = store
+                    .selected_variable_error(*module, *variable)
                     .map_err(GenerationError::Boundary)?;
                 names_error = names_error.or(error);
                 continue;
             }
             if !self.core_captures.contains_key(module) {
-                self.core_captures.insert(*module,
+                self.core_captures.insert(
+                    *module,
                     crate::core_capture::CoreCaptures::build(self.core, self.labels, *module)
-                        .map_err(GenerationError::Boundary)?);
+                        .map_err(GenerationError::Boundary)?,
+                );
             }
-            self.core_captures[module].append_selected(&[*variable], &mut names)
+            self.core_captures[module]
+                .append_selected(&[*variable], &mut names)
                 .map_err(GenerationError::Boundary)?;
         }
         if inputs.core_captures.is_none() {
@@ -104,10 +127,14 @@ impl Generator<'_> {
         }
         for module in &self.state.record_cache {
             let _ = &self.core.modules[module.0].name;
-            let table = inputs.records.module_table(*module)
+            let table = inputs
+                .records
+                .module_table(*module)
                 .map_err(GenerationError::Boundary)?;
             if table.len() != 1 {
-                return Err(GenerationError::Boundary("module record capture must have one table".into()));
+                return Err(GenerationError::Boundary(
+                    "module record capture must have one table".into(),
+                ));
             }
         }
         if let Some(error) = deferred {
@@ -134,7 +161,7 @@ impl Generator<'_> {
                 Arc::new(TermOrderArena::from_captures(&terms).map_err(GenerationError::Boundary)?),
                 root,
             )
-            .map_err(GenerationError::Boundary)
+            .map_err(GenerationError::Boundary);
         }
     }
     /// OTP's complete #state as captured by its BIF constraint closures.
@@ -231,7 +258,10 @@ impl Generator<'_> {
             CaptureTerm::Integer(self.state.next_label.to_string()),
         );
         let self_rec = match self.self_recursive {
-            Some(label) => capture::typ(&mut terms, &Type::variable_id(VariableId::Integer(label.0.into()))),
+            Some(label) => capture::typ(
+                &mut terms,
+                &Type::variable_id(VariableId::Integer(label.0.into())),
+            ),
             None => atom(&mut terms, "false"),
         };
         let prop_types = self
@@ -306,7 +336,7 @@ impl Generator<'_> {
 }
 /// `RUST_DIALYZER_EXACT_CAPTURE=1` restores OTP's full closure-environment
 /// order (used by tests that compare generator states).
-fn exact_captures() -> bool {
+pub(super) fn exact_captures() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("RUST_DIALYZER_EXACT_CAPTURE").is_some_and(|v| v == "1"))
 }

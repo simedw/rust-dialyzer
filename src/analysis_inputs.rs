@@ -105,6 +105,7 @@ impl PreparedRecords {
     }
 }
 impl RecordTableCaptures for PreparedRecords {
+    fn parallel_generation_is_stable(&self) -> bool { true }
     fn module_table(&self, module: ModuleId) -> Result<&CaptureEnvironment, String> {
         self.tables
             .get(&module)
