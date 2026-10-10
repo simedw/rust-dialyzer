@@ -261,7 +261,9 @@ fn run(v: &Value) -> Result<Value, String> {
         let mut bindings = std::collections::BTreeMap::new();
         for e in entries {
             let var = Type::from_value(&json!({"kind":"var","id":e["id"]}))?;
-            let id = var.collect_var_names().into_iter().next().unwrap();
+            let mut names = std::collections::BTreeSet::new();
+            var.append_var_names(&mut names);
+            let id = names.into_iter().next().unwrap();
             bindings.insert(id, Type::from_value(&e["type"])?);
         }
         return Ok(a.substitute(&bindings)?.to_value());
@@ -270,9 +272,10 @@ fn run(v: &Value) -> Result<Value, String> {
         return Ok(json!(a.has_var()));
     }
     if op == "collect_var_names" {
+        let mut names = std::collections::BTreeSet::new();
+        a.append_var_names(&mut names);
         return Ok(json!(
-            a.collect_var_names()
-                .into_iter()
+            names.into_iter()
                 .map(|id| match id {
                     rust_dialyzer_poc::lattice::VariableId::Atom(a) => json!({"atom":a}),
                     rust_dialyzer_poc::lattice::VariableId::Integer(n) =>

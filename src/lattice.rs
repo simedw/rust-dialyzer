@@ -4558,37 +4558,41 @@ impl Type {
             _ => false,
         }
     }
-    pub fn collect_var_names(&self) -> BTreeSet<VariableId> {
-        let found = self.collect_var_names_skipping();
-        if verify_fast_paths() {
-            let mut all = BTreeSet::new();
-            let mut pending = vec![self];
-            while let Some(t) = pending.pop() {
-                if let Repr::Var(id) = &t.repr {
-                    all.insert(id.clone());
-                }
-                t.append_children(&mut pending);
-            }
-            assert_eq!(found, all, "collect_var_names: {self:?}");
+    pub fn append_var_names(&self, destination: &mut BTreeSet<VariableId>) {
+        let before = verify_fast_paths().then(|| destination.clone());
+        self.append_var_names_skipping(destination);
+        if let Some(mut expected) = before {
+            self.append_var_names_reference(&mut expected);
+            assert_eq!(*destination, expected, "append_var_names: {self:?}");
         }
-        found
     }
-    fn collect_var_names_skipping(&self) -> BTreeSet<VariableId> {
-        let mut found = BTreeSet::new();
+    pub(crate) fn append_var_names_reference(&self, destination: &mut BTreeSet<VariableId>) {
         let mut pending = vec![self];
-        if self.info.flags & ANY_VAR == 0 {
-            pending.clear();
+        while let Some(t) = pending.pop() {
+            if let Repr::Var(id) = &t.repr {
+                destination.insert(id.clone());
+            }
+            t.append_children(&mut pending);
         }
+    }
+    fn append_var_names_skipping(&self, destination: &mut BTreeSet<VariableId>) {
+        if self.info.flags & ANY_VAR == 0 {
+            return;
+        }
+        if let Repr::Var(id) = &self.repr {
+            destination.insert(id.clone());
+            return;
+        }
+        let mut pending = vec![self];
         while let Some(t) = pending.pop() {
             if t.info.flags & ANY_VAR == 0 {
                 continue;
             }
             if let Repr::Var(id) = &t.repr {
-                found.insert(id.clone());
+                destination.insert(id.clone());
             }
             t.append_children(&mut pending);
         }
-        found
     }
 }
 
@@ -5750,7 +5754,9 @@ mod tests {
         )
         .unwrap();
         assert!(!m.has_var());
-        assert!(m.collect_var_names().is_empty());
+        let mut names = BTreeSet::new();
+        m.append_var_names(&mut names);
+        assert!(names.is_empty());
         assert_eq!(m.substitute(&bindings).unwrap(), m);
         let tuple = Type::tuple(vec![x.clone(), m]).unwrap();
         assert_eq!(tuple.substitute(&bindings).unwrap(), none);
@@ -6388,8 +6394,12 @@ mod borrowed_query_contract_tests {
                     .filter(|(present, _)| *present)
                     .map(|(_, name)| VariableId::Atom(name.into()))
                     .collect();
-                assert_eq!(ty.collect_var_names(), expected);
-                assert_eq!(ty.clone().collect_var_names(), ty.collect_var_names());
+                let mut names = BTreeSet::new();
+                ty.append_var_names(&mut names);
+                assert_eq!(names, expected);
+                let mut copied = BTreeSet::new();
+                ty.clone().append_var_names(&mut copied);
+                assert_eq!(copied, names);
             }
         }
     }
@@ -6412,10 +6422,9 @@ mod borrowed_query_contract_tests {
             let snapshot = ty.clone();
             let wire = ty.to_value();
             assert!(ty.has_var());
-            assert_eq!(
-                ty.collect_var_names(),
-                BTreeSet::from([VariableId::Atom("x".into())])
-            );
+            let mut names = BTreeSet::new();
+            ty.append_var_names(&mut names);
+            assert_eq!(names, BTreeSet::from([VariableId::Atom("x".into())]));
             assert_eq!(snapshot, ty);
             assert_eq!(ty.to_value(), wire);
         }
@@ -6698,6 +6707,52 @@ mod cached_info_tests {
             for depth in -2..8 {
                 assert_eq!(t.is_limited(depth), t.is_limited_walk(depth), "{depth} {t:?}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod appended_variable_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn prepopulated_unions_preserve_arbitrary_ids_and_shared_subtrees() {
+        let huge = Type::variable_integer(BigInt::from_str("-123456789012345678901234567890").unwrap().into());
+        let atom = Type::variable_atom("snow_雪");
+        let shared = Type::tuple(vec![huge, atom]).unwrap();
+        let compound = Type::product(vec![shared, shared, Type::none(), Type::unit()]);
+        let expected = BTreeSet::from([
+            VariableId::Integer(BigInt::from_str("-123456789012345678901234567890").unwrap().into()),
+            VariableId::Atom("snow_雪".into()),
+        ]);
+        let mut empty = BTreeSet::new();
+        compound.append_var_names(&mut empty);
+        assert_eq!(empty, expected);
+        let sentinel = VariableId::Atom("unrelated".into());
+        let mut populated = BTreeSet::from([sentinel.clone()]);
+        for ty in [Type::any(), Type::none(), huge, atom, compound, compound] {
+            ty.append_var_names(&mut populated);
+        }
+        let mut union = expected;
+        union.insert(sentinel);
+        assert_eq!(populated, union);
+    }
+
+    #[test]
+    fn tuple_arity_groups_and_map_defaults_retain_native_inventory() {
+        let x = Type::variable_atom("x");
+        let y = Type::variable_atom("y");
+        let entry = Type::variable_atom("entry");
+        let tuples = Type::tuple(vec![x]).unwrap().join(&Type::tuple(vec![y, x]).unwrap()).unwrap();
+        let map = Type::map_types(vec![MapTypeEntry {
+            key: Type::atom("key"), presence: Presence::Mandatory, value: entry,
+        }], Type::all_atoms(), y).unwrap();
+        for ty in [tuples, Type::function(Some(vec![x]), y), Type::list(x, y, false), map] {
+            let mut names = BTreeSet::new();
+            ty.append_var_names(&mut names);
+            let expected = if ty == map { BTreeSet::from([VariableId::Atom("y".into())]) }
+                else { BTreeSet::from([VariableId::Atom("x".into()), VariableId::Atom("y".into())]) };
+            assert_eq!(names, expected);
         }
     }
 }

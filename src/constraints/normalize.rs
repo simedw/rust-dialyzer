@@ -264,10 +264,11 @@ impl NativeConstraintArena {
         if right_any {
             return Ok(self.any(relation));
         }
-        let mut deps = left.collect_var_names();
+        let mut deps = std::collections::BTreeSet::new();
+        left.append_var_names(&mut deps);
         let deps: Dependencies = match &right {
             NativeOperand::Type(t) => {
-                deps.extend(t.collect_var_names());
+                t.append_var_names(&mut deps);
                 deps.into_iter().collect()
             }
             NativeOperand::Derived(id) if deps.is_empty() => self.derived[id.0].deps.clone(),

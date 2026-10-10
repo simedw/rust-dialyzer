@@ -356,9 +356,9 @@ impl ConstraintTree {
                 dependencies: deps, ..
             } => dependencies.extend(deps.iter().cloned()),
             Constraint::Atomic(a) => {
-                dependencies.extend(a.left.collect_var_names());
+                a.left.append_var_names(&mut dependencies);
                 match &a.right {
-                    ConstraintValue::Type(ty) => dependencies.extend(ty.collect_var_names()),
+                    ConstraintValue::Type(ty) => ty.append_var_names(&mut dependencies),
                     ConstraintValue::Derived(id) => dependencies.extend(
                         self.derived
                             .dependencies(*id)

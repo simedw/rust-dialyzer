@@ -235,9 +235,17 @@ pub struct DerivedArena {
 impl DerivedArena {
     pub fn push(&mut self, op: DerivedOp) -> DerivedId {
         let inputs = op.inputs();
-        // This is intentionally a product, matching native mk_fun_var even when
-        // none/unit collapse makes its occurrence dependency set surprising.
-        let dependencies = Type::product(inputs.into_iter().cloned().collect()).collect_var_names();
+        let mut dependencies = BTreeSet::new();
+        // The original product walk pops its inputs in reverse order.
+        for input in inputs.iter().rev() {
+            input.append_var_names(&mut dependencies);
+        }
+        if crate::lattice::verify_fast_paths() {
+            let product = Type::product(inputs.into_iter().copied().collect());
+            let mut expected = BTreeSet::new();
+            product.append_var_names_reference(&mut expected);
+            assert_eq!(dependencies, expected, "derived input variable union");
+        }
         let id = DerivedId(self.nodes.len());
         self.nodes.push(op);
         self.dependencies.push(dependencies);
@@ -943,10 +951,10 @@ mod borrowed_substitution_tests {
             Type::variable_integer(2.into()),
         )
         .unwrap();
+        let mut names = std::collections::BTreeSet::new();
+        value.append_var_names(&mut names);
         assert!(
-            !value
-                .collect_var_names()
-                .contains(&VariableId::Integer(1.into()))
+            !names.contains(&VariableId::Integer(1.into()))
         );
         let bindings = BindingMap::from(vec![
             (
@@ -975,5 +983,22 @@ mod borrowed_substitution_tests {
         };
         assert_eq!(op.evaluate(&bindings, &capture).unwrap(), expected);
         assert_eq!(*capture.0.borrow(), vec![expected]);
+    }
+}
+
+#[cfg(test)]
+mod direct_input_inventory_tests {
+    use super::*;
+    #[test]
+    fn derived_input_union_matches_empty_singleton_and_raw_products() {
+        let x = Type::variable_atom("x");
+        for inputs in [vec![], vec![Type::none()], vec![x], vec![Type::none(), x],
+            vec![Type::unit(), x], vec![x, x, Type::none(), Type::unit()]] {
+            let expected = if inputs.contains(&x) { BTreeSet::from([VariableId::Atom("x".into())]) }
+                else { BTreeSet::new() };
+            let mut arena = DerivedArena::default();
+            let id = arena.push(DerivedOp::BinarySegments { segments: inputs });
+            assert_eq!(arena.dependencies(id).unwrap(), &expected);
+        }
     }
 }

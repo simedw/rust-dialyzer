@@ -380,10 +380,10 @@ mod tests {
             Type::variable_integer(a.into()),
             Type::variable_integer(b.into()),
         );
+        let mut names = std::collections::BTreeSet::new();
+        original.append_var_names(&mut names);
         assert!(
-            !original
-                .collect_var_names()
-                .contains(&VariableId::Integer(a.into()))
+            !names.contains(&VariableId::Integer(a.into()))
         );
         let input = BindingMap::from(vec![
             (key(a), Type::atom("value")),

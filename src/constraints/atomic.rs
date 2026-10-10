@@ -240,10 +240,10 @@ mod substitution_lookup_tests {
             .unwrap()
         };
         let original = map(variable(1), variable(2));
+        let mut names = std::collections::BTreeSet::new();
+        original.append_var_names(&mut names);
         assert!(
-            !original
-                .collect_var_names()
-                .contains(&VariableId::Integer(1.into()))
+            !names.contains(&VariableId::Integer(1.into()))
         );
         let mut bindings = BindingMap::new();
         bindings.insert(label(1), Type::atom("value"));
