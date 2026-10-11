@@ -1,14 +1,18 @@
 use crate::core::{ErlangTerm, ErlangTerms, TermId};
 
 /// Owned flat term arena shared by the compiler stages. Child IDs remain stable.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Arena {
     pub terms: crate::shared_vec::SharedVec<ErlangTerm>,
+    atoms: crate::fast_hash::FastHashMap<String, TermId>,
+    small_integers: crate::fast_hash::FastHashMap<u8, TermId>,
+    nil: Option<TermId>,
 }
 impl Arena {
     pub fn from_terms(input: &ErlangTerms) -> Self {
         Self {
             terms: input.terms.clone(),
+            ..Self::default()
         }
     }
     pub fn finish(mut self, root: TermId) -> ErlangTerms {
@@ -30,17 +34,40 @@ impl Arena {
         self.terms.push(value);
         id
     }
-    pub fn atom(&mut self, value: impl Into<String>) -> TermId {
-        self.push(ErlangTerm::Atom(value.into()))
+    pub fn atom(&mut self, value: impl AsRef<str>) -> TermId {
+        let value = value.as_ref();
+        if let Some(&id) = self.atoms.get(value) {
+            return id;
+        }
+        let id = self.push(ErlangTerm::Atom(value.to_owned()));
+        self.atoms.insert(value.to_owned(), id);
+        id
     }
     pub fn integer(&mut self, value: impl ToString) -> TermId {
-        self.push(ErlangTerm::Integer(value.to_string()))
+        let value = value.to_string();
+        let small = value
+            .parse::<u8>()
+            .ok()
+            .filter(|_| !value.starts_with('+') && (value.len() == 1 || !value.starts_with('0')));
+        if let Some(id) = small.and_then(|value| self.small_integers.get(&value)) {
+            return *id;
+        }
+        let id = self.push(ErlangTerm::Integer(value));
+        if let Some(value) = small {
+            self.small_integers.insert(value, id);
+        }
+        id
     }
     pub fn tuple(&mut self, values: Vec<TermId>) -> TermId {
         self.push(ErlangTerm::Tuple(values))
     }
     pub fn nil(&mut self) -> TermId {
-        self.push(ErlangTerm::Nil)
+        if let Some(id) = self.nil {
+            return id;
+        }
+        let id = self.push(ErlangTerm::Nil);
+        self.nil = Some(id);
+        id
     }
     pub fn list(&mut self, values: Vec<TermId>) -> TermId {
         let tail = self.nil();
@@ -123,10 +150,26 @@ impl Arena {
 mod tests {
     use super::*;
     #[test]
+    fn shared_primitives_keep_node_identity_and_integer_spelling() {
+        let mut a = Arena::default();
+        let name = a.atom("x");
+        assert_eq!(name, a.atom("x"));
+        let number = a.integer(17);
+        assert_eq!(number, a.integer(17));
+        let empty = a.nil();
+        assert_eq!(empty, a.nil());
+        let first = a.tagged("c_var", vec![empty, name]);
+        let second = a.tagged("c_var", vec![empty, name]);
+        assert_ne!(first, second);
+        assert_eq!(a.get(first), a.get(second));
+        let one = a.integer(1);
+        let padded = a.integer("01");
+        assert_ne!(one, padded);
+        assert_eq!(a.get(padded), &ErlangTerm::Integer("01".into()));
+    }
+    #[test]
     fn stages_share_input_and_snapshots_keep_stable_ids() {
-        let mut original = Arena {
-            terms: vec![].into(),
-        };
+        let mut original = Arena::default();
         let root = original.atom("input");
         let input = original.finish(root);
         let mut next = Arena::from_terms(&input);
@@ -144,9 +187,7 @@ mod tests {
     }
     #[test]
     fn malformed_keyword_tuple_is_rejected_without_indexing_missing_field() {
-        let mut a = Arena {
-            terms: vec![].into(),
-        };
+        let mut a = Arena::default();
         let key = a.atom("line");
         let malformed = a.tuple(vec![key]);
         let list = a.list(vec![malformed]);

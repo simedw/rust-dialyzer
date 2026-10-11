@@ -494,12 +494,12 @@ impl Lift {
                 }
                 "<<>>" => return self.bitstring(ann, args, scope),
                 "cond" if args.len() == 1 => {
-                    return self.cond_expr(t[1], args[0], inherited, scope)
+                    return self.cond_expr(t[1], args[0], inherited, scope);
                 }
                 "with" if !args.is_empty() => return self.with_expr(t[1], args, scope),
                 "try" if args.len() == 1 => return self.try_expr(ann, args[0], scope),
                 "for" if !args.is_empty() => {
-                    return comprehensions::translate(self, t[1], args, scope)
+                    return comprehensions::translate(self, t[1], args, scope);
                 }
                 "for" | "when" | "|" => {
                     return Err(self.error(&name));
@@ -1948,9 +1948,7 @@ mod tests {
     #[test]
     fn hygienic_versions_are_stable_and_distinct() {
         let mut l = Lift {
-            a: Arena {
-                terms: vec![].into(),
-            },
+            a: Arena::default(),
             module: "M".into(),
             function: "f/0".into(),
             depth: 0,
@@ -1972,9 +1970,7 @@ mod tests {
     #[test]
     fn negative_zero_is_an_explicit_unary_minus() {
         let mut l = Lift {
-            a: Arena {
-                terms: vec![].into(),
-            },
+            a: Arena::default(),
             module: "M".into(),
             function: "f/0".into(),
             depth: 0,
@@ -1988,9 +1984,7 @@ mod tests {
     }
     fn translator() -> Lift {
         Lift {
-            a: Arena {
-                terms: vec![].into(),
-            },
+            a: Arena::default(),
             module: "M".into(),
             function: "f/1".into(),
             depth: 0,

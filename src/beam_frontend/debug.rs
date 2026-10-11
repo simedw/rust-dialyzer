@@ -34,7 +34,8 @@ fn u32_at(bytes: &[u8], at: usize) -> Result<usize, String> {
         .unwrap();
     Ok(u32::from_be_bytes(raw) as usize)
 }
-pub fn read_beam(bytes: &[u8], limits: Limits) -> Result<DebugModule, String> {
+/// Validated borrowed BEAM chunks shared by debug and runtime-profile readers.
+pub fn chunks(bytes: &[u8], limits: Limits) -> Result<Vec<([u8; 4], &[u8])>, String> {
     if bytes.len() > limits.bytes {
         return Err("BEAM resource limit: bytes".into());
     }
@@ -45,9 +46,7 @@ pub fn read_beam(bytes: &[u8], limits: Limits) -> Result<DebugModule, String> {
         return Err("BEAM container length mismatch".into());
     }
     let mut at = 12;
-    let mut debug = None;
-    let mut abst = None;
-    let mut count = 0;
+    let mut chunks = Vec::new();
     while at < bytes.len() {
         let id = bytes.get(at..at + 4).ok_or("BEAM truncated chunk ID")?;
         let size = u32_at(bytes, at + 4)?;
@@ -59,17 +58,22 @@ pub fn read_beam(bytes: &[u8], limits: Limits) -> Result<DebugModule, String> {
         if at > bytes.len() {
             return Err("BEAM missing chunk padding".into());
         }
-        if id == b"Dbgi" {
-            if debug.replace(data).is_some() {
-                return Err("BEAM duplicate Dbgi".into());
-            }
+        chunks.push((id.try_into().unwrap(), data));
+    }
+    Ok(chunks)
+}
+pub fn read_beam(bytes: &[u8], limits: Limits) -> Result<DebugModule, String> {
+    let chunks = chunks(bytes, limits)?;
+    let count = chunks.len();
+    let mut debug = None;
+    let mut abst = None;
+    for (id, data) in chunks {
+        if &id == b"Dbgi" && debug.replace(data).is_some() {
+            return Err("BEAM duplicate Dbgi".into());
         }
-        if id == b"Abst" {
-            if abst.replace(data).is_some() {
-                return Err("BEAM duplicate Abst".into());
-            }
+        if &id == b"Abst" && abst.replace(data).is_some() {
+            return Err("BEAM duplicate Abst".into());
         }
-        count += 1;
     }
     if let Some(debug) = debug {
         let terms =

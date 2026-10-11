@@ -1,11 +1,11 @@
-//! Analyzes Core Erlang taken from a per-module cache built by OTP's compiler.
+//! Analyze BEAM files through native compilation, or compiler-produced cached Core.
 //!
 //! Usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json
 //!
-//! MANIFEST comes from `prototypes/core_cache/core_cache.exs`: the analysis
-//! context, the Dialyzer closure profile and one cached module file per BEAM.
+//! MANIFEST selects native `beam_files` with a runtime context, or cached
+//! `module_files` with the compiler context and closure profile.
 //! OPTIONS is a harness request row; only its analysis options are used.
-//! Prints one JSON object with the outcome and load/analysis timings.
+//! Prints the complete outcome and frontend/analysis timings as one JSON object.
 
 use rust_dialyzer_poc::{
     constraints::closure_order::ClosureCodeProfile,
@@ -20,17 +20,79 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::{io::Write, time::Instant};
 
-fn load(manifest: &Value) -> Result<CoreProgram, String> {
+struct Loaded {
+    core: CoreProgram,
+    profile: ClosureCodeProfile,
+    frontend: Value,
+}
+fn load(manifest: &Value) -> Result<Loaded, String> {
+    if let Some(files) = manifest.get("beam_files") {
+        if manifest.get("module_files").is_some() {
+            return Err("choose beam_files or module_files, not both".into());
+        }
+        let paths = files
+            .as_array()
+            .ok_or("beam_files must be a list")?
+            .iter()
+            .map(|f| {
+                f.as_str()
+                    .map(str::to_owned)
+                    .ok_or("BEAM path must be a string")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        use rust_dialyzer_poc::beam_frontend::pipeline::{self, ContextSource};
+        let loaded = match manifest["runtime_context"].as_str() {
+            Some("imported") => pipeline::load(
+                &paths,
+                ContextSource::Imported {
+                    context: &manifest["context"],
+                    closure_profile: &manifest["closure_profile"],
+                },
+            )?,
+            Some("native") => {
+                let read = |key: &str| -> Result<Vec<u8>, String> {
+                    let path = manifest[key]
+                        .as_str()
+                        .ok_or_else(|| format!("{key} path missing"))?;
+                    std::fs::read(path).map_err(|e| format!("{path}: {e}"))
+                };
+                let typesig = read("dialyzer_typesig_beam")?;
+                let contracts = read("dialyzer_contracts_beam")?;
+                pipeline::load(
+                    &paths,
+                    ContextSource::Native {
+                        typesig_beam: &typesig,
+                        contracts_beam: &contracts,
+                    },
+                )?
+            }
+            _ => {
+                return Err(
+                    "native BEAM manifest requires runtime_context native or imported".into(),
+                );
+            }
+        };
+        return Ok(Loaded {
+            core: loaded.core,
+            profile: loaded.closure_profile,
+            frontend: loaded.timings,
+        });
+    }
     let files = manifest["module_files"]
         .as_array()
         .ok_or("module_files list missing")?
         .iter()
-        .map(|f| f.as_str().map(str::to_owned).ok_or("module file must be a string"))
+        .map(|f| {
+            f.as_str()
+                .map(str::to_owned)
+                .ok_or("module file must be a string")
+        })
         .collect::<Result<Vec<_>, _>>()?;
     // Modules decode independently; read and decode them on all cores.
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let mut decoded: Vec<Option<Result<CoreModule, String>>> = (0..files.len()).map(|_| None).collect();
+    let mut decoded: Vec<Option<Result<CoreModule, String>>> =
+        (0..files.len()).map(|_| None).collect();
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
@@ -41,7 +103,9 @@ fn load(manifest: &Value) -> Result<CoreProgram, String> {
                         let Some(path) = files.get(i) else { break };
                         let module = std::fs::read(path)
                             .map_err(|e| format!("{path}: {e}"))
-                            .and_then(|bytes| module_from_etf(&bytes).map_err(|e| format!("{path}: {e}")));
+                            .and_then(|bytes| {
+                                module_from_etf(&bytes).map_err(|e| format!("{path}: {e}"))
+                            });
                         done.push((i, module));
                     }
                     done
@@ -58,20 +122,24 @@ fn load(manifest: &Value) -> Result<CoreProgram, String> {
         .into_iter()
         .map(|m| m.expect("every module decoded"))
         .collect::<Result<Vec<_>, _>>()?;
-    CoreProgram::from_modules(&manifest["context"], modules)
+    Ok(Loaded {
+        core: CoreProgram::from_modules(&manifest["context"], modules)?,
+        profile: ClosureCodeProfile::parse(&manifest["closure_profile"])?,
+        frontend: json!({"mode":"cached_core"}),
+    })
 }
 
 fn run(library: &str, manifest: &Value, options: &Value) -> Value {
     let started = Instant::now();
-    let core = match load(manifest) {
-        Ok(core) => core,
+    let Loaded {
+        core,
+        profile,
+        frontend,
+    } = match load(manifest) {
+        Ok(loaded) => loaded,
         Err(error) => return json!({"status": "error", "stage": "load", "detail": error}),
     };
     let load_seconds = started.elapsed().as_secs_f64();
-    let profile = match ClosureCodeProfile::parse(&manifest["closure_profile"]) {
-        Ok(profile) => profile,
-        Err(error) => return json!({"status": "error", "stage": "load", "detail": error}),
-    };
     let modules = core.modules.len();
     // One-shot run: the process exits after printing, so skip teardown.
     rust_dialyzer_poc::teardown::skip_drops_at_exit();
@@ -83,15 +151,18 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
     rust_dialyzer_poc::teardown::release(core);
     let base = json!({
         "modules": modules,
+        "frontend": frontend,
         "load_seconds": load_seconds,
         "analysis_seconds": analysis_seconds,
     });
     let outcome = match result {
-        Ok(Ok(_)) if rust_dialyzer_poc::constraints::generation::generation_parallel_faulted() => json!({
-            "status": "panic",
-            "stage": "parallel_generation",
-            "detail": "a speculative generation panic was retained; this run cannot certify the parallel path",
-        }),
+        Ok(Ok(_)) if rust_dialyzer_poc::constraints::generation::generation_parallel_faulted() => {
+            json!({
+                "status": "panic",
+                "stage": "parallel_generation",
+                "detail": "a speculative generation panic was retained; this run cannot certify the parallel path",
+            })
+        }
         Ok(Ok(mut output)) => {
             let mut outcome = json!({"status": "ok"});
             for key in ["public_warning_count", "warnings", "signatures"] {
@@ -114,10 +185,7 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
     let Value::Object(outcome) = outcome else {
         unreachable!("analysis outcome is an object")
     };
-    merged
-        .as_object_mut()
-        .expect("object")
-        .extend(outcome);
+    merged.as_object_mut().expect("object").extend(outcome);
     merged
 }
 
@@ -155,7 +223,10 @@ fn serialize_signature_parts(rows: &[Value], workers: usize, sequential: bool) -
                     .expect("spawn signature writer")
             })
             .collect();
-        handles.into_iter().map(|h| h.join().expect("signature writer")).collect()
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("signature writer"))
+            .collect()
     })
 }
 
@@ -189,11 +260,15 @@ fn main() {
         .expect("analysis thread panicked outside catch_unwind");
     let ok = output["status"] == "ok";
     if std::env::var_os("RUST_DIALYZER_GENERATION_ADMISSION").is_some_and(|v| v == "1") {
-        eprintln!("parallel_generation admitted_sccs={} faulted={}",
+        eprintln!(
+            "parallel_generation admitted_sccs={} faulted={}",
             rust_dialyzer_poc::constraints::generation::generation_parallel_admitted_sccs(),
-            rust_dialyzer_poc::constraints::generation::generation_parallel_faulted());
-        eprintln!("diagnostic_snapshot resumes={}",
-            rust_dialyzer_poc::core_phases::diagnostic_snapshot_resumes());
+            rust_dialyzer_poc::constraints::generation::generation_parallel_faulted()
+        );
+        eprintln!(
+            "diagnostic_snapshot resumes={}",
+            rust_dialyzer_poc::core_phases::diagnostic_snapshot_resumes()
+        );
     }
     let mut output = output;
     let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
@@ -201,7 +276,9 @@ fn main() {
     // cores, then splice the bytes where serde_json would have written them.
     const PLACEHOLDER: &str = "\u{0}signatures\u{0}";
     let signatures = match output.get_mut("signatures") {
-        Some(slot @ Value::Array(_)) => Some(std::mem::replace(slot, Value::String(PLACEHOLDER.into()))),
+        Some(slot @ Value::Array(_)) => {
+            Some(std::mem::replace(slot, Value::String(PLACEHOLDER.into())))
+        }
         _ => None,
     };
     let text = serde_json::to_string(&output).expect("serialize analysis result");
@@ -215,7 +292,9 @@ fn main() {
                 workers,
                 rust_dialyzer_poc::ordered_parallel::sequential(),
             );
-            stdout.write_all(text[..at].as_bytes()).expect("write analysis result");
+            stdout
+                .write_all(text[..at].as_bytes())
+                .expect("write analysis result");
             stdout.write_all(b"[").expect("write analysis result");
             for (i, part) in parts.iter().enumerate() {
                 if i > 0 {
@@ -224,11 +303,15 @@ fn main() {
                 stdout.write_all(part).expect("write analysis result");
             }
             stdout.write_all(b"]").expect("write analysis result");
-            stdout.write_all(text[at + marker.len()..].as_bytes()).expect("write analysis result");
+            stdout
+                .write_all(text[at + marker.len()..].as_bytes())
+                .expect("write analysis result");
             std::mem::forget(parts);
             std::mem::forget(rows);
         }
-        _ => stdout.write_all(text.as_bytes()).expect("write analysis result"),
+        _ => stdout
+            .write_all(text.as_bytes())
+            .expect("write analysis result"),
     }
     std::mem::forget(output);
     stdout.write_all(b"\n").expect("write analysis newline");
@@ -258,7 +341,10 @@ mod tests {
 
     #[test]
     fn signature_parts_empty_and_single_match_native_array() {
-        for rows in [vec![], vec![json!({"module":"m","function":"private","arity":0})]] {
+        for rows in [
+            vec![],
+            vec![json!({"module":"m","function":"private","arity":0})],
+        ] {
             for (workers, sequential) in [(1, false), (4, false), (4, true)] {
                 let parts = serialize_signature_parts(&rows, workers, sequential);
                 assert_eq!(array_bytes(&parts), serde_json::to_vec(&rows).unwrap());
@@ -274,7 +360,10 @@ mod tests {
             assert!(parts.len() > 1);
             let bytes = array_bytes(&parts);
             assert_eq!(bytes, serde_json::to_vec(&rows).unwrap());
-            assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), Value::Array(rows.clone()));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&bytes).unwrap(),
+                Value::Array(rows.clone())
+            );
         }
     }
 
@@ -299,7 +388,11 @@ mod tests {
 
     #[test]
     fn signature_parts_sequential_and_one_worker_run_on_caller() {
-        let rows = vec![json!({"ordinal":0}), json!({"ordinal":1}), json!({"ordinal":2})];
+        let rows = vec![
+            json!({"ordinal":0}),
+            json!({"ordinal":1}),
+            json!({"ordinal":2}),
+        ];
         for (workers, sequential) in [(4, true), (1, false)] {
             SERIALIZED_ROWS.with(|count| count.set(0));
             let parts = serialize_signature_parts(&rows, workers, sequential);

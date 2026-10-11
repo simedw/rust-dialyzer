@@ -1,0 +1,9 @@
+# Final lowering compatibility fixes
+
+- Operand groups preserve source lowering's right-to-left temporary allocation but discover bindings in left-to-right execution order. `Pre::Match` retains its unnormalized Core pattern so the group can rebuild pins against its actual entry/forward scope. Adversarial `{X=1,X=1},X` previously emitted a pin against unbound X in the first operand; now whole-module raw and clean Core match OTP. Anonymous siblings cannot capture bindings newly introduced by another operand.
+- Dependent binary sizes compare semantic variable names, not Arena TermId identity. Elixir lifting creates distinct nodes with equal atom names. This repaired exact whole-module Phoenix.Socket.V2.JSONSerializer and Mix.Sync.Lock output.
+- Protected guard nodes are iprotect in OTP's intermediate IR, although final Core uses c_try. The typed `protected_guards` provenance set lets after-body size count the protected argument instead of ordinary try body/handler. Matching instructions already count their node in their preamble; the previous extra body match +1 was removed. Instrumented OTP ParallelChecker after-body size was 21; native now 21 and complete raw module matches. Independent NativeAfterProtected module matches raw and clean.
+- Constant binary sparse-integer heuristic runs on source fields before OTP string expansion. Synthetic 1024-bit chunks of original 8-bit strings must bypass the heuristic. This restores compile-time literal binaries, including serialized regex payloads, preserving :re.import call trees and eliminating extra temporary allocation.
+- Anonymous fun temporary binders use source annotations, while c_fun retains its compiler id. Register source_annotations on the constructed fun; whole-module adversarial provenance/comprehension scopes match.
+
+Independent oracles may invoke installed OTP28.3/Elixir1.19.4. The production frontend launches no compiler VM.

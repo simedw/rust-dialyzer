@@ -41,8 +41,16 @@ fn run() -> Result<(), String> {
             stats["clean_ms"] = (started.elapsed().as_secs_f64() * 1000.0).into();
             stats["cleaned_core_nodes"] = counts::core_node_count(&term)?.into();
         }
-        let encoded =
-            external_term::encode(&term, Limits::default(), false).map_err(|e| e.to_string())?;
+        let encoded = external_term::encode(
+            &term,
+            Limits {
+                bytes: 256 * 1024 * 1024,
+                nodes: 20_000_000,
+                expanded: 20_000_000,
+            },
+            false,
+        )
+        .map_err(|e| e.to_string())?;
         fs::write(output, &encoded).map_err(|e| format!("write: {e}"))?;
         stats["output_bytes"] = encoded.len().into();
     }

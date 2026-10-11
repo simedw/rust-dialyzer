@@ -4,12 +4,40 @@
 use super::term::Arena;
 use crate::core::{ErlangTerm, ErlangTerms, TermId};
 use std::collections::{BTreeSet, HashSet};
+mod binary;
+mod comprehension;
+mod constant;
+mod control;
+mod exception;
+mod exports;
+#[cfg(test)]
+mod guard_analysis;
+mod literal;
+mod matches;
+mod pattern;
+mod receive;
+mod shadow;
+mod split;
 
 type Result<T> = std::result::Result<T, String>;
 #[derive(Clone)]
 struct Expr {
     value: TermId,
-    pre: Vec<(TermId, TermId)>,
+    pre: Vec<Pre>,
+}
+#[derive(Clone)]
+enum Pre {
+    Set(TermId, TermId),
+    Effect(TermId),
+    Match {
+        ann: TermId,
+        arg: TermId,
+        pattern: TermId,
+        raw_pattern: TermId,
+        guard: TermId,
+        failure: TermId,
+        allocations: Vec<TermId>,
+    },
 }
 // Canonical identity for literal map keys. This order is only for identity;
 // OTP Core map pattern ordering is handled separately.
@@ -29,9 +57,12 @@ struct Lower {
     a: Arena,
     module: String,
     forms_root: TermId,
+    nifs: Option<BTreeSet<(String, i64)>>,
+    load_nif: bool,
     file: Option<TermId>,
     counter: i64,
     fun_counter: u32,
+    goto_counter: u32,
     function: String,
     depth: usize,
     wanted: bool,
@@ -41,17 +72,25 @@ struct Lower {
     pin_tests: Vec<TermId>,
     generated_guard_equalities: BTreeSet<TermId>,
     deferred_vars: BTreeSet<TermId>,
+    deferred_aliases: std::collections::BTreeMap<TermId, TermId>,
+    guard_allocations: std::collections::BTreeMap<TermId, Vec<TermId>>,
     wildcard_renames: std::collections::BTreeMap<TermId, TermId>,
     let_annotations: std::collections::BTreeMap<TermId, TermId>,
+    protected_guards: HashSet<TermId>,
+    source_annotations: std::collections::BTreeMap<TermId, TermId>,
+    shadowed_funs: std::collections::BTreeMap<TermId, HashSet<String>>,
 }
 pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
     let mut l = Lower {
         a: Arena::from_terms(forms),
         module: module.into(),
         forms_root: forms.root,
+        nifs: None,
+        load_nif: false,
         file: None,
         counter: 0,
         fun_counter: 0,
+        goto_counter: 0,
         function: String::new(),
         depth: 0,
         wanted: true,
@@ -61,12 +100,43 @@ pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
         pin_tests: Vec::new(),
         generated_guard_equalities: BTreeSet::new(),
         deferred_vars: BTreeSet::new(),
+        deferred_aliases: std::collections::BTreeMap::new(),
+        guard_allocations: std::collections::BTreeMap::new(),
         wildcard_renames: std::collections::BTreeMap::new(),
         let_annotations: std::collections::BTreeMap::new(),
+        protected_guards: HashSet::new(),
+        source_annotations: std::collections::BTreeMap::new(),
+        shadowed_funs: std::collections::BTreeMap::new(),
     };
     let mut input = l.a.list_items(forms.root)?;
     input.extend(l.predefined()?);
+    let export_all = input.iter().any(|form| {
+        l.a.tuple_fields(*form).ok().is_some_and(|f| {
+            f.len() == 4
+                && l.a.tag(*form) == Some("attribute")
+                && l.a.as_atom(f[2]) == Some("compile")
+                && (l.a.as_atom(f[3]) == Some("export_all")
+                    || l.a.list_items(f[3]).ok().is_some_and(|opts| {
+                        opts.iter()
+                            .any(|opt| l.a.as_atom(*opt) == Some("export_all"))
+                    }))
+        })
+    });
     let mut exports = BTreeSet::new();
+    if export_all {
+        for form in &input {
+            if l.a.tag(*form) == Some("function") {
+                let f = l.a.tuple_fields(*form)?;
+                exports.insert((
+                    l.a.as_atom(f[2])
+                        .ok_or("lower: export_all function name")?
+                        .to_owned(),
+                    l.a.as_integer(f[3])
+                        .ok_or("lower: export_all function arity")?,
+                ));
+            }
+        }
+    }
     let mut attributes = Vec::new();
     let mut definitions = Vec::new();
     for form in input {
@@ -96,9 +166,18 @@ pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
                         }
                     }
                     "nifs" => {
-                        return Err(
-                            l.err("NIF declaration requires nif_start whole-module lowering")
-                        );
+                        let mut declarations = l.nifs.take().unwrap_or_default();
+                        for declaration in l.a.list_items(f[3])? {
+                            let fa = l.a.tuple_fields(declaration)?;
+                            if fa.len() != 2 {
+                                return Err(l.err("malformed NIF declaration"));
+                            }
+                            declarations.insert((
+                                l.a.as_atom(fa[0]).ok_or("lower: NIF name")?.to_owned(),
+                                l.a.as_integer(fa[1]).ok_or("lower: NIF arity")?,
+                            ));
+                        }
+                        l.nifs = Some(declarations);
                     }
                     "import" => (),
                     "file" => {
@@ -109,13 +188,21 @@ pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
                         l.file = Some(pair[0]);
                         attributes.push(l.attribute(&f)?);
                     }
-                    "record" => return Err("lower: record expansion not implemented".into()),
+                    "record" => attributes.push(l.attribute(&f)?),
                     _ => attributes.push(l.attribute(&f)?),
                 }
             }
             Some("function") if f.len() == 5 => definitions.push(l.function(&f)?),
             Some("eof") => (),
             tag => return Err(format!("lower: unsupported form {tag:?}")),
+        }
+    }
+    // OTP inserts the entry marker in every function only when load_nif/2 is
+    // used without an explicit -nifs declaration. A present empty declaration
+    // is intentionally different from an absent declaration.
+    if l.load_nif && l.nifs.is_none() {
+        for definition in &mut definitions {
+            *definition = l.insert_nif_start(*definition)?;
         }
     }
     let ann = l.a.nil();
@@ -141,6 +228,13 @@ pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
 impl Lower {
     fn err(&self, tag: &str) -> String {
         format!("lower {}:{}: unsupported {tag}", self.module, self.function)
+    }
+    fn expression_annotation(&self, node: TermId) -> Result<TermId> {
+        self.source_annotations
+            .get(&node)
+            .copied()
+            .map(Ok)
+            .unwrap_or_else(|| self.a.tuple_fields(node).map(|f| f[1]))
     }
     fn empty(&mut self) -> TermId {
         self.a.nil()
@@ -189,6 +283,21 @@ impl Lower {
             out.push(self.a.atom("compiler_generated"));
         }
         Ok(self.a.list(out))
+    }
+    fn record_annotation(&mut self, source: TermId) -> Result<TermId> {
+        let ann = self.annotation(source)?;
+        if self
+            .a
+            .keyword(source, "record")
+            .is_some_and(|v| self.a.as_atom(v) == Some("true"))
+        {
+            let record = self.a.atom("record");
+            let mut items = vec![record];
+            items.extend(self.a.list_items(ann)?);
+            Ok(self.a.list(items))
+        } else {
+            self.full_annotation(ann)
+        }
     }
     fn attribute(&mut self, f: &[TermId]) -> Result<TermId> {
         let location = match self.a.get(f[1]) {
@@ -324,10 +433,13 @@ impl Lower {
         self.function = format!("{name}/{arity}");
         self.counter = 0;
         self.fun_counter = 0;
+        self.goto_counter = 0;
         self.wanted = true;
         self.wildcard_renames.clear();
         self.known_vars.clear();
         self.deferred_vars.clear();
+        self.deferred_aliases.clear();
+        self.guard_allocations.clear();
         self.generated_guard_equalities.clear();
         let source = self.a.list_items(f[4])?;
         let first = *source.first().ok_or("lower: empty function")?;
@@ -368,11 +480,58 @@ impl Lower {
         };
         let clauses = self.a.list(clauses);
         let case = self.a.tagged("c_case", vec![fun_ann, arg, clauses]);
+        let case = if self
+            .nifs
+            .as_ref()
+            .is_some_and(|nifs| nifs.contains(&(name.clone(), arity)))
+        {
+            self.nif_start(case)
+        } else {
+            case
+        };
         let params = self.a.list(params);
         let fun = self.a.tagged("c_fun", vec![fun_ann, params, case]);
+        let fun = self.finish_named_funs(fun)?;
+        let fun = self.export_liveness(fun)?;
+        let fun = self.lower_final(fun)?;
         let ann = self.empty();
         let binder = self.variable(ann, fa);
         Ok(self.a.tuple(vec![binder, fun]))
+    }
+    fn nif_start(&mut self, body: TermId) -> TermId {
+        let ann = self.empty();
+        let name = self.atom_literal("nif_start");
+        let args = self.empty();
+        let start = self.a.tagged("c_primop", vec![ann, name, args]);
+        self.a.tagged("c_seq", vec![ann, start, body])
+    }
+    fn insert_nif_start(&mut self, definition: TermId) -> Result<TermId> {
+        let mut pair = self.a.tuple_fields(definition)?.to_vec();
+        let mut fun = self.a.tuple_fields(pair[1])?.to_vec();
+        let body = fun[3];
+        if self.a.tag(body) == Some("c_seq") {
+            let seq = self.a.tuple_fields(body)?;
+            if self.a.tag(seq[2]) == Some("c_primop") {
+                let primop = self.a.tuple_fields(seq[2])?;
+                if self.a.as_atom(self.a.tuple_fields(primop[2])?[2]) == Some("nif_start") {
+                    return Ok(definition);
+                }
+            }
+        }
+        fun[3] = if self.a.tag(body) == Some("c_letrec") {
+            let mut letrec = self.a.tuple_fields(body)?.to_vec();
+            let mut defs = Vec::new();
+            for def in self.a.list_items(letrec[2])? {
+                defs.push(self.insert_nif_start(def)?);
+            }
+            letrec[2] = self.a.list(defs);
+            letrec[3] = self.nif_start(letrec[3]);
+            self.a.tuple(letrec)
+        } else {
+            self.nif_start(body)
+        };
+        pair[1] = self.a.tuple(fun);
+        Ok(self.a.tuple(pair))
     }
     fn failure(&mut self, pats: Vec<TermId>, ann: TermId, reason: &str) -> Result<TermId> {
         let reason = self.atom_literal(reason);
@@ -422,18 +581,10 @@ impl Lower {
             pats.push(self.pattern(p, &mut bound)?);
         }
         let mut guard = self.guard(f[3])?;
-        if !self.pin_tests.is_empty() {
-            let fields = self.a.tuple_fields(guard)?;
-            if self.pin_tests.len() != 1
-                || self.a.tag(guard) != Some("c_literal")
-                || self.a.as_atom(fields[2]) != Some("true")
-            {
-                return Err(
-                    self.err("multiple pinned variables or pinned variable with explicit guard")
-                );
-            }
-            guard = self.pin_tests[0];
-        }
+        let pins = std::mem::take(&mut self.pin_tests);
+        let (composed, allocations) =
+            self.compose_pattern_guard(pins, guard, self.a.list_items(f[3])?.is_empty())?;
+        guard = composed;
         self.known_vars.extend(bound.iter().cloned());
         bound.extend(outer_known.iter().cloned());
         let case_patterns = self.case_patterns;
@@ -444,9 +595,74 @@ impl Lower {
         self.pin_tests = outer_pins;
         let body = body?;
         let pats = self.a.list(pats);
-        Ok(self.a.tagged("c_clause", vec![ann, pats, guard, body]))
+        let clause = self.a.tagged("c_clause", vec![ann, pats, guard, body]);
+        if !allocations.is_empty() {
+            self.guard_allocations.insert(clause, allocations);
+        }
+        Ok(clause)
+    }
+    fn deferred_fresh(&mut self, ann: TermId) -> TermId {
+        let marker = self.a.atom(format!("$native_late_{}", self.a.terms.len()));
+        let variable = self.variable(ann, marker);
+        self.deferred_vars.insert(variable);
+        variable
+    }
+    fn compose_pattern_guard(
+        &mut self,
+        mut pins: Vec<TermId>,
+        mut guard: TermId,
+        empty_guard: bool,
+    ) -> Result<(TermId, Vec<TermId>)> {
+        if pins.is_empty() {
+            return Ok((guard, vec![]));
+        }
+        if empty_guard {
+            guard = pins.pop().unwrap();
+        }
+        // OTP uguard appends to the guard expression sequence, rather than
+        // treating a precompiled sequence as one nested argument.
+        let mut pre = Vec::new();
+        loop {
+            let f = self.a.tuple_fields(guard)?.to_vec();
+            match self.a.tag(guard) {
+                Some("c_let") => {
+                    let vars = self.a.list_items(f[2])?;
+                    if vars.len() != 1 {
+                        break;
+                    }
+                    self.let_annotations.insert(vars[0], f[1]);
+                    pre.push(Pre::Set(vars[0], f[3]));
+                    guard = f[4];
+                }
+                Some("c_seq") => {
+                    pre.push(Pre::Effect(f[2]));
+                    guard = f[3];
+                }
+                _ => break,
+            }
+        }
+        let mut allocations = Vec::new();
+        for pin in pins.into_iter().rev() {
+            let empty = self.empty();
+            let left = self.deferred_fresh(empty);
+            let right = self.deferred_fresh(empty);
+            allocations.extend([left, right]);
+            let mut next = vec![Pre::Set(left, pin)];
+            next.extend(pre);
+            next.push(Pre::Set(right, guard));
+            pre = next;
+            let erlang = self.atom_literal("erlang");
+            let op = self.atom_literal("and");
+            let args = self.a.list(vec![left, right]);
+            guard = self.a.tagged("c_call", vec![empty, erlang, op, args]);
+        }
+        Ok((self.wrap(pre, guard), allocations))
     }
     fn pattern(&mut self, node: TermId, bound: &mut HashSet<String>) -> Result<TermId> {
+        let raw = self.raw_pattern(node)?;
+        self.normalize_pattern(raw, bound)
+    }
+    fn raw_pattern(&mut self, node: TermId) -> Result<TermId> {
         let f = self.a.tuple_fields(node)?.to_vec();
         let tag = self
             .a
@@ -455,50 +671,27 @@ impl Lower {
             .to_owned();
         let ann = self.annotation(f[1])?;
         match tag.as_str() {
-            "var" => {
-                let name = self
-                    .a
-                    .as_atom(f[2])
-                    .map(str::to_owned)
-                    .or_else(|| self.a.as_integer(f[2]).map(|n| format!("#native:{n}")))
-                    .ok_or("lower: pattern variable")?;
-                if name != "_" && self.case_patterns && self.known_vars.contains(&name) {
-                    let marker = self.a.atom(format!("$native_pin_{}", self.a.terms.len()));
-                    let empty = self.empty();
-                    let variable = self.variable(empty, marker);
-                    self.deferred_vars.insert(variable);
-                    let original = self.variable(ann, f[2]);
-                    let erlang = self.atom_literal("erlang");
-                    let equal = self.atom_literal("=:=");
-                    let args = self.a.list(vec![variable, original]);
-                    let test = self.a.tagged("c_call", vec![ann, erlang, equal, args]);
-                    self.pin_tests.push(test);
-                    return Ok(variable);
-                }
-                if name != "_" && !bound.insert(name) {
-                    return Err(self.err("repeated pattern variable"));
-                }
-                Ok(self.variable(ann, f[2]))
-            }
+            "var" => Ok(self.variable(ann, f[2])),
             "atom" | "integer" | "char" | "float" | "string" => Ok(self.literal(ann, f[2])),
             "nil" => {
                 let nil = self.empty();
                 Ok(self.literal(ann, nil))
             }
             "tuple" => {
-                let ann = self.full_annotation(ann)?;
+                let ann = self.record_annotation(f[1])?;
                 let mut es = Vec::new();
                 for p in self.a.list_items(f[2])? {
-                    es.push(self.pattern(p, bound)?);
+                    es.push(self.raw_pattern(p)?);
                 }
                 let es = self.a.list(es);
                 Ok(self.a.tagged("c_tuple", vec![ann, es]))
             }
             "cons" => {
-                let h = self.pattern(f[2], bound)?;
-                let t = self.pattern(f[3], bound)?;
+                let h = self.raw_pattern(f[2])?;
+                let t = self.raw_pattern(f[3])?;
                 Ok(self.a.tagged("c_cons", vec![ann, h, t]))
             }
+            "bin" => self.binary_pattern(&f, ann, &mut HashSet::new()),
             "map" => {
                 let mut rows = Vec::new();
                 for pair in self.a.list_items(f[2])? {
@@ -506,43 +699,19 @@ impl Lower {
                     if self.a.tag(pair) != Some("map_field_exact") || pf.len() != 4 {
                         return Err(self.err("map pattern association"));
                     }
-                    let key_expr = self.expr(pf[2])?;
-                    if !key_expr.pre.is_empty()
-                        || !matches!(self.a.tag(key_expr.value), Some("c_literal" | "c_var"))
-                    {
-                        return Err(self.err("complex map pattern key"));
-                    }
-                    let key_value = self.a.tuple_fields(key_expr.value)?[2];
-                    let key_kind = if self.a.tag(key_expr.value) == Some("c_var") {
-                        1u8
-                    } else {
-                        0u8
-                    };
-                    let name = self
-                        .a
-                        .as_atom(key_value)
-                        .ok_or_else(|| {
-                            self.err("non-atom literal or non-atom variable map pattern key")
-                        })?
-                        .to_owned();
-                    let value = self.pattern(pf[3], bound)?;
+                    let key = self.partial_eval(pf[2])?;
+                    let key_expr = self.expr(key)?;
+                    let key_value = self.wrap(key_expr.pre, key_expr.value);
+                    let value = self.raw_pattern(pf[3])?;
                     let op = self.atom_literal("exact");
                     let pair_ann = self.annotation(pf[1])?;
                     let lowered = self
                         .a
-                        .tagged("c_map_pair", vec![pair_ann, op, key_expr.value, value]);
-                    rows.push((key_kind, name, lowered));
+                        .tagged("c_map_pair", vec![pair_ann, op, key_value, value]);
+                    rows.push(lowered);
                 }
-                rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-                if rows
-                    .windows(2)
-                    .any(|w| w[0].0 == w[1].0 && w[0].1 == w[1].1)
-                {
-                    return Err(self.err("duplicate map pattern keys"));
-                }
-                let pairs = self
-                    .a
-                    .list(rows.into_iter().map(|(_, _, pair)| pair).collect());
+                let ordered = self.sort_pattern_map_pairs(rows)?;
+                let pairs = self.a.list(ordered);
                 let empty_ann = self.empty();
                 let empty_map = self.a.push(ErlangTerm::Map(vec![]));
                 let base = self.literal(empty_ann, empty_map);
@@ -550,15 +719,15 @@ impl Lower {
                 Ok(self.a.tagged("c_map", vec![ann, base, pairs, pattern]))
             }
             "match" => {
-                let left = self.pattern(f[2], bound)?;
-                let right = self.pattern(f[3], bound)?;
-                let empty = self.empty();
-                if self.a.tag(left) == Some("c_var") {
-                    Ok(self.a.tagged("c_alias", vec![empty, left, right]))
-                } else if self.a.tag(right) == Some("c_var") {
-                    Ok(self.a.tagged("c_alias", vec![empty, right, left]))
+                let left = self.raw_pattern(f[2])?;
+                let right = self.raw_pattern(f[3])?;
+                self.alias_patterns(left, right)
+            }
+            "op" => {
+                if let Some(folded) = self.constant_pattern(node)? {
+                    self.raw_pattern(folded)
                 } else {
-                    Err(self.err("non-variable alias"))
+                    Err(self.err("nonconstant operator pattern"))
                 }
             }
             _ => Err(self.err(&format!("pattern {tag}"))),
@@ -567,6 +736,24 @@ impl Lower {
     fn rename_wildcards(&mut self, node: TermId) -> Result<TermId> {
         match self.a.get(node).clone() {
             ErlangTerm::Tuple(mut f) => {
+                if let Some(known) = self.shadowed_funs.remove(&node) {
+                    let renamed = self.rename_fun_shadowing(node, known)?;
+                    return self.rename_wildcards(renamed);
+                }
+                if let Some(allocations) = self.guard_allocations.remove(&node) {
+                    f[2] = self.rename_wildcards(f[2])?;
+                    for variable in allocations {
+                        self.rename_wildcards(variable)?;
+                    }
+                    f[3] = self.rename_wildcards(f[3])?;
+                    f[4] = self.rename_wildcards(f[4])?;
+                    return Ok(self.a.tuple(f));
+                }
+                if let Some(original) = self.deferred_aliases.get(&node).copied() {
+                    let variable = self.rename_wildcards(original)?;
+                    f[2] = self.a.tuple_fields(variable)?[2];
+                    return Ok(self.a.tuple(f));
+                }
                 if self.a.tag(node) == Some("c_var")
                     && f.len() == 3
                     && (self.a.as_atom(f[2]) == Some("_") || self.deferred_vars.contains(&node))
@@ -612,8 +799,11 @@ impl Lower {
         let vars = self.a.list(vec![try_var]);
         let evars = self.a.list(vec![t, r]);
         let handler = self.atom_literal("false");
-        self.a
-            .tagged("c_try", vec![ann, arg, vars, try_var, evars, handler])
+        let node = self
+            .a
+            .tagged("c_try", vec![ann, arg, vars, try_var, evars, handler]);
+        self.protected_guards.insert(node);
+        node
     }
     fn guard(&mut self, node: TermId) -> Result<TermId> {
         let alternatives = self.a.list_items(node)?;
@@ -635,13 +825,7 @@ impl Lower {
         let first = *tests.first().ok_or("lower: empty guard alternative")?;
         let f = self.a.tuple_fields(first)?.to_vec();
         let ann = self.annotation(f[1])?;
-        let value = if tests.len() == 1
-            && self.a.tag(first) == Some("op")
-            && f.len() == 5
-            && self.a.as_atom(f[2]) == Some("andalso")
-        {
-            self.andalso_guard(&f)?
-        } else {
+        let value = {
             let mut combined = *tests.last().unwrap();
             for left in tests[..tests.len() - 1].iter().rev() {
                 let op = self.a.atom("and");
@@ -673,10 +857,10 @@ impl Lower {
                 let compiler = self.a.atom("compiler_generated");
                 self.a.list(vec![pass, compiler])
             } else {
-                self.a.tuple_fields(expression.value)?[1]
+                self.expression_annotation(expression.value)?
             };
             let variable = self.fresh(ann);
-            expression.pre.push((variable, expression.value));
+            expression.pre.push(Pre::Set(variable, expression.value));
             expression.value = variable;
         }
         Ok(expression)
@@ -781,7 +965,7 @@ impl Lower {
                 let compiler = self.a.atom("compiler_generated");
                 self.a.list(vec![pass, compiler])
             } else {
-                self.a.tuple_fields(expression.value)?[1]
+                self.expression_annotation(expression.value)?
             };
             let variable = self.fresh(ann);
             let let_ann = if self.a.tag(expression.value) == Some("c_call") {
@@ -791,7 +975,7 @@ impl Lower {
                 self.a.list(vec![compiler])
             };
             self.let_annotations.insert(variable, let_ann);
-            expression.pre.push((variable, expression.value));
+            expression.pre.push(Pre::Set(variable, expression.value));
             expression.value = variable;
         }
         let operand = expression.value;
@@ -829,7 +1013,7 @@ impl Lower {
     fn unforce_guard(
         &self,
         value: TermId,
-        pre: &[(TermId, TermId)],
+        pre: &[Pre],
         bools: &mut Vec<TermId>,
         depth: usize,
     ) -> Result<()> {
@@ -837,9 +1021,11 @@ impl Lower {
             return Err(self.err("guard substitution depth limit"));
         }
         if self.a.tag(value) == Some("c_var") {
-            for (variable, arg) in pre.iter().rev() {
-                if self.same_guard_operand(value, *variable)? {
-                    return self.unforce_guard(*arg, pre, bools, depth + 1);
+            for instruction in pre.iter().rev() {
+                if let Pre::Set(variable, arg) = instruction {
+                    if self.same_guard_operand(value, *variable)? {
+                        return self.unforce_guard(*arg, pre, bools, depth + 1);
+                    }
                 }
             }
             return Ok(());
@@ -896,7 +1082,7 @@ impl Lower {
             let call = self.a.tagged("c_call", vec![ann, erlang, name, args]);
             let empty = self.empty();
             let variable = self.fresh(empty);
-            expression.pre.push((variable, call));
+            expression.pre.push(Pre::Set(variable, call));
             let erlang = self.atom_literal("erlang");
             let name = self.atom_literal("and");
             let args = self.a.list(vec![expression.value, variable]);
@@ -919,186 +1105,130 @@ impl Lower {
         }
         let name = self.a.as_atom(n[2]).unwrap_or("");
         let arity = self.a.list_items(f[4])?.len();
-        Ok((arity == 1
-            && matches!(
-                name,
-                "is_atom"
-                    | "is_binary"
-                    | "is_bitstring"
-                    | "is_boolean"
-                    | "is_float"
-                    | "is_function"
-                    | "is_integer"
-                    | "is_list"
-                    | "is_map"
-                    | "is_number"
-                    | "is_pid"
-                    | "is_port"
-                    | "is_reference"
-                    | "is_tuple"
-            ))
+        Ok((name == "is_record" && matches!(arity, 2 | 3))
+            || (arity == 1
+                && matches!(
+                    name,
+                    "is_atom"
+                        | "is_binary"
+                        | "is_bitstring"
+                        | "is_boolean"
+                        | "is_float"
+                        | "is_function"
+                        | "is_integer"
+                        | "is_list"
+                        | "is_map"
+                        | "is_number"
+                        | "is_pid"
+                        | "is_port"
+                        | "is_reference"
+                        | "is_tuple"
+                ))
             || (arity == 2
                 && matches!(
                     name,
                     "==" | "/=" | "=:=" | "=/=" | "<" | "=<" | ">" | ">=" | "and" | "or" | "xor"
                 )))
     }
-    fn andalso_guard(&mut self, f: &[TermId]) -> Result<TermId> {
-        let ann = self.annotation(f[1])?;
-        let full_ann = self.full_annotation(ann)?;
-        let switch = self.fresh(ann);
-        let left = self.expr(f[3])?;
-        let right = self.expr(f[4])?;
-        if !left.pre.is_empty()
-            || !right.pre.is_empty()
-            || !self.boolean_test(left.value)?
-            || !self.boolean_test(right.value)?
-        {
-            return Err(self.err("complex andalso guard"));
-        }
-        let mut anns = self.a.list_items(ann)?;
-        anns.push(self.a.atom("compiler_generated"));
-        let generated = self.a.list(anns);
-        let generated_full = self.full_annotation(generated)?;
-        let mut clauses = Vec::new();
-        for (atom, body) in [
-            ("true", right.value),
-            ("false", {
-                let a = self.a.atom("false");
-                self.literal(full_ann, a)
-            }),
-        ] {
-            let val = self.a.atom(atom);
-            let pat = self.literal(generated, val);
-            let pats = self.a.list(vec![pat]);
-            let truth = self.atom_literal("true");
-            clauses.push(
-                self.a
-                    .tagged("c_clause", vec![generated, pats, truth, body]),
-            );
-        }
-        let bad = self.a.atom("badarg");
-        let bad = self.literal(generated_full, bad);
-        let es = self.a.list(vec![bad, switch]);
-        let tuple = self.a.tagged("c_tuple", vec![generated_full, es]);
-        let erlang = self.a.atom("erlang");
-        let erlang = self.literal(generated_full, erlang);
-        let error = self.a.atom("error");
-        let error = self.literal(generated_full, error);
-        let args = self.a.list(vec![tuple]);
-        let call = self
-            .a
-            .tagged("c_call", vec![generated_full, erlang, error, args]);
-        let pats = self.a.list(vec![switch]);
-        let truth = self.atom_literal("true");
-        clauses.push(
-            self.a
-                .tagged("c_clause", vec![generated, pats, truth, call]),
-        );
-        let empty = self.empty();
-        let fail = self.fresh(empty);
-        clauses.push(self.failure(vec![fail], generated, "case_clause")?);
-        let cs = self.a.list(clauses);
-        let case = self.a.tagged("c_case", vec![generated, left.value, cs]);
-        let result = self.fresh(generated);
-        let compiler = self.a.atom("compiler_generated");
-        let compiler_ann = self.a.list(vec![compiler]);
-        let erlang = self.atom_literal("erlang");
-        let eq = self.atom_literal("=:=");
-        let truth = self.atom_literal("true");
-        let args = self.a.list(vec![result, truth]);
-        let eqcall = self
-            .a
-            .tagged("c_call", vec![compiler_ann, erlang, eq, args]);
-        let vars = self.a.list(vec![result]);
-        let arg = self
-            .a
-            .tagged("c_let", vec![compiler_ann, vars, case, eqcall]);
-        let empty = self.empty();
-        let try_name = self.a.atom("Try");
-        let try_var = self.variable(empty, try_name);
-        let t = self.a.atom("T");
-        let t = self.variable(empty, t);
-        let r = self.a.atom("R");
-        let r = self.variable(empty, r);
-        let evars = self.a.list(vec![t, r]);
-        let vars = self.a.list(vec![try_var]);
-        let handler = self.atom_literal("false");
-        Ok(self
-            .a
-            .tagged("c_try", vec![ann, arg, vars, try_var, evars, handler]))
-    }
     fn body(&mut self, node: TermId, bound: &mut HashSet<String>) -> Result<TermId> {
+        let (steps, _) = self.body_steps(node, bound)?;
+        self.assemble_steps(steps, None)
+    }
+    fn preamble_ir_size(&self, pre: &[Pre]) -> Result<usize> {
+        pre.iter().try_fold(0, |sum, instruction| {
+            Ok(sum
+                + match instruction {
+                    Pre::Set(_, arg) | Pre::Effect(arg) => self.expression_ir_size(*arg)?,
+                    Pre::Match { guard, .. } => {
+                        1 + if self.a.tag(*guard) == Some("c_literal") {
+                            0
+                        } else {
+                            self.expression_ir_size(*guard)?
+                        }
+                    }
+                })
+        })
+    }
+    fn expression_ir_size(&self, node: TermId) -> Result<usize> {
+        let f = self.a.tuple_fields(node)?;
+        Ok(match self.a.tag(node) {
+            Some("c_let") => self.expression_ir_size(f[3])? + self.expression_ir_size(f[4])?,
+            Some("c_seq") => self.expression_ir_size(f[2])? + self.expression_ir_size(f[3])?,
+            Some("c_case") => {
+                let mut n = 1;
+                let clauses = self.a.list_items(f[3])?;
+                for clause in clauses.iter().take(clauses.len().saturating_sub(1)) {
+                    n += self.expression_ir_size(*clause)?;
+                }
+                n
+            }
+            Some("c_fun") => self.expression_ir_size(f[3])?,
+            Some("c_clause") => {
+                1 + self.expression_ir_size(f[4])?
+                    + if self.a.tag(f[3]) == Some("c_literal") {
+                        0
+                    } else {
+                        self.expression_ir_size(f[3])?
+                    }
+            }
+            Some("c_receive") => {
+                let mut n = 1;
+                for clause in self.a.list_items(f[2])? {
+                    n += self.expression_ir_size(clause)?;
+                }
+                n
+            }
+            Some("c_catch") => 1 + self.expression_ir_size(f[2])?,
+            Some("c_try") if self.protected_guards.contains(&node) => {
+                1 + self.expression_ir_size(f[2])?
+            }
+            Some("c_try") => 1 + self.expression_ir_size(f[4])? + self.expression_ir_size(f[6])?,
+            _ => 1,
+        })
+    }
+    fn body_steps(
+        &mut self,
+        node: TermId,
+        bound: &mut HashSet<String>,
+    ) -> Result<(Vec<(Expr, bool)>, usize)> {
         let expressions = self.a.list_items(node)?;
         if expressions.is_empty() {
             return Err(self.err("empty body"));
         }
         let mut built = Vec::new();
+        let mut ir_size = 0;
         for e in expressions.iter().copied() {
             if self.a.tag(e) == Some("match") {
-                let f = self.a.tuple_fields(e)?.to_vec();
-                let pf = self.a.tuple_fields(f[2])?.to_vec();
-                let wanted = self.wanted;
-                if self.a.tag(f[2]) == Some("var")
-                    && self.a.as_atom(pf[2]).is_some_and(|n| n.starts_with('_'))
-                {
-                    self.wanted = false;
-                }
-                let right = self.expr(f[3]);
-                self.wanted = wanted;
-                let mut right = right?;
-                if !matches!(
-                    self.a.tag(right.value),
-                    Some(
-                        "c_apply"
-                            | "c_call"
-                            | "c_fun"
-                            | "c_binary"
-                            | "c_map"
-                            | "c_literal"
-                            | "c_var"
-                            | "c_cons"
-                            | "c_tuple"
-                    )
-                ) {
-                    let ann = self.a.tuple_fields(right.value)?[1];
-                    let temporary = self.fresh(ann);
-                    right.pre.push((temporary, right.value));
-                    right.value = temporary;
-                }
-                // single_match allocates the failure variable before liveness folds a fresh binder.
-                let empty = self.empty();
-                let _failure = self.fresh(empty);
-                if self.a.tag(f[2]) != Some("var") {
-                    return Err(self.err("body structural match"));
-                }
-                let name = self
-                    .a
-                    .as_atom(pf[2])
-                    .ok_or("lower: match variable")?
-                    .to_owned();
-                if name != "_" && !bound.insert(name.clone()) {
-                    return Err(self.err("body repeated variable match"));
-                }
-                if name != "_" {
-                    self.known_vars.insert(name.clone());
-                }
-                let ann = if name == "_" {
-                    self.empty()
+                let mode = if e == *expressions.last().unwrap() {
+                    matches::MatchMode::Last
                 } else {
-                    self.annotation(pf[1])?
+                    matches::MatchMode::Discard
                 };
-                let var = self.variable(ann, pf[2]);
-                let mut pre = right.pre;
-                pre.push((var, right.value));
-                built.push((Expr { value: var, pre }, true));
+                let out = self.matching(e, bound, mode)?;
+                ir_size += self.preamble_ir_size(&out.pre)?;
+                built.push((out, true));
             } else {
                 let out = self.expr(e)?;
+                let exports = self.source_export_names(e)?;
+                bound.extend(exports.iter().cloned());
+                self.known_vars.extend(exports);
+                ir_size += self.preamble_ir_size(&out.pre)? + self.expression_ir_size(out.value)?;
                 built.push((out, false));
             }
         }
-        let (last, _) = built.pop().unwrap();
-        let mut result = self.wrap(last.pre, last.value);
+        Ok((built, ir_size))
+    }
+    fn assemble_steps(
+        &mut self,
+        mut built: Vec<(Expr, bool)>,
+        tail: Option<TermId>,
+    ) -> Result<TermId> {
+        let mut result = if let Some(tail) = tail {
+            tail
+        } else {
+            let (last, _) = built.pop().ok_or_else(|| self.err("empty body"))?;
+            self.wrap(last.pre, last.value)
+        };
         for (e, assigned) in built.into_iter().rev() {
             if assigned {
                 result = self.wrap(e.pre, result);
@@ -1110,47 +1240,163 @@ impl Lower {
         }
         Ok(result)
     }
-    fn wrap(&mut self, pre: Vec<(TermId, TermId)>, mut result: TermId) -> TermId {
-        for (var, arg) in pre.into_iter().rev() {
-            let ann = if let Some(ann) = self.let_annotations.get(&var) {
-                *ann
-            } else {
-                self.empty()
-            };
-            let vars = self.a.list(vec![var]);
-            result = self.a.tagged("c_let", vec![ann, vars, arg, result]);
+    fn match_return_value(&mut self, expression: &mut Expr) -> Result<TermId> {
+        if !matches!(
+            self.a.tag(expression.value),
+            Some("c_literal" | "c_var" | "c_tuple" | "c_cons")
+        ) {
+            let ann = self.expression_annotation(expression.value)?;
+            let marker = self.a.atom(format!("$native_safe_{}", self.a.terms.len()));
+            let var = self.variable(ann, marker);
+            self.deferred_vars.insert(var);
+            expression.pre.push(Pre::Set(var, expression.value));
+            expression.value = var;
+        }
+        self.mark_match_return(expression.value)
+    }
+    fn mark_match_return(&mut self, node: TermId) -> Result<TermId> {
+        let mut fields = self.a.tuple_fields(node)?.to_vec();
+        let marker = self.a.atom("compiler_generated");
+        let mut ann = vec![marker];
+        ann.extend(self.a.list_items(fields[1])?);
+        fields[1] = self.a.list(ann);
+        match self.a.tag(node) {
+            Some("c_tuple") => {
+                let mut es = Vec::new();
+                for e in self.a.list_items(fields[2])? {
+                    es.push(self.mark_match_return(e)?);
+                }
+                if es.iter().all(|e| self.a.tag(*e) == Some("c_literal")) {
+                    let values = es
+                        .iter()
+                        .map(|e| self.a.tuple_fields(*e).map(|f| f[2]))
+                        .collect::<Result<Vec<_>>>()?;
+                    let value = self.a.tuple(values);
+                    return Ok(self.literal(fields[1], value));
+                }
+                fields[2] = self.a.list(es);
+            }
+            Some("c_cons") => {
+                fields[2] = self.mark_match_return(fields[2])?;
+                fields[3] = self.mark_match_return(fields[3])?;
+                if self.a.tag(fields[2]) == Some("c_literal")
+                    && self.a.tag(fields[3]) == Some("c_literal")
+                {
+                    let head = self.a.tuple_fields(fields[2])?[2];
+                    let tail = self.a.tuple_fields(fields[3])?[2];
+                    let value = self.a.push(ErlangTerm::List {
+                        items: vec![head],
+                        tail,
+                    });
+                    return Ok(self.literal(fields[1], value));
+                }
+            }
+            _ => (),
+        }
+        let marked = self.a.tuple(fields);
+        if self.deferred_vars.contains(&node) {
+            // The marked return is the same binder, only with another annotation.
+            self.deferred_aliases.insert(marked, node);
+        }
+        Ok(marked)
+    }
+    fn wrap(&mut self, pre: Vec<Pre>, mut result: TermId) -> TermId {
+        for instruction in pre.into_iter().rev() {
+            match instruction {
+                Pre::Effect(arg) => {
+                    let ann = self.empty();
+                    result = self.a.tagged("c_seq", vec![ann, arg, result]);
+                }
+                Pre::Set(var, arg) => {
+                    let ann = self
+                        .let_annotations
+                        .get(&var)
+                        .copied()
+                        .unwrap_or_else(|| self.empty());
+                    let vars = self.a.list(vec![var]);
+                    result = self.a.tagged("c_let", vec![ann, vars, arg, result]);
+                }
+                Pre::Match {
+                    ann,
+                    arg,
+                    pattern,
+                    guard,
+                    failure,
+                    allocations,
+                    ..
+                } => {
+                    let patterns = self.a.list(vec![pattern]);
+                    let success = self
+                        .a
+                        .tagged("c_clause", vec![ann, patterns, guard, result]);
+                    if !allocations.is_empty() {
+                        self.guard_allocations.insert(success, allocations);
+                    }
+                    let clauses = self.a.list(vec![success, failure]);
+                    result = self.a.tagged("c_case", vec![ann, arg, clauses]);
+                }
+            }
         }
         result
     }
-    fn safe_list(&mut self, input: Vec<TermId>) -> Result<(Vec<TermId>, Vec<(TermId, TermId)>)> {
+    // Source lowering allocates right-to-left; binding discovery executes left-to-right.
+    // Each operand starts in the group entry scope, so siblings cannot capture its new bindings.
+    fn safe_list(&mut self, input: Vec<TermId>) -> Result<(Vec<TermId>, Vec<Pre>)> {
+        let entry = self.known_vars.clone();
         let mut chunks = Vec::new();
         let mut values = Vec::new();
         for node in input.into_iter().rev() {
-            let mut expr = self.expr(node)?;
-            let safe = match self.a.tag(expr.value) {
-                Some("c_literal" | "c_cons" | "c_tuple") => true,
-                Some("c_var") => !matches!(
-                    self.a.get(self.a.tuple_fields(expr.value)?[2]),
-                    ErlangTerm::Tuple(_)
-                ),
-                _ => false,
-            };
-            if !safe {
-                let mut annotations = self.a.list_items(self.a.tuple_fields(expr.value)?[1])?;
-                if self.a.tag(expr.value) == Some("c_fun") {
-                    annotations.retain(|a| self.a.tag(*a) != Some("id"));
-                }
-                let ann = self.a.list(annotations);
-                let var = self.fresh(ann);
-                expr.pre.push((var, expr.value));
-                expr.value = var;
-            }
+            self.known_vars = entry.clone();
+            let expr = self.source_safe(node)?;
             values.push(expr.value);
             chunks.push(expr.pre);
         }
         values.reverse();
         chunks.reverse();
-        Ok((values, chunks.into_iter().flatten().collect()))
+        self.known_vars = entry.clone();
+        let mut known = entry;
+        let mut pre = Vec::new();
+        for chunk in chunks {
+            for instruction in chunk {
+                let instruction = match instruction {
+                    Pre::Match {
+                        ann,
+                        arg,
+                        raw_pattern,
+                        failure,
+                        ..
+                    } => {
+                        let old_case = self.case_patterns;
+                        self.case_patterns = true;
+                        self.known_vars = known.clone();
+                        let old_pins = std::mem::take(&mut self.pin_tests);
+                        let pattern = self.normalize_pattern(raw_pattern, &mut known)?;
+                        self.case_patterns = old_case;
+                        let pins = std::mem::take(&mut self.pin_tests);
+                        let truth = self.atom_literal("true");
+                        let (guard, allocations) = self.compose_pattern_guard(pins, truth, true)?;
+                        self.pin_tests = old_pins;
+                        Pre::Match {
+                            ann,
+                            arg,
+                            pattern,
+                            raw_pattern,
+                            guard,
+                            failure,
+                            allocations,
+                        }
+                    }
+                    Pre::Set(var, arg) => {
+                        self.collect_raw_pattern_names(var, &mut known)?;
+                        Pre::Set(var, arg)
+                    }
+                    other => other,
+                };
+                pre.push(instruction);
+            }
+        }
+        self.known_vars = known;
+        Ok((values, pre))
     }
     fn full_annotation(&mut self, ann: TermId) -> Result<TermId> {
         if self.wanted {
@@ -1391,6 +1637,12 @@ impl Lower {
             line_ann
         };
         let (value, pre) = match tag.as_str() {
+            "named_fun" => return self.named_fun_expr(&f, ann),
+            "maybe" => return self.maybe_expr(&f, line_ann),
+            "match" => {
+                let mut bound = self.known_vars.clone();
+                return self.matching(node, &mut bound, matches::MatchMode::Last);
+            }
             "var" => (self.variable(ann, f[2]), vec![]),
             "atom" | "integer" | "char" | "float" | "string" => (self.literal(ann, f[2]), vec![]),
             "nil" => {
@@ -1398,6 +1650,7 @@ impl Lower {
                 (self.literal(ann, nil), vec![])
             }
             "tuple" => {
+                let ann = self.record_annotation(f[1])?;
                 let input = self.a.list_items(f[2])?;
                 let (es, pre) = self.safe_list(input)?;
                 let es = self.a.list(es);
@@ -1417,15 +1670,37 @@ impl Lower {
                         && self.a.as_atom(self.a.tuple_fields(call[3])?[2]) == Some("load_nif")
                         && args.len() == 2
                     {
-                        return Err(self.err("load_nif requires nif_start whole-module lowering"));
+                        self.load_nif = true;
                     }
                     let mut input = vec![call[2], call[3]];
                     input.extend(args);
                     let (mut es, pre) = self.safe_list(input)?;
                     let module = es.remove(0);
                     let name = es.remove(0);
+                    let badrecord =
+                        es.len() == 1
+                            && self.a.tag(es[0]) == Some("c_tuple")
+                            && self
+                                .a
+                                .list_items(self.a.tuple_fields(es[0])?[2])?
+                                .first()
+                                .is_some_and(|first| {
+                                    self.a.tag(*first) == Some("c_literal")
+                                        && self.a.tuple_fields(*first).ok().is_some_and(|f| {
+                                            self.a.as_atom(f[2]) == Some("badrecord")
+                                        })
+                                });
+                    let is_error = self.a.tag(module) == Some("c_literal")
+                        && self.a.tag(name) == Some("c_literal")
+                        && self.a.as_atom(self.a.tuple_fields(module)?[2]) == Some("erlang")
+                        && self.a.as_atom(self.a.tuple_fields(name)?[2]) == Some("error");
                     let args = self.a.list(es);
-                    (self.a.tagged("c_call", vec![ann, module, name, args]), pre)
+                    if badrecord && is_error {
+                        let name = self.atom_literal("match_fail");
+                        (self.a.tagged("c_primop", vec![ann, name, args]), pre)
+                    } else {
+                        (self.a.tagged("c_call", vec![ann, module, name, args]), pre)
+                    }
                 } else if self.a.tag(f[2]) == Some("atom") {
                     let arity = self.a.integer(args.len());
                     let pair = self.a.tuple(vec![call[2], arity]);
@@ -1437,9 +1712,9 @@ impl Lower {
                 } else {
                     let mut operator = self.expr(f[2])?;
                     if self.a.tag(operator.value) != Some("c_var") {
-                        let op_ann = self.a.tuple_fields(operator.value)?[1];
+                        let op_ann = self.expression_annotation(operator.value)?;
                         let variable = self.fresh(op_ann);
-                        operator.pre.push((variable, operator.value));
+                        operator.pre.push(Pre::Set(variable, operator.value));
                         operator.value = variable;
                     }
                     let (values, pre) = self.safe_list(args)?;
@@ -1454,6 +1729,9 @@ impl Lower {
             }
             "op" => {
                 let op = self.a.as_atom(f[2]).ok_or("lower: operator")?.to_owned();
+                if op == "++" && self.a.tag(f[3]) == Some("lc") {
+                    return self.comprehension_append(f[3], f[4]);
+                }
                 if matches!(op.as_str(), "andalso" | "orelse") {
                     let associated = self.right_assoc(node, &op)?;
                     let fields = self.a.tuple_fields(associated)?.to_vec();
@@ -1468,8 +1746,18 @@ impl Lower {
                 (self.a.tagged("c_call", vec![ann, module, name, args]), pre)
             }
             "block" => {
-                let body = self.body(f[2], &mut HashSet::new())?;
-                (body, vec![])
+                let mut bound = self.known_vars.clone();
+                let (mut steps, _) = self.body_steps(f[2], &mut bound)?;
+                let (last, _) = steps.pop().ok_or_else(|| self.err("empty block"))?;
+                let mut pre = Vec::new();
+                for (step, assigned) in steps {
+                    pre.extend(step.pre);
+                    if !assigned {
+                        pre.push(Pre::Effect(step.value));
+                    }
+                }
+                pre.extend(last.pre);
+                (last.value, pre)
             }
             "if" => {
                 let mut clauses = Vec::new();
@@ -1495,7 +1783,7 @@ impl Lower {
                 (self.a.tagged("c_case", vec![ann, arg, clauses]), vec![])
             }
             "case" => {
-                let mut input = self.expr(f[2])?;
+                let mut input = self.source_novars(f[2])?;
                 // v3_core evaluates case inputs through novars before clauses.
                 if !matches!(
                     self.a.tag(input.value),
@@ -1511,9 +1799,9 @@ impl Lower {
                             | "c_tuple"
                     )
                 ) {
-                    let annotation = self.a.tuple_fields(input.value)?[1];
+                    let annotation = self.expression_annotation(input.value)?;
                     let temporary = self.fresh(annotation);
-                    input.pre.push((temporary, input.value));
+                    input.pre.push(Pre::Set(temporary, input.value));
                     input.value = temporary;
                 }
                 let mut cs = Vec::new();
@@ -1551,9 +1839,9 @@ impl Lower {
                 if self.a.tag(base.value) != Some("c_var") && !base_is_map {
                     let empty = self.empty();
                     let variable = self.fresh(empty);
-                    let annotation = self.a.tuple_fields(base.value)?[1];
+                    let annotation = self.expression_annotation(base.value)?;
                     self.let_annotations.insert(variable, annotation);
-                    base.pre.push((variable, base.value));
+                    base.pre.push(Pre::Set(variable, base.value));
                     base.value = variable;
                 }
                 let expression = self.build_map_pairs(f[3], base.value, ann)?;
@@ -1667,41 +1955,29 @@ impl Lower {
                         let clauses = self.a.list(clauses);
                         let case = self.a.tagged("c_case", vec![ann, argument, clauses]);
                         let params = self.a.list(params);
-                        (self.a.tagged("c_fun", vec![fun_ann, params, case]), vec![])
+                        let fun = self.a.tagged("c_fun", vec![fun_ann, params, case]);
+                        self.source_annotations.insert(fun, ann);
+                        (self.register_fun_shadowing(fun), vec![])
                     }
                     _ => return Err(self.err("fun descriptor")),
                 }
             }
+            "receive" => {
+                let e = self.receive_expr(&f, line_ann)?;
+                (e.value, e.pre)
+            }
+            "lc" | "bc" | "mc" => return self.comprehension(node),
+            "try" => {
+                let e = self.try_expr(&f, line_ann)?;
+                (e.value, e.pre)
+            }
+            "catch" => {
+                let e = self.catch_expr(&f)?;
+                (e.value, e.pre)
+            }
             "bin" => {
-                let mut bytes = Vec::new();
-                for segment in self.a.list_items(f[2])? {
-                    let sf = self.a.tuple_fields(segment)?.to_vec();
-                    if self.a.tag(segment) != Some("bin_element")
-                        || sf.len() != 5
-                        || self.a.as_atom(sf[3]) != Some("default")
-                        || self.a.as_atom(sf[4]) != Some("default")
-                    {
-                        return Err(self.err("nonliteral binary segment"));
-                    }
-                    let vf = self.a.tuple_fields(sf[2])?.to_vec();
-                    match self.a.tag(sf[2]) {
-                        Some("string") => {
-                            for ch in self.a.list_items(vf[2])? {
-                                let n = self.a.as_integer(ch).ok_or("lower: binary character")?;
-                                bytes.push(
-                                    u8::try_from(n).map_err(|_| "lower: binary character range")?,
-                                );
-                            }
-                        }
-                        Some("integer") => {
-                            let n = self.a.as_integer(vf[2]).ok_or("lower: binary integer")?;
-                            bytes.push(n as u8);
-                        }
-                        _ => return Err(self.err("nonliteral binary value")),
-                    }
-                }
-                let value = self.a.push(ErlangTerm::Binary(bytes));
-                (self.literal(ann, value), vec![])
+                let binary = self.binary_expr(&f, ann)?;
+                (binary.value, binary.pre)
             }
             _ => return Err(self.err(&tag)),
         };
@@ -1713,9 +1989,7 @@ mod tests {
     use super::*;
     #[test]
     fn literal_map_identity_keeps_numeric_and_signed_zero_keys_distinct() {
-        let mut a = Arena {
-            terms: vec![].into(),
-        };
+        let mut a = Arena::default();
         let line = a.integer(1);
         let value = a.atom("v");
         let value = a.tagged("atom", vec![line, value]);
@@ -1762,15 +2036,13 @@ mod tests {
     }
     #[test]
     fn unsupported_function_is_an_error_instead_of_an_omission() {
-        let mut a = Arena {
-            terms: vec![].into(),
-        };
+        let mut a = Arena::default();
         let line = a.integer(1);
         let name = a.atom("f");
         let zero = a.integer(0);
         let args = a.nil();
         let guards = a.nil();
-        let bad = a.tagged("receive", vec![line, args]);
+        let bad = a.tagged("unsupported_future_construct", vec![line, args]);
         let body = a.list(vec![bad]);
         let clause = a.tagged("clause", vec![line, args, guards, body]);
         let clauses = a.list(vec![clause]);
@@ -1778,12 +2050,10 @@ mod tests {
         let root = a.list(vec![fun]);
         let error = lower(&a.finish(root), "m").unwrap_err();
         assert!(error.contains("m:f/0"));
-        assert!(error.contains("receive"));
+        assert!(error.contains("unsupported_future_construct"));
     }
     fn assignment_fixture(name: &str) -> ErlangTerms {
-        let mut a = Arena {
-            terms: vec![].into(),
-        };
+        let mut a = Arena::default();
         let line = a.integer(1);
         let variable_name = a.atom(name);
         let variable = a.tagged("var", vec![line, variable_name]);
@@ -1811,9 +2081,11 @@ mod tests {
     fn fresh_assignment_does_not_emit_a_sequence_of_its_variable() {
         let core = lower(&assignment_fixture("X"), "m").unwrap();
         let a = Arena::from_terms(&core);
-        assert!(!(0..a.terms.len())
-            .map(TermId)
-            .any(|id| a.tag(id) == Some("c_seq")));
+        assert!(
+            !(0..a.terms.len())
+                .map(TermId)
+                .any(|id| a.tag(id) == Some("c_seq"))
+        );
     }
     #[test]
     fn underscore_assignment_suppresses_only_its_rhs_annotations() {
@@ -1834,17 +2106,16 @@ mod tests {
             })
             .unwrap();
         let done_ann = a.tuple_fields(done_literal).unwrap()[1];
-        assert!(a
-            .list_items(done_ann)
-            .unwrap()
-            .iter()
-            .all(|id| a.as_atom(*id) != Some("result_not_wanted")));
+        assert!(
+            a.list_items(done_ann)
+                .unwrap()
+                .iter()
+                .all(|id| a.as_atom(*id) != Some("result_not_wanted"))
+        );
     }
     #[test]
     fn case_pin_is_an_equality_test_with_delayed_fresh_variable() {
-        let mut a = Arena {
-            terms: vec![].into(),
-        };
+        let mut a = Arena::default();
         let line = a.integer(1);
         let x = a.atom("X");
         let x = a.tagged("var", vec![line, x]);
@@ -1883,6 +2154,10 @@ mod tests {
         let gf = a.tuple_fields(guard).unwrap();
         assert_eq!(a.tag(guard), Some("c_call"));
         assert_eq!(a.as_atom(a.tuple_fields(gf[3]).unwrap()[2]), Some("=:="));
-        assert_eq!(a.list_items(gf[4]).unwrap()[0], pin);
+        let reference = a.list_items(gf[4]).unwrap()[0];
+        assert_eq!(a.tag(reference), Some("c_var"));
+        let rf = a.tuple_fields(reference).unwrap();
+        assert_eq!(a.as_integer(rf[2]), a.as_integer(pf[2]));
+        assert!(a.list_items(rf[1]).unwrap().is_empty());
     }
 }

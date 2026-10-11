@@ -1,5 +1,6 @@
 //! Native debug-information frontend, pinned to Elixir 1.19.4 and OTP 28.3.
 //! Unsupported compiler constructs are errors; this module never invokes a VM.
+pub mod adapter;
 pub mod clean;
 pub mod debug;
 pub mod elixir;
@@ -7,6 +8,8 @@ mod erl_bifs;
 pub mod erl_prepare;
 pub mod lower;
 pub mod stats;
+pub mod runtime_context;
+pub mod pipeline;
 pub mod term;
 
 use crate::core::ErlangTerms;

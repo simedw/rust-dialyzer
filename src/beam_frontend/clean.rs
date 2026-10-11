@@ -197,9 +197,7 @@ mod tests {
     use super::*;
     #[test]
     fn cleaner_drops_raise_and_preserves_literal_annotations() {
-        let mut a = Arena {
-            terms: vec![].into(),
-        };
+        let mut a = Arena::default();
         let ann = a.list(vec![]);
         let value = a.atom("ok");
         let literal = a.tagged("c_literal", vec![ann, value]);
