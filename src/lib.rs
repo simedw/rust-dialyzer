@@ -197,3 +197,5 @@ pub mod letrec_types;
 pub mod ordered_parallel;
 
 pub mod variable_integer;
+
+pub mod beam_frontend;

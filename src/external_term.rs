@@ -49,9 +49,14 @@ struct Reader<'a> {
     terms: Vec<ErlangTerm>,
     values: Vec<TermId>,
     limits: Limits,
+    intern_scalars: bool,
+    logical_nodes: usize,
+    small_integers: [Option<TermId>; 256],
+    atoms: std::collections::HashMap<String, TermId>,
+    nil: Option<TermId>,
 }
-impl Reader<'_> {
-    fn take(&mut self, n: usize) -> Result<&[u8]> {
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         let end = self.position.checked_add(n).ok_or(Error::Invalid)?;
         let bytes = self.bytes.get(self.position..end).ok_or(Error::Invalid)?;
         self.position = end;
@@ -86,14 +91,59 @@ impl Reader<'_> {
         }
         Ok(text)
     }
-    fn push(&mut self, term: ErlangTerm) -> Result<()> {
-        if self.terms.len() >= self.limits.nodes {
+    fn count_value(&mut self) -> Result<()> {
+        if self.logical_nodes >= self.limits.nodes {
             return Err(Error::ResourceLimit);
+        }
+        self.logical_nodes += 1;
+        Ok(())
+    }
+    fn push(&mut self, term: ErlangTerm) -> Result<()> {
+        self.count_value()?;
+        if self.intern_scalars && matches!(term, ErlangTerm::Nil) {
+            if let Some(id) = self.nil {
+                self.values.push(id);
+                return Ok(());
+            }
+            self.nil = Some(TermId(self.terms.len()));
         }
         self.values.push(TermId(self.terms.len()));
         self.terms.push(term);
         Ok(())
     }
+    fn push_small_integer(&mut self, value: u8) -> Result<()> {
+        if !self.intern_scalars {
+            return self.push(ErlangTerm::Integer(value.to_string()));
+        }
+        self.count_value()?;
+        let id = if let Some(id) = self.small_integers[value as usize] {
+            id
+        } else {
+            let id = TermId(self.terms.len());
+            self.terms.push(ErlangTerm::Integer(value.to_string()));
+            self.small_integers[value as usize] = Some(id);
+            id
+        };
+        self.values.push(id);
+        Ok(())
+    }
+    fn push_atom(&mut self, text: &str) -> Result<()> {
+        if !self.intern_scalars {
+            return self.push(ErlangTerm::Atom(text.to_owned()));
+        }
+        self.count_value()?;
+        let id = if let Some(id) = self.atoms.get(text) {
+            *id
+        } else {
+            let id = TermId(self.terms.len());
+            self.terms.push(ErlangTerm::Atom(text.to_owned()));
+            self.atoms.insert(text.to_owned(), id);
+            id
+        };
+        self.values.push(id);
+        Ok(())
+    }
+
     fn container(&self, actions: &mut Vec<Action>, kind: Container, count: usize) -> Result<()> {
         if count > self.bytes.len() - self.position {
             return Err(Error::Invalid);
@@ -130,13 +180,17 @@ impl Reader<'_> {
                 Action::Read => match self.byte()? {
                     97 => {
                         let value = self.byte()?;
-                        self.push(ErlangTerm::Integer(value.to_string()))?;
+                        self.push_small_integer(value)?;
                     }
                     98 => {
                         let value = i32::from_be_bytes(
                             self.take(4)?.try_into().map_err(|_| Error::Invalid)?,
                         );
-                        self.push(ErlangTerm::Integer(value.to_string()))?;
+                        if let Ok(byte) = u8::try_from(value) {
+                            self.push_small_integer(byte)?;
+                        } else {
+                            self.push(ErlangTerm::Integer(value.to_string()))?;
+                        }
                     }
                     70 => {
                         let bits = u64::from_be_bytes(
@@ -169,17 +223,20 @@ impl Reader<'_> {
                             self.byte()? as usize
                         };
                         let bytes = self.take(length)?;
-                        let text: String = if tag == 100 || tag == 115 {
-                            bytes.iter().map(|byte| char::from(*byte)).collect()
+                        let latin;
+                        let text = if tag == 100 || tag == 115 {
+                            latin = bytes
+                                .iter()
+                                .map(|byte| char::from(*byte))
+                                .collect::<String>();
+                            latin.as_str()
                         } else {
-                            std::str::from_utf8(bytes)
-                                .map_err(|_| Error::Invalid)?
-                                .to_owned()
+                            std::str::from_utf8(bytes).map_err(|_| Error::Invalid)?
                         };
                         if text.chars().count() > 255 {
                             return Err(Error::Invalid);
                         }
-                        self.push(ErlangTerm::Atom(text))?;
+                        self.push_atom(text)?;
                     }
                     104 => {
                         let count = self.byte()? as usize;
@@ -192,10 +249,10 @@ impl Reader<'_> {
                     106 => self.push(ErlangTerm::Nil)?,
                     107 => {
                         let count = self.short()?;
-                        let bytes = self.take(count)?.to_vec();
+                        let bytes = self.take(count)?;
                         let start = self.values.len();
                         for byte in bytes {
-                            self.push(ErlangTerm::Integer(byte.to_string()))?;
+                            self.push_small_integer(*byte)?;
                         }
                         self.push(ErlangTerm::Nil)?;
                         let mut items = self.values.split_off(start);
@@ -270,16 +327,48 @@ impl Reader<'_> {
             root: self.values[0],
             terms: self.terms.into(),
         };
-        let order = TermOrderArena::new(&arena).map_err(|_| Error::Invalid)?;
+        // Reader construction validates scalar values and child IDs. Only map
+        // key equality needs an ordering arena; metadata values may be huge.
         for term in &arena.terms {
-            if let ErlangTerm::Map(pairs) = term
-                && order
-                    .canonical_map_pairs(pairs)
-                    .map_err(|_| Error::Invalid)?
-                    .len()
-                    != pairs.len()
+            let ErlangTerm::Map(pairs) = term else {
+                continue;
+            };
+            if pairs.len() < 2 {
+                continue;
+            }
+            if pairs
+                .iter()
+                .all(|(key, _)| matches!(arena.terms[key.0], ErlangTerm::Atom(_)))
             {
-                return Err(Error::Invalid);
+                let mut seen = std::collections::HashSet::with_capacity(pairs.len());
+                for (key, _) in pairs {
+                    let ErlangTerm::Atom(name) = &arena.terms[key.0] else {
+                        unreachable!()
+                    };
+                    if !seen.insert(name.as_str()) {
+                        return Err(Error::Invalid);
+                    }
+                }
+            } else {
+                let keys: Vec<_> = pairs.iter().map(|(key, _)| *key).collect();
+                let order = TermOrderArena::reachable(&arena, &keys).map_err(|_| Error::Invalid)?;
+                let mut sorted = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let mut lo = 0;
+                    let mut hi = sorted.len();
+                    while lo < hi {
+                        let mid = (lo + hi) / 2;
+                        match order
+                            .compare_map_keys(sorted[mid], &order, key)
+                            .map_err(|_| Error::Invalid)?
+                        {
+                            std::cmp::Ordering::Less => lo = mid + 1,
+                            std::cmp::Ordering::Equal => return Err(Error::Invalid),
+                            std::cmp::Ordering::Greater => hi = mid,
+                        }
+                    }
+                    sorted.insert(lo, key);
+                }
             }
         }
         Ok(arena)
@@ -287,6 +376,15 @@ impl Reader<'_> {
 }
 
 pub fn decode(bytes: &[u8], limits: Limits) -> Result<ErlangTerms> {
+    decode_impl(bytes, limits, false)
+}
+
+/// Metadata decoding with shared scalar values. Limits count decoded values,
+/// including reused entries, so sharing does not bypass input resource limits.
+pub fn decode_interned(bytes: &[u8], limits: Limits) -> Result<ErlangTerms> {
+    decode_impl(bytes, limits, true)
+}
+fn decode_impl(bytes: &[u8], limits: Limits, intern_scalars: bool) -> Result<ErlangTerms> {
     if bytes.len() > limits.bytes {
         return Err(Error::ResourceLimit);
     }
@@ -316,6 +414,11 @@ pub fn decode(bytes: &[u8], limits: Limits) -> Result<ErlangTerms> {
         terms: Vec::new(),
         values: Vec::new(),
         limits,
+        intern_scalars,
+        logical_nodes: 0,
+        small_integers: [None; 256],
+        atoms: std::collections::HashMap::new(),
+        nil: None,
     }
     .run()
 }
@@ -353,7 +456,7 @@ pub fn encode_at(
     compressed: bool,
     map_encoding: MapEncoding,
 ) -> Result<Vec<u8>> {
-    let order = TermOrderArena::new(arena).map_err(|_| Error::Invalid)?;
+    let order = TermOrderArena::reachable(arena, &[root]).map_err(|_| Error::Invalid)?;
     let mut out = vec![131];
     let mut pending = vec![root];
     let mut expanded = 0;
@@ -671,6 +774,70 @@ pub(crate) mod zlib {
 mod tests {
     use super::*;
     #[test]
+    fn metadata_interning_preserves_output_and_logical_limits() {
+        let mut bytes = vec![131, 104, 4, 119, 1, b'a', 119, 1, b'a', 97, 1, 107, 0, 100];
+        bytes.extend([1; 100]);
+        let normal = decode(&bytes, Limits::default()).unwrap();
+        let shared = decode_interned(&bytes, Limits::default()).unwrap();
+        assert_eq!(normal.terms.len(), 106);
+        assert_eq!(shared.terms.len(), 5);
+        assert_eq!(
+            encode(&normal, Limits::default(), false).unwrap(),
+            encode(&shared, Limits::default(), false).unwrap()
+        );
+        let limits = Limits {
+            nodes: 5,
+            ..Limits::default()
+        };
+        assert_eq!(decode(&bytes, limits).unwrap_err(), Error::ResourceLimit);
+        assert_eq!(
+            decode_interned(&bytes, limits).unwrap_err(),
+            Error::ResourceLimit
+        );
+        let duplicate_atoms = [131, 116, 0, 0, 0, 2, 119, 1, b'a', 106, 119, 1, b'a', 106];
+        assert_eq!(
+            decode_interned(&duplicate_atoms, Limits::default()).unwrap_err(),
+            Error::Invalid
+        );
+    }
+
+    #[test]
+    fn map_key_validation_retains_exact_equality() {
+        fn map(keys: Vec<Vec<u8>>) -> Vec<u8> {
+            let mut bytes = vec![131, 116];
+            bytes.extend((keys.len() as u32).to_be_bytes());
+            for key in keys {
+                bytes.extend(key);
+                bytes.push(106);
+            }
+            bytes
+        }
+        let atom = vec![119, 1, b'a'];
+        assert_eq!(
+            decode(&map(vec![atom.clone(), atom]), Limits::default()).unwrap_err(),
+            Error::Invalid
+        );
+        let integer = vec![97, 1];
+        let mut float = vec![70];
+        float.extend(1.0f64.to_bits().to_be_bytes());
+        assert!(decode(&map(vec![integer.clone(), float]), Limits::default()).is_ok());
+        let tuple = vec![104, 1, 97, 1];
+        assert_eq!(
+            decode(&map(vec![tuple.clone(), tuple]), Limits::default()).unwrap_err(),
+            Error::Invalid
+        );
+        let mut positive = vec![70];
+        positive.extend(0.0f64.to_bits().to_be_bytes());
+        let mut negative = vec![70];
+        negative.extend((-0.0f64).to_bits().to_be_bytes());
+        assert!(decode(&map(vec![positive, negative]), Limits::default()).is_ok());
+        assert_eq!(
+            decode(&map(vec![integer.clone(), integer]), Limits::default()).unwrap_err(),
+            Error::Invalid
+        );
+    }
+
+    #[test]
     fn external_function_roundtrips_wire_identity_and_literal_type() {
         let bytes = [
             131, 113, 119, 6, b'e', b'r', b'l', b'a', b'n', b'g', 119, 6, b'l', b'e', b'n', b'g',
@@ -783,8 +950,7 @@ mod tests {
     }
     #[test]
     fn inspect_opts_real_debug_metadata_roundtrips_without_loss() {
-        let bytes =
-            include_bytes!("../reports/real-projects/fixes/external-fun/inspect-opts-dbgi.etf");
+        let bytes = include_bytes!("../tests/fixtures/beam_core_port/inspect-opts-dbgi.etf");
         let arena = decode(bytes, Limits::default()).unwrap();
         let funs = arena
             .terms

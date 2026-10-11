@@ -1,0 +1,60 @@
+{
+  "elixir": "1.19.4-otp-28",
+  "otp": "28.3",
+  "base_commit": "b276228e498fcf3eadae27c515cef92d3df3b285",
+  "elixir_source_recovery": "beam_lib abstract_code decoded and erl_pp.form rendered from installed compiler BEAMs",
+  "sources": [
+    {
+      "file": "v3_core.erl",
+      "sha256": "8e0814c953fb5248cd6704bba0348e47f8db1047bde971dca6aca71ad9212d24"
+    },
+    {
+      "file": "dialyzer_clean_core.erl",
+      "sha256": "03bfc795ceaaeb823017be7236b5e48661d0f5c845ae376cebb81acbf92756da"
+    },
+    {
+      "file": "elixir_erl.erl",
+      "sha256": "00a11da740ed95e86670a7926dabbfc2f9d15c9b966ac5087bd0f04d4e29338e"
+    },
+    {
+      "file": "elixir_erl_clauses.erl",
+      "sha256": "ed8bcf61bc7aefd6ba768c91825cdb6449dce381a206e37f44777de0ae4a13e4"
+    },
+    {
+      "file": "elixir_erl_compiler.erl",
+      "sha256": "e13f10abceaf70b6c76f1e060c0994dbc568e70b64cdae8da14f7af3017230aa"
+    },
+    {
+      "file": "elixir_erl_for.erl",
+      "sha256": "5a6535cca71163aea0664693db00dffebe7f7e0f38d47ff40a0fa60f1681b9cd"
+    },
+    {
+      "file": "elixir_erl_pass.erl",
+      "sha256": "bed060b557e87e6fedddade7429fb8ed5bdce64a1a297a6e4e4e1a98aab45397"
+    },
+    {
+      "file": "elixir_erl_try.erl",
+      "sha256": "a3cf7590a64d5a10293adbf42982ca5a61d26a2c47ea3ee58f867aac473ed89a"
+    },
+    {
+      "file": "elixir_erl_var.erl",
+      "sha256": "7d2956fb45d3e46643b983fffa24ad792254aea0a3458c570cfffc65d5f812cf"
+    },
+    {
+      "file": "elixir_module.erl",
+      "sha256": "680c393c2ce1251d565916540e4973fc31c2a8003fe3facd8e30d5f098b48323"
+    },
+    {
+      "file": "elixir_utils.erl",
+      "sha256": "902365eddd7d96810e1b584709ce6f0da81967253c4831ebfc5812ff4aea5cf0"
+    },
+    {
+      "file": "erl_internal.erl",
+      "sha256": "47a730f05fc1751b5cf979890ae8a127a7c9f717dc11f008aa630a6bfaecde18"
+    },
+    {
+      "file": "erl_expand_records.erl",
+      "sha256": "0c8d7be44d33d3bc9bbd8d791949438e0488c20e6d1d2d33f3a59ec7269841b9"
+    }
+  ]
+}
