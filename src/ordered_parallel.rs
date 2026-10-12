@@ -147,6 +147,35 @@ pub fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -
     results.into_iter().map(|r| r.expect("every item analyzed")).collect()
 }
 
+/// Like `setup_map`, but consumes `items` and starts the costliest first so a
+/// large item does not start last and extend the phase. Each item is dropped
+/// on the worker that processed it. Results keep input order.
+pub fn setup_map_owned_by_cost<T: Send, R: Send>(
+    items: Vec<T>,
+    cost: &[u64],
+    f: impl Fn(T) -> R + Sync,
+) -> Vec<R> {
+    assert_eq!(items.len(), cost.len());
+    if sequential() {
+        return items.into_iter().map(f).collect();
+    }
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(cost[i]));
+    let slots: Vec<Mutex<Option<T>>> = items.into_iter().map(|item| Mutex::new(Some(item))).collect();
+    parallel_map(&order, |&i| {
+        let item = slots[i].lock().unwrap().take().expect("each item taken once");
+        (i, f(item))
+    })
+    .into_iter()
+    .fold((0..slots.len()).map(|_| None).collect::<Vec<Option<R>>>(), |mut out, (i, r)| {
+        out[i] = Some(r);
+        out
+    })
+    .into_iter()
+    .map(|r| r.expect("every item processed"))
+    .collect()
+}
+
 /// `RUST_DIALYZER_SEQUENTIAL=1` keeps setup and analysis on one thread.
 pub fn sequential() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

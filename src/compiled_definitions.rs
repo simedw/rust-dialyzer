@@ -588,14 +588,16 @@ impl PreparedDefinitions {
             external_types: resolver.external_types.clone(),
         };
         let mut opaque_values = BTreeMap::new();
+        // Group once: scanning every declaration per module is quadratic in
+        // program size. Each group keeps declaration order.
+        let mut opaque_by_module: crate::fast_hash::FastHashMap<&str, Vec<_>> = Default::default();
+        for d in forms.declarations.values().filter(|d| d.kind == DeclarationKind::Opaque) {
+            opaque_by_module.entry(d.name.module.as_str()).or_default().push(d);
+        }
         for pass in 0..2 {
             for (index, module) in core.modules.iter().enumerate() {
                 resolver.replace_cache(FormCache::new());
-                for d in forms
-                    .declarations
-                    .values()
-                    .filter(|d| d.name.module == module.name && d.kind == DeclarationKind::Opaque)
-                {
+                for d in opaque_by_module.get(module.name.as_str()).into_iter().flatten().copied() {
                     let mut site = sites[&d.metadata].clone();
                     site.kind = NativeSiteKind::Type;
                     site.scope = d.name.clone().into();

@@ -254,10 +254,26 @@ fn fused_atom_names(
     }
     Ok(names)
 }
+struct TraceOnDrop<'a>(&'static str, &'a str, u64);
+impl Drop for TraceOnDrop<'_> {
+    fn drop(&mut self) {
+        if crate::job_trace::enabled() {
+            let t1 = crate::job_trace::now();
+            crate::job_trace::record(|| serde_json::json!({"ev":self.0,"name":self.1,"t0":self.2,"t1":t1}));
+        }
+    }
+}
 fn load_fused(paths: &[String], source: ContextSource<'_>) -> Result<LoadedNative, String> {
     let started = Instant::now();
     let discover_atoms = matches!(&source, ContextSource::Native { .. });
-    let mut compiled = setup_map(paths, |path| {
+    // BEAM size predicts compile and adapter cost; start large modules first.
+    let sizes: Vec<u64> = paths
+        .iter()
+        .map(|path| std::fs::metadata(path).map_or(0, |m| m.len()))
+        .collect();
+    let mut compiled = crate::ordered_parallel::setup_map_owned_by_cost(paths.iter().collect(), &sizes, |path| {
+        let t0 = crate::job_trace::now();
+        let _trace = TraceOnDrop("fe_compile", path, t0);
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         let raw = super::compile_beam_raw(&bytes).map_err(|e| format!("{path}: {e}"))?;
         let raw = super::RawCompilation {
@@ -300,13 +316,15 @@ fn load_fused(paths: &[String], source: ContextSource<'_>) -> Result<LoadedNativ
         NativeAtomLayout::parse(&runtime.context["atom_layout"]).map_err(|e| e.to_string())?;
     let context_seconds = started.elapsed().as_secs_f64();
     let started = Instant::now();
-    let modules = setup_map(&compiled, |(module, forms, view, _)| {
-        adapter::module_view(module.clone(), forms.clone(), view, &layout)
+    // Each worker drops its module's compiler arenas instead of one thread
+    // dropping all of them afterwards.
+    let modules = crate::ordered_parallel::setup_map_owned_by_cost(compiled, &sizes, |(module, forms, view, _)| {
+        let _trace = TraceOnDrop("fe_adapt", &module, crate::job_trace::now());
+        adapter::module_view(module.clone(), forms, &view, &layout)
             .map_err(|e| format!("{module}: {e}"))
     })
     .into_iter()
     .collect::<Result<Vec<_>, _>>()?;
-    drop(compiled);
     let adapter_seconds = started.elapsed().as_secs_f64();
     let mut loaded = complete(runtime, modules, context_seconds, adapter_seconds)?;
     loaded.timings["compile_seconds"] = compile_seconds.into();

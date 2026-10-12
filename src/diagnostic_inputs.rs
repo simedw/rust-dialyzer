@@ -344,6 +344,22 @@ impl<'a, 'b> DiagnosticInputs<'a, 'b> {
             }
             presentations.insert(*module, ctx);
         }
+        // Per-module positions in program order; diagnostics run once per
+        // module, and scanning the whole program each time is quadratic.
+        let mut module_functions: Vec<Vec<usize>> = Vec::new();
+        for (i, f) in self.program.functions.iter().enumerate() {
+            if module_functions.len() <= f.module.0 {
+                module_functions.resize_with(f.module.0 + 1, Vec::new);
+            }
+            module_functions[f.module.0].push(i);
+        }
+        let mut module_metadata: Vec<Vec<usize>> = Vec::new();
+        for (i, m) in self.program.metadata.iter().enumerate() {
+            if module_metadata.len() <= m.module.0 {
+                module_metadata.resize_with(m.module.0 + 1, Vec::new);
+            }
+            module_metadata[m.module.0].push(i);
+        }
         Ok(DiagnosticSession {
             inputs: self,
             named,
@@ -351,6 +367,8 @@ impl<'a, 'b> DiagnosticInputs<'a, 'b> {
             origins,
             presentations,
             modules: modules.to_vec(),
+            module_functions,
+            module_metadata,
         })
     }
 }
@@ -361,8 +379,18 @@ pub struct DiagnosticSession<'a, 'b> {
     origins: BTreeMap<crate::declaration_key::DeclarationKey, Origin>,
     presentations: BTreeMap<ModuleId, PresentationContext>,
     modules: Vec<ModuleId>,
+    module_functions: Vec<Vec<usize>>,
+    module_metadata: Vec<Vec<usize>>,
 }
 impl DiagnosticSession<'_, '_> {
+    fn functions_of(&self, module: ModuleId) -> impl Iterator<Item = &crate::program::Function> {
+        let functions = &self.inputs.program.functions;
+        self.module_functions.get(module.0).into_iter().flatten().map(move |&i| &functions[i])
+    }
+    fn metadata_of(&self, module: ModuleId) -> impl Iterator<Item = &crate::program::Metadata> {
+        let metadata = &self.inputs.program.metadata;
+        self.module_metadata.get(module.0).into_iter().flatten().map(move |&i| &metadata[i])
+    }
     fn contract_entries(&self, module: ModuleId) -> Result<Vec<ContractWarningEntry<'_>>> {
         let entries = ordered_raw(
             self.inputs
@@ -412,11 +440,7 @@ impl DiagnosticSession<'_, '_> {
     pub fn missing_contract_functions(&self, module: ModuleId) -> Result<Vec<NativeWarning>> {
         let entries = self.contract_entries(module)?;
         let implemented = self
-            .inputs
-            .program
-            .functions
-            .iter()
-            .filter(|f| f.module == module)
+            .functions_of(module)
             .filter_map(|f| {
                 self.inputs
                     .nodes
@@ -445,11 +469,7 @@ impl DiagnosticSession<'_, '_> {
             .module(module)
             .map_err(DiagnosticInputError::Boundary)?;
         let occurrences = crate::behaviour_metadata::collect(
-            self.inputs
-                .program
-                .metadata
-                .iter()
-                .filter(|metadata| metadata.module == module)
+            self.metadata_of(module)
                 .filter_map(|metadata| metadata.behaviour.as_ref()),
         )?;
         if occurrences.is_empty() {
@@ -534,13 +554,7 @@ impl DiagnosticSession<'_, '_> {
         let mut function_origins = BTreeMap::new();
         let mut exported = BTreeSet::new();
         let mut filename = None;
-        for function in self
-            .inputs
-            .program
-            .functions
-            .iter()
-            .filter(|f| f.module == module)
-        {
+        for function in self.functions_of(module) {
             let FunctionIdentity::Named(name) = &function.identity else {
                 continue;
             };
