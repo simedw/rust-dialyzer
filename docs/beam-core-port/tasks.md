@@ -10,4 +10,4 @@
 - [x] Prove complete native warning/signature parity in imported and fresh native contexts.
 - [x] Benchmark both complete workloads with fresh compilation, full inference, output, CPU and peak memory.
 
-All saved Phoenix and Elixir inputs run through the opt-in native frontend without a compiler process or fallback. The original default frontend remains available. Default promotion and arbitrary compiler-version or nonempty prior-library migration are separate changes.
+BEAM manifests now default to native runtime context and fused emission, without a compiler process or fallback. The CLI accepts `--frontend native|compiler`; compiler-produced Core-file manifests remain supported. Arbitrary compiler-version and nonempty prior-library migration remain separate work.

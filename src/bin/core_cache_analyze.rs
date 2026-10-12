@@ -1,6 +1,6 @@
 //! Analyze BEAM files through native compilation, or compiler-produced cached Core.
 //!
-//! Usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json
+//! Usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json [--frontend native|compiler]
 //!
 //! MANIFEST selects native `beam_files` with a runtime context, or cached
 //! `module_files` with the compiler context and closure profile.
@@ -25,6 +25,25 @@ struct Loaded {
     profile: ClosureCodeProfile,
     frontend: Value,
 }
+// A Core-file inventory explicitly selects the compiler-produced input format.
+// BEAM inventories default to native lifting; neither path silently falls back.
+fn select_frontend(manifest: &mut Value, frontend: Option<&str>) -> Result<(), String> {
+    match frontend {
+        None => Ok(()),
+        Some("native") if manifest.get("beam_files").is_some() => {
+            manifest.as_object_mut().ok_or("manifest must be an object")?.remove("module_files");
+            Ok(())
+        }
+        Some("compiler") if manifest.get("module_files").is_some() => {
+            manifest.as_object_mut().ok_or("manifest must be an object")?.remove("beam_files");
+            Ok(())
+        }
+        Some("native") => Err("native frontend requires a beam_files inventory".into()),
+        Some("compiler") => Err("compiler frontend requires compiler-produced module_files; prepare them with prototypes/core_cache/core_cache.exs".into()),
+        _ => Err("frontend must be native or compiler".into()),
+    }
+}
+
 fn load(manifest: &Value) -> Result<Loaded, String> {
     if let Some(files) = manifest.get("beam_files") {
         if manifest.get("module_files").is_some() {
@@ -42,9 +61,9 @@ fn load(manifest: &Value) -> Result<Loaded, String> {
             .collect::<Result<Vec<_>, _>>()?;
         use rust_dialyzer_poc::beam_frontend::pipeline::{self, ContextSource, Emission};
         let emission = match manifest.get("core_emission").and_then(Value::as_str) {
-            None | Some("reference") => Emission::Reference,
+            Some("reference") => Emission::Reference,
             Some("direct") => Emission::Direct,
-            Some("fused") => Emission::Fused,
+            None | Some("fused") => Emission::Fused,
             _ => return Err("core_emission must be reference, direct or fused".into()),
         };
         let loaded = match manifest["runtime_context"].as_str() {
@@ -56,7 +75,7 @@ fn load(manifest: &Value) -> Result<Loaded, String> {
                 },
                 emission,
             )?,
-            Some("native") => {
+            None | Some("native") => {
                 let read = |key: &str| -> Result<Vec<u8>, String> {
                     let path = manifest[key]
                         .as_str()
@@ -240,10 +259,20 @@ fn serialize_signature_parts(rows: &[Value], workers: usize, sequential: bool) -
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 3 {
-        eprintln!("usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json");
-        std::process::exit(2);
-    }
+    let frontend = match args.as_slice() {
+        [_, _, _] => None,
+        [_, _, _, flag, value]
+            if flag == "--frontend" && matches!(value.as_str(), "native" | "compiler") =>
+        {
+            Some(value.as_str())
+        }
+        _ => {
+            eprintln!(
+                "usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json [--frontend native|compiler]"
+            );
+            std::process::exit(2);
+        }
+    };
     let read = |path: &str| {
         std::fs::read_to_string(path).unwrap_or_else(|error| {
             eprintln!("{path}: {error}");
@@ -257,7 +286,11 @@ fn main() {
         })
     };
     let library = read(&args[0]);
-    let manifest = parse(&args[1]);
+    let mut manifest = parse(&args[1]);
+    if let Err(error) = select_frontend(&mut manifest, frontend) {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
     let options = parse(&args[2]);
     // Guard analysis recurses up to MAX_GUARD_DEPTH; give it a stack to match.
     let output = std::thread::Builder::new()
@@ -333,6 +366,23 @@ mod tests {
 
     std::thread_local! {
         pub(super) static SERIALIZED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn frontend_selection_preserves_explicit_inputs_and_never_falls_back() {
+        let mut native = json!({"beam_files": []});
+        select_frontend(&mut native, None).unwrap();
+        select_frontend(&mut native, Some("native")).unwrap();
+        assert!(select_frontend(&mut native, Some("compiler")).is_err());
+        let mut compiler = json!({"module_files": []});
+        select_frontend(&mut compiler, None).unwrap();
+        assert!(select_frontend(&mut compiler, Some("native")).is_err());
+        let mut both = json!({"beam_files": [], "module_files": []});
+        select_frontend(&mut both, Some("native")).unwrap();
+        assert!(both.get("module_files").is_none());
+        let mut both = json!({"beam_files": [], "module_files": []});
+        select_frontend(&mut both, Some("compiler")).unwrap();
+        assert!(both.get("beam_files").is_none());
     }
 
     fn array_bytes(parts: &[Vec<u8>]) -> Vec<u8> {

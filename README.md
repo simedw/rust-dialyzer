@@ -2,7 +2,19 @@
 
 This experiment checks a small compiled Elixir app with OTP Dialyzer and an independent Rust analyzer. It establishes diagnostic parity on the fixture before comparing two Rust solvers.
 
-The current pipeline lets OTP compile each module's `debug_info` to Core Erlang, as Dialyzer itself does, and caches the result per BEAM content hash ([core_cache.exs](prototypes/core_cache/core_cache.exs)). The Rust analyzer loads that cache ([core_cache_analyze](src/bin/core_cache_analyze.rs)). On the 1,082 modules of a Phoenix project's PLT it matches OTP's warnings and all 42,246 inferred signatures exactly; it is still about 19 times slower. See [the Phase 0 notes](bench/phase0/README.md).
+The full checker defaults to Rust BEAM-to-Core lifting for BEAM manifests, including fused Core emission. It reads compiled BEAM debug information and runs inference without an Elixir/Erlang compiler process. The latest cold large-app run covers 15,683 application and dependency modules in 189.39 seconds; source compilation is excluded. See [the run report](reports/large-app-main-cold-rerun-2026-10-12/results.md).
+
+Build and run the full checker:
+
+```sh
+cargo build --release --bin core_cache_analyze
+python3 scripts/beam_core_port/native_manifest.py beams.txt manifest.json --dialyzer-ebin /path/to/otp/lib/dialyzer-5.4/ebin
+target/release/core_cache_analyze prior-library.json manifest.json options.json
+```
+
+`prior-library.json` supplies dependency summaries or an empty type store. `options.json` supplies analysis and reporting options. The manifest generator needs the pinned OTP Dialyzer BEAMs for runtime ordering metadata; it does not execute them. Existing BEAM inputs still need supported debug information.
+
+`--frontend native` explicitly selects Rust lifting. To use the compiler-produced Core path, prepare a cache with [core_cache.exs](prototypes/core_cache/core_cache.exs) and pass its `module_files` manifest with `--frontend compiler`. Existing Core-file manifests also remain accepted without a flag. There is no automatic compiler fallback. For comparisons, BEAM manifests can select `core_emission: reference` or `direct`; omitted emission selects `fused`, and omitted `runtime_context` selects `native`. Imported runtime contexts remain explicitly selectable.
 
 An earlier native frontend reimplemented the compiler step in Rust using code extracted from Firefly. It was removed because it could not handle current OTP and dependency code and was no faster than OTP's compiler. The tag `firefly-frontend-snapshot` preserves it.
 
