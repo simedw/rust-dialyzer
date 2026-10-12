@@ -79,6 +79,7 @@ struct Lower {
     protected_guards: HashSet<TermId>,
     source_annotations: std::collections::BTreeMap<TermId, TermId>,
     shadowed_funs: std::collections::BTreeMap<TermId, HashSet<String>>,
+    export_memo: exports::ExportMemo,
 }
 pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
     let mut l = Lower {
@@ -107,6 +108,7 @@ pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
         protected_guards: HashSet::new(),
         source_annotations: std::collections::BTreeMap::new(),
         shadowed_funs: std::collections::BTreeMap::new(),
+        export_memo: Default::default(),
     };
     let mut input = l.a.list_items(forms.root)?;
     input.extend(l.predefined()?);
@@ -734,8 +736,11 @@ impl Lower {
         }
     }
     fn rename_wildcards(&mut self, node: TermId) -> Result<TermId> {
-        match self.a.get(node).clone() {
-            ErlangTerm::Tuple(mut f) => {
+        // Matched by reference: most visits reach shared leaves, which are
+        // returned unchanged and need no copy.
+        match self.a.get(node) {
+            ErlangTerm::Tuple(f) => {
+                let mut f = f.clone();
                 if let Some(known) = self.shadowed_funs.remove(&node) {
                     let renamed = self.rename_fun_shadowing(node, known)?;
                     return self.rename_wildcards(renamed);
@@ -774,7 +779,8 @@ impl Lower {
                 Ok(self.a.tuple(f))
             }
             ErlangTerm::List { items, tail } => {
-                let mut out = Vec::new();
+                let (items, tail) = (items.clone(), *tail);
+                let mut out = Vec::with_capacity(items.len());
                 for x in items {
                     out.push(self.rename_wildcards(x)?);
                 }

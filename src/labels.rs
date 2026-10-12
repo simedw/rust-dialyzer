@@ -135,249 +135,26 @@ impl Labels {
     pub fn is_reannotated(&self, node: NodeRef) -> bool {
         self.reannotated[node.module.0][node.node]
     }
+    /// Labels are allocated from one counter in module order. Each module
+    /// is walked independently from zero and then shifted by the number of
+    /// labels allocated in the modules before it, which gives the same labels.
     pub fn build(core: &CoreProgram, initial: CoreLabel) -> Result<Self, String> {
+        let walked = crate::ordered_parallel::setup_map(&core.modules, module_labels);
         let mut next = initial.0;
-        let mut modules = Vec::new();
-        let mut changed_modules = Vec::new();
-        for module in &core.modules {
-            let mut labels = module
-                .nodes
-                .iter()
-                .map(|node| inherited(module, node.annotations))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut reannotated = vec![false; module.nodes.len()];
-            let mut todo = vec![Action::Walk(module.core, Environment::new())];
-            while let Some(action) = todo.pop() {
-                match action {
-                    Action::Assign(node) => {
-                        labels[node.0] = Some(allocate(&mut next)?);
-                        reannotated[node.0] = true;
-                    }
-                    Action::BindAndWalk {
-                        vars,
-                        body,
-                        environment,
-                    } => {
-                        let environment = bind(
-                            module,
-                            &vars,
-                            environment,
-                            &mut labels,
-                            &mut reannotated,
-                            &mut next,
-                        )?;
-                        todo.push(Action::Walk(body, environment));
-                    }
-                    Action::Walk(node, environment) => {
-                        let expression = &module.nodes[node.0].expr;
-                        if matches!(expression, CoreExpr::Literal(_) | CoreExpr::Opaque(_)) {
-                            continue;
-                        }
-                        if matches!(expression, CoreExpr::Var(_)) {
-                            reannotated[node.0] = true;
-                            labels[node.0] = Some(match environment.get(&name(module, node)?) {
-                                Some(label) => *label,
-                                None => allocate(&mut next)?,
-                            });
-                            continue;
-                        }
-                        todo.push(Action::Assign(node));
-                        let mut children = Vec::new();
-                        match expression {
-                            CoreExpr::Values(nodes)
-                            | CoreExpr::Tuple(nodes)
-                            | CoreExpr::Binary(nodes) => children.extend(nodes),
-                            CoreExpr::Cons { head, tail } => children.extend([*head, *tail]),
-                            CoreExpr::Map {
-                                base,
-                                pairs,
-                                pattern,
-                            } => {
-                                if !pattern {
-                                    children.push(*base);
-                                }
-                                children.extend(pairs);
-                            }
-                            CoreExpr::MapPair {
-                                operation,
-                                key,
-                                value,
-                            } => children.extend([*operation, *key, *value]),
-                            CoreExpr::Let {
-                                vars,
-                                argument,
-                                body,
-                            } => {
-                                todo.push(Action::BindAndWalk {
-                                    vars: vars.clone(),
-                                    body: *body,
-                                    environment: environment.clone(),
-                                });
-                                todo.push(Action::Walk(*argument, environment));
-                                continue;
-                            }
-                            CoreExpr::Seq { argument, body } => children.extend([*argument, *body]),
-                            CoreExpr::Apply { operator, args } => {
-                                children.push(*operator);
-                                children.extend(args);
-                            }
-                            CoreExpr::Call { module, name, args } => {
-                                children.extend([*module, *name]);
-                                children.extend(args);
-                            }
-                            CoreExpr::Primop { name, args } => {
-                                children.push(*name);
-                                children.extend(args);
-                            }
-                            CoreExpr::Case { argument, clauses } => {
-                                children.push(*argument);
-                                children.extend(clauses);
-                            }
-                            CoreExpr::Clause {
-                                patterns,
-                                guard,
-                                body,
-                            } => {
-                                let variables = pattern_variables(module, patterns)?;
-                                let scoped = bind(
-                                    module,
-                                    &variables,
-                                    environment,
-                                    &mut labels,
-                                    &mut reannotated,
-                                    &mut next,
-                                )?;
-                                let children = patterns
-                                    .iter()
-                                    .copied()
-                                    .chain([*guard, *body])
-                                    .collect::<Vec<_>>();
-                                todo.extend(
-                                    children
-                                        .into_iter()
-                                        .rev()
-                                        .map(|node| Action::Walk(node, scoped.clone())),
-                                );
-                                continue;
-                            }
-                            CoreExpr::Alias { variable, pattern } => {
-                                children.extend([*variable, *pattern])
-                            }
-                            CoreExpr::Fun { params, body } => {
-                                let scoped = bind(
-                                    module,
-                                    params,
-                                    environment,
-                                    &mut labels,
-                                    &mut reannotated,
-                                    &mut next,
-                                )?;
-                                todo.push(Action::Walk(*body, scoped));
-                                continue;
-                            }
-                            CoreExpr::Receive {
-                                clauses,
-                                timeout,
-                                action,
-                            } => {
-                                children.extend(clauses);
-                                children.extend([*timeout, *action]);
-                            }
-                            CoreExpr::Try {
-                                argument,
-                                vars,
-                                body,
-                                exception_vars,
-                                handler,
-                            } => {
-                                todo.push(Action::BindAndWalk {
-                                    vars: exception_vars.clone(),
-                                    body: *handler,
-                                    environment: environment.clone(),
-                                });
-                                todo.push(Action::BindAndWalk {
-                                    vars: vars.clone(),
-                                    body: *body,
-                                    environment: environment.clone(),
-                                });
-                                todo.push(Action::Walk(*argument, environment));
-                                continue;
-                            }
-                            CoreExpr::Catch { body } => children.push(*body),
-                            CoreExpr::Bitstr {
-                                value,
-                                size,
-                                unit,
-                                typ,
-                                flags,
-                            } => children.extend([*value, *size, *unit, *typ, *flags]),
-                            CoreExpr::Letrec { definitions, body } => {
-                                let vars =
-                                    definitions.iter().map(|pair| pair.0).collect::<Vec<_>>();
-                                let scoped = bind(
-                                    module,
-                                    &vars,
-                                    environment,
-                                    &mut labels,
-                                    &mut reannotated,
-                                    &mut next,
-                                )?;
-                                let children = definitions
-                                    .iter()
-                                    .flat_map(|(key, value)| [*key, *value])
-                                    .chain([*body])
-                                    .collect::<Vec<_>>();
-                                todo.extend(
-                                    children
-                                        .into_iter()
-                                        .rev()
-                                        .map(|node| Action::Walk(node, scoped.clone())),
-                                );
-                                continue;
-                            }
-                            CoreExpr::Module {
-                                definitions,
-                                attributes,
-                                exports,
-                                ..
-                            } => {
-                                let vars =
-                                    definitions.iter().map(|pair| pair.0).collect::<Vec<_>>();
-                                let scoped = bind(
-                                    module,
-                                    &vars,
-                                    environment,
-                                    &mut labels,
-                                    &mut reannotated,
-                                    &mut next,
-                                )?;
-                                let children = attributes
-                                    .iter()
-                                    .chain(definitions)
-                                    .flat_map(|(key, value)| [*key, *value])
-                                    .chain(exports.iter().copied())
-                                    .collect::<Vec<_>>();
-                                todo.extend(
-                                    children
-                                        .into_iter()
-                                        .rev()
-                                        .map(|node| Action::Walk(node, scoped.clone())),
-                                );
-                                continue;
-                            }
-                            CoreExpr::Literal(_) | CoreExpr::Var(_) | CoreExpr::Opaque(_) => {
-                                unreachable!()
-                            }
-                        }
-                        todo.extend(
-                            children
-                                .into_iter()
-                                .rev()
-                                .map(|node| Action::Walk(node, environment.clone())),
-                        );
+        let mut modules = Vec::with_capacity(walked.len());
+        let mut changed_modules = Vec::with_capacity(walked.len());
+        for result in walked {
+            let (mut labels, reannotated, allocated) = result?;
+            if next != 0 {
+                for (label, changed) in labels.iter_mut().zip(&reannotated) {
+                    if *changed && let Some(label) = label {
+                        label.0 += next;
                     }
                 }
             }
+            next = next
+                .checked_add(allocated)
+                .ok_or("Core label counter overflow")?;
             modules.push(labels);
             changed_modules.push(reannotated);
         }
@@ -387,4 +164,245 @@ impl Labels {
             next_label: CoreLabel(next),
         })
     }
+}
+
+/// Labels one module with a counter starting at zero. Every label it
+/// allocates is marked reannotated; the rest are inherited annotations.
+fn module_labels(module: &CoreModule) -> Result<(Vec<Option<CoreLabel>>, Vec<bool>, u64), String> {
+    let mut next = 0;
+    let mut labels = module
+        .nodes
+        .iter()
+        .map(|node| inherited(module, node.annotations))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut reannotated = vec![false; module.nodes.len()];
+    let mut todo = vec![Action::Walk(module.core, Environment::new())];
+    while let Some(action) = todo.pop() {
+        match action {
+            Action::Assign(node) => {
+                labels[node.0] = Some(allocate(&mut next)?);
+                reannotated[node.0] = true;
+            }
+            Action::BindAndWalk {
+                vars,
+                body,
+                environment,
+            } => {
+                let environment = bind(
+                    module,
+                    &vars,
+                    environment,
+                    &mut labels,
+                    &mut reannotated,
+                    &mut next,
+                )?;
+                todo.push(Action::Walk(body, environment));
+            }
+            Action::Walk(node, environment) => {
+                let expression = &module.nodes[node.0].expr;
+                if matches!(expression, CoreExpr::Literal(_) | CoreExpr::Opaque(_)) {
+                    continue;
+                }
+                if matches!(expression, CoreExpr::Var(_)) {
+                    reannotated[node.0] = true;
+                    labels[node.0] = Some(match environment.get(&name(module, node)?) {
+                        Some(label) => *label,
+                        None => allocate(&mut next)?,
+                    });
+                    continue;
+                }
+                todo.push(Action::Assign(node));
+                let mut children = Vec::new();
+                match expression {
+                    CoreExpr::Values(nodes) | CoreExpr::Tuple(nodes) | CoreExpr::Binary(nodes) => {
+                        children.extend(nodes)
+                    }
+                    CoreExpr::Cons { head, tail } => children.extend([*head, *tail]),
+                    CoreExpr::Map {
+                        base,
+                        pairs,
+                        pattern,
+                    } => {
+                        if !pattern {
+                            children.push(*base);
+                        }
+                        children.extend(pairs);
+                    }
+                    CoreExpr::MapPair {
+                        operation,
+                        key,
+                        value,
+                    } => children.extend([*operation, *key, *value]),
+                    CoreExpr::Let {
+                        vars,
+                        argument,
+                        body,
+                    } => {
+                        todo.push(Action::BindAndWalk {
+                            vars: vars.clone(),
+                            body: *body,
+                            environment: environment.clone(),
+                        });
+                        todo.push(Action::Walk(*argument, environment));
+                        continue;
+                    }
+                    CoreExpr::Seq { argument, body } => children.extend([*argument, *body]),
+                    CoreExpr::Apply { operator, args } => {
+                        children.push(*operator);
+                        children.extend(args);
+                    }
+                    CoreExpr::Call { module, name, args } => {
+                        children.extend([*module, *name]);
+                        children.extend(args);
+                    }
+                    CoreExpr::Primop { name, args } => {
+                        children.push(*name);
+                        children.extend(args);
+                    }
+                    CoreExpr::Case { argument, clauses } => {
+                        children.push(*argument);
+                        children.extend(clauses);
+                    }
+                    CoreExpr::Clause {
+                        patterns,
+                        guard,
+                        body,
+                    } => {
+                        let variables = pattern_variables(module, patterns)?;
+                        let scoped = bind(
+                            module,
+                            &variables,
+                            environment,
+                            &mut labels,
+                            &mut reannotated,
+                            &mut next,
+                        )?;
+                        let children = patterns
+                            .iter()
+                            .copied()
+                            .chain([*guard, *body])
+                            .collect::<Vec<_>>();
+                        todo.extend(
+                            children
+                                .into_iter()
+                                .rev()
+                                .map(|node| Action::Walk(node, scoped.clone())),
+                        );
+                        continue;
+                    }
+                    CoreExpr::Alias { variable, pattern } => children.extend([*variable, *pattern]),
+                    CoreExpr::Fun { params, body } => {
+                        let scoped = bind(
+                            module,
+                            params,
+                            environment,
+                            &mut labels,
+                            &mut reannotated,
+                            &mut next,
+                        )?;
+                        todo.push(Action::Walk(*body, scoped));
+                        continue;
+                    }
+                    CoreExpr::Receive {
+                        clauses,
+                        timeout,
+                        action,
+                    } => {
+                        children.extend(clauses);
+                        children.extend([*timeout, *action]);
+                    }
+                    CoreExpr::Try {
+                        argument,
+                        vars,
+                        body,
+                        exception_vars,
+                        handler,
+                    } => {
+                        todo.push(Action::BindAndWalk {
+                            vars: exception_vars.clone(),
+                            body: *handler,
+                            environment: environment.clone(),
+                        });
+                        todo.push(Action::BindAndWalk {
+                            vars: vars.clone(),
+                            body: *body,
+                            environment: environment.clone(),
+                        });
+                        todo.push(Action::Walk(*argument, environment));
+                        continue;
+                    }
+                    CoreExpr::Catch { body } => children.push(*body),
+                    CoreExpr::Bitstr {
+                        value,
+                        size,
+                        unit,
+                        typ,
+                        flags,
+                    } => children.extend([*value, *size, *unit, *typ, *flags]),
+                    CoreExpr::Letrec { definitions, body } => {
+                        let vars = definitions.iter().map(|pair| pair.0).collect::<Vec<_>>();
+                        let scoped = bind(
+                            module,
+                            &vars,
+                            environment,
+                            &mut labels,
+                            &mut reannotated,
+                            &mut next,
+                        )?;
+                        let children = definitions
+                            .iter()
+                            .flat_map(|(key, value)| [*key, *value])
+                            .chain([*body])
+                            .collect::<Vec<_>>();
+                        todo.extend(
+                            children
+                                .into_iter()
+                                .rev()
+                                .map(|node| Action::Walk(node, scoped.clone())),
+                        );
+                        continue;
+                    }
+                    CoreExpr::Module {
+                        definitions,
+                        attributes,
+                        exports,
+                        ..
+                    } => {
+                        let vars = definitions.iter().map(|pair| pair.0).collect::<Vec<_>>();
+                        let scoped = bind(
+                            module,
+                            &vars,
+                            environment,
+                            &mut labels,
+                            &mut reannotated,
+                            &mut next,
+                        )?;
+                        let children = attributes
+                            .iter()
+                            .chain(definitions)
+                            .flat_map(|(key, value)| [*key, *value])
+                            .chain(exports.iter().copied())
+                            .collect::<Vec<_>>();
+                        todo.extend(
+                            children
+                                .into_iter()
+                                .rev()
+                                .map(|node| Action::Walk(node, scoped.clone())),
+                        );
+                        continue;
+                    }
+                    CoreExpr::Literal(_) | CoreExpr::Var(_) | CoreExpr::Opaque(_) => {
+                        unreachable!()
+                    }
+                }
+                todo.extend(
+                    children
+                        .into_iter()
+                        .rev()
+                        .map(|node| Action::Walk(node, environment.clone())),
+                );
+            }
+        }
+    }
+    Ok((labels, reannotated, next))
 }

@@ -702,7 +702,7 @@ impl PreparedDefinitions {
             Ok((own_types, records))
         };
         let record_outcomes = if parallel {
-            per_module_workers(&resolver, core.modules.len(), &record_module)
+            per_module_workers(&resolver, &(0..core.modules.len()).collect::<Vec<_>>(), &record_module)
         } else {
             None
         };
@@ -808,14 +808,17 @@ impl PreparedDefinitions {
                 .or_default()
                 .push(contract);
         }
+        let positions: crate::fast_hash::FastHashMap<&str, usize> = names
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(i, n)| (n.as_str(), i))
+            .collect();
         let module_contracts: Vec<Vec<&Contract>> = core
             .modules
             .iter()
             .map(|module| {
-                let target = names
-                    .iter()
-                    .position(|n| n == &module.name)
-                    .expect("target module");
+                let target = *positions.get(module.name.as_str()).expect("target module");
                 let mut entries = by_target.get(&target).cloned().unwrap_or_default();
                 entries.sort_by_key(|c| (c.callback, c.name.clone()));
                 entries
@@ -884,7 +887,11 @@ impl PreparedDefinitions {
         // and merged in module order, which reproduces the sequential order.
         // If any worker had to modify the shared forms, redo sequentially.
         let outcomes = if parallel {
-            per_module_workers(&resolver, core.modules.len(), &compile_module)
+            // Modules with the most contracts start first, so that a large
+            // one does not start late and extend the phase.
+            let mut order: Vec<usize> = (0..core.modules.len()).collect();
+            order.sort_by_key(|&i| std::cmp::Reverse(module_contracts[i].len()));
+            per_module_workers(&resolver, &order, &compile_module)
         } else {
             None
         };
@@ -955,14 +962,16 @@ impl PreparedDefinitions {
     }
 }
 /// Runs `run` for every module on all cores, each worker with a resolver that
-/// borrows `base`'s forms. Results come with the external type events and
+/// borrows `base`'s forms. Modules start in `order`, a permutation of the
+/// module indices. Results come with the external type events and
 /// missing names each module added, in module order; `None` if any worker had
 /// to modify the forms, in which case the caller redoes the work sequentially.
 fn per_module_workers<R: Send>(
     base: &Resolver<'_>,
-    count: usize,
+    order: &[usize],
     run: &(impl Fn(&mut Resolver<'_>, usize) -> R + Sync),
 ) -> Option<Vec<(R, Vec<ExternalTypeEvent>, Vec<TypeName>)>> {
+    let count = order.len();
     type Slot<R> = (R, Vec<ExternalTypeEvent>, Vec<TypeName>, bool);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(1, usize::from).min(count.max(1));
@@ -977,10 +986,10 @@ fn per_module_workers<R: Send>(
                         let mut worker = base.borrowing_worker();
                         let mut done = Vec::new();
                         loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            if i >= count {
+                            let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(&i) = order.get(at) else {
                                 break;
-                            }
+                            };
                             let result = run(&mut worker, i);
                             let mutated = matches!(worker.forms, std::borrow::Cow::Owned(_));
                             done.push((i, (result, std::mem::take(&mut worker.external_types), std::mem::take(&mut worker.missing), mutated)));

@@ -7,6 +7,14 @@ enum Name {
     Atom(String),
 }
 type Names = BTreeSet<Name>;
+/// Free and produced names of terms already seen by the current
+/// `export_liveness` call. The arena is append-only, so a term's names never
+/// change; caching them keeps long `let` chains linear.
+#[derive(Default)]
+pub(super) struct ExportMemo {
+    free: std::cell::RefCell<crate::fast_hash::FastHashMap<TermId, Names>>,
+    produced: std::cell::RefCell<crate::fast_hash::FastHashMap<TermId, Names>>,
+}
 impl Lower {
     fn export_name(&self, node: TermId) -> Option<Name> {
         if self.a.tag(node) != Some("c_var") {
@@ -121,6 +129,14 @@ impl Lower {
             == Some("match_fail")
     }
     fn export_produced(&self, node: TermId) -> Result<Names> {
+        if let Some(names) = self.export_memo.produced.borrow().get(&node) {
+            return Ok(names.clone());
+        }
+        let out = self.export_produced_uncached(node)?;
+        self.export_memo.produced.borrow_mut().insert(node, out.clone());
+        Ok(out)
+    }
+    fn export_produced_uncached(&self, node: TermId) -> Result<Names> {
         let mut out = Names::new();
         let f = self.a.tuple_fields(node).ok();
         match self.a.tag(node) {
@@ -182,6 +198,14 @@ impl Lower {
         if let Some(name) = self.export_name(node) {
             return Ok(BTreeSet::from([name]));
         }
+        if let Some(names) = self.export_memo.free.borrow().get(&node) {
+            return Ok(names.clone());
+        }
+        let out = self.export_free_uncached(node)?;
+        self.export_memo.free.borrow_mut().insert(node, out.clone());
+        Ok(out)
+    }
+    fn export_free_uncached(&self, node: TermId) -> Result<Names> {
         let mut out = Names::new();
         let f = self.a.tuple_fields(node).ok();
         match self.a.tag(node) {
@@ -410,8 +434,10 @@ impl Lower {
         }
     }
     pub(super) fn export_liveness(&mut self, fun: TermId) -> Result<TermId> {
-        self.export_expression(fun, &Names::new(), &Names::new())
-            .map(|r| r.0)
+        let result = self.export_expression(fun, &Names::new(), &Names::new()).map(|r| r.0);
+        self.export_memo.free.borrow_mut().clear();
+        self.export_memo.produced.borrow_mut().clear();
+        result
     }
 }
 impl Lower {

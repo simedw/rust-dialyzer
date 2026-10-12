@@ -217,46 +217,38 @@ pub fn compact(input: ErlangTerms) -> Result<ErlangTerms, String> {
     }
     let mut remap = vec![usize::MAX; needed.len()];
     let mut terms = Vec::with_capacity(needed.iter().filter(|&&n| n).count());
-    for (i, term) in input.terms.iter().enumerate() {
-        if !needed[i] {
-            continue;
-        }
-        let mapped = |id: TermId| -> Result<TermId, String> {
-            let value = *remap.get(id.0).ok_or("compact child outside arena")?;
-            if value == usize::MAX {
-                return Err("compact child must precede parent".into());
+    let root = input.root;
+    // Kept terms move out of the input and have their children renumbered
+    // in place.
+    input.terms.consume_kept(
+        |i| needed[i],
+        |i, mut term| {
+            let mapped = |id: &mut TermId| -> Result<(), String> {
+                let value = *remap.get(id.0).ok_or("compact child outside arena")?;
+                if value == usize::MAX {
+                    return Err("compact child must precede parent".into());
+                }
+                *id = TermId(value);
+                Ok(())
+            };
+            match &mut term {
+                ErlangTerm::Tuple(items) => items.iter_mut().try_for_each(mapped)?,
+                ErlangTerm::List { items, tail } => {
+                    items.iter_mut().try_for_each(mapped)?;
+                    mapped(tail)?;
+                }
+                ErlangTerm::Map(pairs) => pairs
+                    .iter_mut()
+                    .try_for_each(|(k, v)| mapped(k).and_then(|()| mapped(v)))?,
+                _ => (),
             }
-            Ok(TermId(value))
-        };
-        let term = match term {
-            ErlangTerm::Tuple(items) => ErlangTerm::Tuple(
-                items
-                    .iter()
-                    .copied()
-                    .map(mapped)
-                    .collect::<Result<_, _>>()?,
-            ),
-            ErlangTerm::List { items, tail } => ErlangTerm::List {
-                items: items
-                    .iter()
-                    .copied()
-                    .map(mapped)
-                    .collect::<Result<_, _>>()?,
-                tail: mapped(*tail)?,
-            },
-            ErlangTerm::Map(pairs) => ErlangTerm::Map(
-                pairs
-                    .iter()
-                    .map(|(k, v)| Ok((mapped(*k)?, mapped(*v)?)))
-                    .collect::<Result<_, String>>()?,
-            ),
-            term => term.clone(),
-        };
-        remap[i] = terms.len();
-        terms.push(term);
-    }
+            remap[i] = terms.len();
+            terms.push(term);
+            Ok::<_, String>(())
+        },
+    )?;
     Ok(ErlangTerms {
-        root: TermId(remap[input.root.0]),
+        root: TermId(remap[root.0]),
         terms: terms.into(),
     })
 }

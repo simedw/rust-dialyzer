@@ -202,6 +202,45 @@ impl<T> SharedVec<T> {
             }
         }
     }
+    /// Consumes the vector, passing each entry `keep` accepts to `f` in
+    /// order. Entries move out of blocks no other clone holds; entries of
+    /// shared blocks are cloned.
+    pub fn consume_kept<E>(
+        self,
+        mut keep: impl FnMut(usize) -> bool,
+        mut f: impl FnMut(usize, T) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        T: Clone,
+    {
+        let mut index = 0;
+        let mut block = |items: Arc<Vec<T>>| -> Result<(), E> {
+            match Arc::try_unwrap(items) {
+                Ok(items) => {
+                    for item in items {
+                        if keep(index) {
+                            f(index, item)?;
+                        }
+                        index += 1;
+                    }
+                }
+                Err(items) => {
+                    for item in items.iter() {
+                        if keep(index) {
+                            f(index, item.clone())?;
+                        }
+                        index += 1;
+                    }
+                }
+            }
+            Ok(())
+        };
+        block(self.base)?;
+        for chunk in self.chunks {
+            block(chunk.items)?;
+        }
+        block(Arc::new(self.own))
+    }
     /// Copies the entries into one owned vector.
     pub fn to_vec(&self) -> Vec<T>
     where
@@ -345,5 +384,22 @@ mod tests {
         b.freeze();
         assert_eq!(b.as_contiguous(), Some(&[1, 2, 3, 4][..]));
         assert_eq!(a.last(), Some(&5));
+    }
+
+    #[test]
+    fn consume_kept_visits_shared_and_owned_blocks_in_order() {
+        let mut a = SharedVec::from(vec![String::from("a"), "b".into()]);
+        a.push("c".into());
+        a.freeze_shared();
+        a.push("d".into());
+        let other = a.clone();
+        let mut kept = Vec::new();
+        a.consume_kept(|i| i != 1, |i, item| {
+            kept.push((i, item));
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(kept, [(0, "a".into()), (2, "c".into()), (3, "d".into())]);
+        assert_eq!(other.to_vec(), ["a", "b", "c", "d"]);
     }
 }

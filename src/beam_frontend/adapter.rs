@@ -91,7 +91,10 @@ struct Builder<'a> {
     layout: &'a NativeAtomLayout,
     terms: SharedVec<T>,
     nodes: SharedVec<CoreNode>,
-    hashes: FastHashMap<u64, Vec<TermId>>,
+    /// The first term interned with each hash; later unequal terms with the
+    /// same hash (true collisions) go to `collisions`, in interning order.
+    hashes: FastHashMap<u64, TermId>,
+    collisions: FastHashMap<u64, Vec<TermId>>,
     atoms: FastHashMap<String, TermId>,
     orders: BTreeMap<TermId, Vec<usize>>,
     values: FastHashMap<(usize, TermId), TermId>,
@@ -102,20 +105,27 @@ impl<'a> Builder<'a> {
         term.hash(&mut hasher);
         order.hash(&mut hasher);
         let hash = hasher.finish();
-        if let Some(ids) = self.hashes.get(&hash) {
-            if let Some(&id) = ids
-                .iter()
-                .find(|&&id| self.terms[id.0] == term && self.orders.get(&id) == order.as_ref())
-            {
-                return id;
+        let same = |id: &TermId| self.terms[id.0] == term && self.orders.get(id) == order.as_ref();
+        let collided = match self.hashes.get(&hash) {
+            None => false,
+            Some(id) if same(id) => return *id,
+            Some(_) => {
+                if let Some(id) = self.collisions.get(&hash).and_then(|ids| ids.iter().find(|id| same(id))) {
+                    return *id;
+                }
+                true
             }
-        }
+        };
         let id = TermId(self.terms.len());
         self.terms.push(term);
         if let Some(order) = order {
             self.orders.insert(id, order);
         }
-        self.hashes.entry(hash).or_default().push(id);
+        if collided {
+            self.collisions.entry(hash).or_default().push(id);
+        } else {
+            self.hashes.insert(hash, id);
+        }
         id
     }
     fn atom(&mut self, name: &str) -> TermId {
@@ -167,7 +177,11 @@ impl<'a> Builder<'a> {
                             self.values.insert((namespace, id), mapped);
                             continue;
                         }
-                        T::Tuple(items) => (T::Tuple(items.clone()), None),
+                        T::Tuple(items) => {
+                            pending.push(Task::Finish(id, T::Tuple(items.clone()), None));
+                            pending.extend(items.iter().rev().map(|&child| Task::Enter(child)));
+                            continue;
+                        }
                         T::List { items, tail } => {
                             let mut items = items.clone();
                             let mut tail = *tail;
@@ -783,6 +797,7 @@ pub fn module(compilation: Compilation, layout: &NativeAtomLayout) -> Result<Cor
         terms: SharedVec::new(),
         nodes: SharedVec::new(),
         hashes: FastHashMap::default(),
+        collisions: FastHashMap::default(),
         atoms: FastHashMap::default(),
         orders: BTreeMap::new(),
         values: FastHashMap::default(),
@@ -816,6 +831,7 @@ pub fn module_direct(
         terms: SharedVec::new(),
         nodes: SharedVec::new(),
         hashes: FastHashMap::default(),
+        collisions: FastHashMap::default(),
         atoms: FastHashMap::default(),
         orders: BTreeMap::new(),
         values: FastHashMap::default(),
@@ -850,6 +866,7 @@ pub fn module_view(
         terms: SharedVec::new(),
         nodes: SharedVec::new(),
         hashes: FastHashMap::default(),
+        collisions: FastHashMap::default(),
         atoms: FastHashMap::default(),
         orders: BTreeMap::new(),
         values: FastHashMap::default(),
