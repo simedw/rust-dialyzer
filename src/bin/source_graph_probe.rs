@@ -38,7 +38,7 @@ fn snapshot(
         ))
     };
     Ok(
-        json!({"vertices":wire(vertices.clone()),"edges":wire(graph.ordered_edges().map_err(|e|e.to_string())?),"adjacency":vertices.iter().map(|v|json!({"vertex":graph_keys::wire(v),"in":wire(graph.incoming(v).unwrap_or(&[]).iter().cloned()),"out":wire(graph.outgoing(v).unwrap_or(&[]).iter().cloned()),"in_edges":wire(graph.in_edges(v).iter().cloned()),"out_edges":wire(graph.out_edges(v).iter().cloned())})).collect::<Vec<_>>(),"scc":scc(graph)?,"reaching":wire(algorithms::reaching(graph,roots)),"subgraph":{"vertices":wire(sub.ordered_vertices().map_err(|e|e.to_string())?),"edges":wire(sub.ordered_edges().map_err(|e|e.to_string())?),"scc":scc(&sub)?}}),
+        json!({"vertices":wire(vertices.clone()),"edges":wire(graph.ordered_edges().map_err(|e|e.to_string())?),"adjacency":vertices.iter().map(|v|json!({"vertex":graph_keys::wire(v),"in":wire(graph.incoming(v).unwrap_or_default().iter().cloned()),"out":wire(graph.outgoing(v).unwrap_or_default().iter().cloned()),"in_edges":wire(graph.in_edges(v).iter().cloned()),"out_edges":wire(graph.out_edges(v).iter().cloned())})).collect::<Vec<_>>(),"scc":scc(graph)?,"reaching":wire(algorithms::reaching(graph,roots)),"subgraph":{"vertices":wire(sub.ordered_vertices().map_err(|e|e.to_string())?),"edges":wire(sub.ordered_edges().map_err(|e|e.to_string())?),"scc":scc(&sub)?}}),
     )
 }
 fn main() -> Result<(), String> {

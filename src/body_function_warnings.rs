@@ -52,7 +52,10 @@ impl BodyFlow<'_, '_, '_> {
                         function: mfa.function,
                         arity: mfa.arity.into(),
                     });
-            let incoming = graph.in_neighbours(&vertex).unwrap_or(&[]);
+            let incoming = graph
+                .in_neighbours(&vertex)
+                .unwrap_or_default()
+                .as_unordered_slice();
             let parent = match incoming {
                 [
                     GraphVertex::Named {

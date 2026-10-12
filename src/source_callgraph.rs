@@ -341,7 +341,10 @@ impl SourceCallGraph {
             graph,
         })
     }
-    pub fn in_neighbours(&self, vertex: &GraphVertex) -> Option<&[GraphVertex]> {
+    pub fn in_neighbours(
+        &self,
+        vertex: &GraphVertex,
+    ) -> Option<crate::source_digraph::Neighbours<'_, GraphVertex>> {
         self.graph.incoming(vertex)
     }
     pub fn attach_layout(

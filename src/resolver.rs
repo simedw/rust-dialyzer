@@ -9,7 +9,7 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::collections::{BTreeMap, BTreeSet};
 type Result<T> = std::result::Result<T, FormError>;
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Unfold {
     Named(TypeName),
     Record(String),
@@ -37,12 +37,68 @@ struct ExpansionBudget {
 #[derive(Clone, Default)]
 struct State {
     variables: BTreeMap<VariableId, Type>,
-    stack: Vec<Unfold>,
+    stack: Stack,
     massage: Option<Massage>,
     remote_policy: RemotePolicy,
     check_mode: bool,
     native_site: Option<crate::native_form_environment::NativeFormSite>,
 }
+/// The enclosing expansions, innermost first (OTP's list of recursion
+/// names). A shared list, so entering an expansion and snapshotting the
+/// state are O(1); each node keeps the length and a hash of its suffix.
+#[derive(Clone, Default)]
+struct Stack(Option<std::sync::Arc<StackNode>>);
+struct StackNode {
+    head: Unfold,
+    tail: Stack,
+    len: usize,
+    hash: u64,
+}
+impl Stack {
+    fn from_vec(items: Vec<Unfold>) -> Self {
+        items.into_iter().rev().fold(Self::default(), |stack, item| stack.push(item))
+    }
+    fn push(&self, head: Unfold) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = crate::fast_hash::FxHasher::default();
+        head.hash(&mut hasher);
+        self.hash().hash(&mut hasher);
+        Self(Some(std::sync::Arc::new(StackNode {
+            head,
+            tail: self.clone(),
+            len: self.len() + 1,
+            hash: hasher.finish(),
+        })))
+    }
+    fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |node| node.len)
+    }
+    fn hash(&self) -> u64 {
+        self.0.as_ref().map_or(0, |node| node.hash)
+    }
+    fn iter(&self) -> impl Iterator<Item = &Unfold> {
+        std::iter::successors(self.0.as_deref(), |node| node.tail.0.as_deref()).map(|node| &node.head)
+    }
+    fn contains(&self, item: &Unfold) -> bool {
+        self.iter().any(|x| x == item)
+    }
+    fn to_vec(&self) -> Vec<Unfold> {
+        self.iter().cloned().collect()
+    }
+}
+impl PartialEq for Stack {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                std::sync::Arc::ptr_eq(a, b)
+                    || (a.len == b.len && a.hash == b.hash && self.iter().eq(other.iter()))
+            }
+            _ => false,
+        }
+    }
+}
+impl Eq for Stack {}
 /// The set dialyzer_utils:massage_type rewrites: aliases of `module` declared
 /// before position `below`. Tested against `Forms::declarations` on demand;
 /// declarations loaded later carry `usize::MAX` metadata, so they never join.
@@ -110,8 +166,60 @@ impl ModuleTableHandle {
 /// inserts must not copy the whole table.
 /// Keys and values are shared: the path copies after a snapshot clone every
 /// entry of the copied nodes, and deep-copying names and stacks dominated.
-type CacheKey = (TypeName, Vec<Unfold>, i64);
+/// Keys order by a hash first, so a lookup compares names and stacks only
+/// on a hash match; `FormCache::entries` restores the name order.
 type CachedTypes = im::OrdMap<std::sync::Arc<CacheKey>, std::sync::Arc<Vec<Cached>>>;
+#[derive(Clone)]
+struct CacheKey {
+    hash: u64,
+    name: TypeName,
+    stack: Stack,
+    depth: i64,
+}
+impl CacheKey {
+    fn new(name: TypeName, stack: Stack, depth: i64) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = crate::fast_hash::FxHasher::default();
+        name.hash(&mut hasher);
+        depth.hash(&mut hasher);
+        stack.hash().hash(&mut hasher);
+        Self {
+            hash: hasher.finish(),
+            name,
+            stack,
+            depth,
+        }
+    }
+    /// The order of the `(name, enclosing, depth)` tuples OTP keys by.
+    fn native_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.name
+            .cmp(&other.name)
+            .then_with(|| self.stack.iter().cmp(other.stack.iter()))
+            .then(self.depth.cmp(&other.depth))
+    }
+}
+impl PartialEq for CacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash
+            && self.depth == other.depth
+            && self.name == other.name
+            && self.stack == other.stack
+    }
+}
+impl Eq for CacheKey {}
+impl PartialOrd for CacheKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for CacheKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self == other {
+            return std::cmp::Ordering::Equal;
+        }
+        self.hash.cmp(&other.hash).then_with(|| self.native_cmp(other))
+    }
+}
 fn push_cached(types: &mut CachedTypes, key: CacheKey, cached: Cached) {
     match types.get_mut(&key) {
         Some(values) => std::sync::Arc::make_mut(values).push(cached),
@@ -144,14 +252,15 @@ impl FormCache {
         }
     }
     pub fn entries(&self) -> Vec<FormCacheEntry> {
-        self.types
-            .iter()
+        let mut keys = self.types.iter().collect::<Vec<_>>();
+        keys.sort_by(|(a, _), (b, _)| a.native_cmp(b));
+        keys.into_iter()
             .flat_map(|(key, values)| {
-                let (name, enclosing, depth) = &**key;
-                values.iter().map(|v| FormCacheEntry {
-                    name: name.clone(),
+                let enclosing = key.stack.to_vec();
+                values.iter().map(move |v| FormCacheEntry {
+                    name: key.name.clone(),
                     enclosing: enclosing.clone(),
-                    depth: *depth,
+                    depth: key.depth,
                     arguments: v.arguments.clone(),
                     value: v.value.clone(),
                     cost: v.cost,
@@ -753,9 +862,9 @@ impl<'a> Resolver<'a> {
             return Err(FormError::Native(NativeTransferError::FunctionClause));
         }
         let stack = if let Site::Type(name) = site {
-            vec![Unfold::Named(name)]
+            Stack::default().push(Unfold::Named(name))
         } else {
-            vec![]
+            Stack::default()
         };
         let state = State {
             variables,
@@ -773,9 +882,9 @@ impl<'a> Resolver<'a> {
             return Err(FormError::Native(NativeTransferError::FunctionClause));
         }
         let stack = if let Site::Type(name) = site {
-            vec![Unfold::Named(name)]
+            Stack::default().push(Unfold::Named(name))
         } else {
-            vec![]
+            Stack::default()
         };
         self.resolve_state(
             id,
@@ -818,7 +927,7 @@ impl<'a> Resolver<'a> {
             id,
             State {
                 variables,
-                stack: Vec::new(),
+                stack: Stack::default(),
                 massage,
                 remote_policy: RemotePolicy::Resolve,
                 check_mode: false,
@@ -1045,7 +1154,7 @@ impl<'a> Resolver<'a> {
             return Ok((Type::any(), left));
         }
         let mut state = s.clone();
-        state.stack.insert(0, unfold.clone());
+        state.stack = s.stack.push(unfold.clone());
         if let (Some(site), Some(definition)) = (&s.native_site, self.definitions.get(name)) {
             state.native_site = Some(crate::native_form_environment::NativeFormSite {
                 kind: crate::native_form_environment::NativeSiteKind::Type,
@@ -1068,7 +1177,7 @@ impl<'a> Resolver<'a> {
                 arity: name.arity,
             }
         };
-        let cache_key = (cache_name, s.stack.clone(), d);
+        let cache_key = CacheKey::new(cache_name, s.stack.clone(), d);
         if let Some(hit) = self
             .cache
             .types
@@ -1643,7 +1752,7 @@ impl<'a> Resolver<'a> {
         };
         let recursive = s.stack.contains(&unfold) && !(l <= 2 && d <= 10);
         let mut state = s.clone();
-        state.stack.insert(0, unfold);
+        state.stack = s.stack.push(unfold);
         if let Some(site) = &s.native_site {
             state.native_site = Some(crate::native_form_environment::NativeFormSite {
                 kind: crate::native_form_environment::NativeSiteKind::Record,
@@ -1901,7 +2010,7 @@ impl FormCache {
             let value = crate::type_exports::type_from_arena(&arena, value[0])?;
             push_cached(
                 &mut cache.types,
-                (name, enclosing, depth),
+                CacheKey::new(name, Stack::from_vec(enclosing), depth),
                 Cached {
                     arguments,
                     value,
@@ -1919,6 +2028,36 @@ impl FormCache {
             );
         }
         Ok(cache)
+    }
+}
+
+#[cfg(test)]
+mod cache_key_tests {
+    use super::*;
+    fn name(module: &str, name: &str) -> TypeName {
+        TypeName { module: module.into(), name: name.into(), arity: 0 }
+    }
+    fn cached(cost: i64) -> Cached {
+        Cached { arguments: vec![], value: Type::any(), cost }
+    }
+    #[test]
+    fn keys_match_by_value_and_entries_keep_the_native_order() {
+        let inner = Unfold::Named(name("m", "a"));
+        let outer = Unfold::Record("r".into());
+        let built = Stack::default().push(outer.clone()).push(inner.clone());
+        let parsed = Stack::from_vec(vec![inner.clone(), outer.clone()]);
+        assert!(built == parsed && built.len() == 2 && built.hash() == parsed.hash());
+        assert_eq!(built.to_vec(), [inner.clone(), outer.clone()]);
+        assert!(built.contains(&outer) && !Stack::default().contains(&outer));
+        let mut cache = FormCache::new();
+        push_cached(&mut cache.types, CacheKey::new(name("m", "b"), Stack::default(), 3), cached(1));
+        push_cached(&mut cache.types, CacheKey::new(name("m", "a"), built.clone(), 2), cached(2));
+        push_cached(&mut cache.types, CacheKey::new(name("m", "a"), Stack::default(), 9), cached(3));
+        push_cached(&mut cache.types, CacheKey::new(name("m", "a"), parsed, 2), cached(4));
+        let entries = cache.entries();
+        let order = entries.iter().map(|e| (e.name.name.as_str(), e.enclosing.len(), e.depth, e.cost)).collect::<Vec<_>>();
+        assert_eq!(order, [("a", 0, 9, 3), ("a", 2, 2, 2), ("a", 2, 2, 4), ("b", 0, 3, 1)]);
+        assert_eq!(entries[1].enclosing, [inner, outer]);
     }
 }
 

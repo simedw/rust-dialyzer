@@ -23,7 +23,7 @@ pub fn revpostorder<V: RuntimeGraphKey>(
                         stack.extend(
                             graph
                                 .outgoing(&v)
-                                .unwrap_or(&[])
+                                .unwrap_or_default()
                                 .iter()
                                 .rev()
                                 .cloned()
@@ -49,7 +49,7 @@ fn forest<V: RuntimeGraphKey>(
         let mut component = Vec::new();
         while let Some(v) = pending.pop() {
             if seen.insert(v.clone()) {
-                pending.extend(graph.incoming(&v).unwrap_or(&[]).iter().rev().cloned());
+                pending.extend(graph.incoming(&v).unwrap_or_default().iter().rev().cloned());
                 component.push(v);
             }
         }

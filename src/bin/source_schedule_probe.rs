@@ -155,7 +155,7 @@ fn run(row: &Value) -> Result<Value, String> {
                                 name.clone(),
                             ),
                         )
-                        .unwrap_or(&[])
+                        .unwrap_or_default()
                         .iter()
                         .map(|key| match key {
                             rust_dialyzer_poc::native_runtime_hash::NativeHashKey::Atom(name) => {

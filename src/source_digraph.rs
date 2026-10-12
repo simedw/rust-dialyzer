@@ -15,7 +15,46 @@ impl RuntimeGraphKey for NativeHashKey {
 #[derive(Clone, Debug, Default)]
 struct Direction<V> {
     edges: Vec<NativeHashKey>,
+    /// In edge order, oldest first; `Neighbours` presents them newest first,
+    /// as digraph does. Appending keeps adding an edge O(1) for vertices
+    /// with thousands of callers.
     neighbours: Vec<V>,
+}
+/// A vertex's neighbours, newest edge first.
+#[derive(Debug)]
+pub struct Neighbours<'a, V>(&'a [V]);
+impl<V> Clone for Neighbours<'_, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<V> Copy for Neighbours<'_, V> {}
+impl<V> Default for Neighbours<'_, V> {
+    fn default() -> Self {
+        Self(&[])
+    }
+}
+impl<'a, V> Neighbours<'a, V> {
+    pub fn iter(&self) -> std::iter::Rev<std::slice::Iter<'a, V>> {
+        self.0.iter().rev()
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// The neighbours in an unspecified order, for order-free inspection.
+    pub fn as_unordered_slice(&self) -> &'a [V] {
+        self.0
+    }
+}
+impl<'a, V> IntoIterator for Neighbours<'a, V> {
+    type Item = &'a V;
+    type IntoIter = std::iter::Rev<std::slice::Iter<'a, V>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
 }
 #[derive(Clone, Debug)]
 struct Vertex<V> {
@@ -103,11 +142,11 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
         }
         if let Some(row) = self.vertices.get_mut(&from) {
             row.outgoing.edges.push(id.clone());
-            row.outgoing.neighbours.insert(0, to.clone());
+            row.outgoing.neighbours.push(to.clone());
         }
         if let Some(row) = self.vertices.get_mut(&to) {
             row.incoming.edges.push(id.clone());
-            row.incoming.neighbours.insert(0, from.clone());
+            row.incoming.neighbours.push(from.clone());
         }
         self.edges.insert(id, (from, to));
         Ok(true)
@@ -123,16 +162,16 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
             .ok_or_else(|| RuntimeHashError::Boundary("digraph edge counter exhausted".into()))?;
         self.add_edge(id, from, to)
     }
-    pub fn incoming(&self, v: &V) -> Option<&[V]> {
+    pub fn incoming(&self, v: &V) -> Option<Neighbours<'_, V>> {
         self.vertices
             .get(v)
-            .map(|r| r.incoming.neighbours.as_slice())
+            .map(|r| Neighbours(r.incoming.neighbours.as_slice()))
             .filter(|r| !r.is_empty())
     }
-    pub fn outgoing(&self, v: &V) -> Option<&[V]> {
+    pub fn outgoing(&self, v: &V) -> Option<Neighbours<'_, V>> {
         self.vertices
             .get(v)
-            .map(|r| r.outgoing.neighbours.as_slice())
+            .map(|r| Neighbours(r.outgoing.neighbours.as_slice()))
             .filter(|r| !r.is_empty())
     }
     pub fn in_edges(&self, v: &V) -> &[NativeHashKey] {
@@ -239,7 +278,7 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
                 return true;
             }
             if seen.insert(v.clone()) {
-                pending.extend(self.outgoing(&v).unwrap_or(&[]).iter().cloned());
+                pending.extend(self.outgoing(&v).unwrap_or_default().iter().cloned());
             }
         }
         false
@@ -247,9 +286,7 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
 }
 fn remove_direction<V>(direction: &mut Direction<V>, edge: &NativeHashKey) {
     if let Some(position) = direction.edges.iter().position(|id| id == edge) {
-        direction
-            .neighbours
-            .remove(direction.edges.len() - position - 1);
+        direction.neighbours.remove(position);
         direction.edges.remove(position);
     }
 }

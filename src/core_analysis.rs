@@ -316,7 +316,7 @@ impl CoreAnalyzer<'_> {
         let mut callers = vec![Vec::new(); sccs.len()];
         for (i, scc) in sccs.iter().enumerate() {
             for member in &scc.members {
-                for caller in self.graph.in_neighbours(member).unwrap_or(&[]) {
+                for caller in self.graph.in_neighbours(member).unwrap_or_default() {
                     match index.get(caller) {
                         Some(&j) if j > i => {
                             level[j] = level[j].max(level[i] + 1);

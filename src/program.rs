@@ -22,7 +22,7 @@ pub struct FunctionName {
     pub name: String,
     pub arity: usize,
 }
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TypeName {
     pub module: String,
     pub name: String,
