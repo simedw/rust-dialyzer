@@ -2,14 +2,15 @@
 //! Unsupported compiler constructs are errors; this module never invokes a VM.
 pub mod adapter;
 pub mod clean;
+pub mod clean_view;
 pub mod debug;
 pub mod elixir;
 mod erl_bifs;
 pub mod erl_prepare;
 pub mod lower;
-pub mod stats;
-pub mod runtime_context;
 pub mod pipeline;
+pub mod runtime_context;
+pub mod stats;
 pub mod term;
 
 use crate::core::ErlangTerms;
@@ -28,6 +29,24 @@ pub struct Compilation {
     pub module: String,
     pub source_forms: ErlangTerms,
     pub cleaned_core: ErlangTerms,
+}
+
+pub struct RawCompilation {
+    pub module: String,
+    pub source_forms: ErlangTerms,
+    pub raw_core: ErlangTerms,
+}
+
+pub fn compile_beam_raw(bytes: &[u8]) -> Result<RawCompilation, String> {
+    let debug = debug::read_beam(bytes, crate::external_term::Limits::default())?;
+    let source_forms = forms(&debug).map_err(|e| format!("forms {}: {e}", debug.module))?;
+    let raw_core =
+        raw_core(&debug, &source_forms).map_err(|e| format!("core {}: {e}", debug.module))?;
+    Ok(RawCompilation {
+        module: debug.module,
+        source_forms,
+        raw_core,
+    })
 }
 
 pub fn compile_beam(bytes: &[u8]) -> Result<Compilation, String> {

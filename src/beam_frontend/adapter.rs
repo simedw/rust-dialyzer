@@ -1,9 +1,13 @@
 //! In-memory compiler output to the analyzer's compact Core arenas.
 //! The selected runtime atom scope determines map layout, never the compiler.
-use super::Compilation;
+use super::{
+    Compilation,
+    clean_view::{CleanView, ViewRef},
+};
 use crate::{
     core::{
-        CoreModule, CoreNode, ErlangTerm as T, ErlangTerms, NodeId, RawNode, TermId, build_node,
+        CoreExpr, CoreModule, CoreNode, ErlangTerm as T, ErlangTerms, NodeId, RawNode, TermId,
+        build_node,
     },
     fast_hash::{FastHashMap, FxHasher},
     native_form_environment::RawFormTerm,
@@ -250,6 +254,9 @@ impl<'a> Builder<'a> {
             .ok_or("native adapter: value root missing".into())
     }
     fn core(&mut self, input: &Arc<ErlangTerms>) -> Result<NodeId, String> {
+        self.core_mode(input, false)
+    }
+    fn core_mode(&mut self, input: &Arc<ErlangTerms>, direct: bool) -> Result<NodeId, String> {
         struct Frame {
             kind: String,
             annotations: TermId,
@@ -368,32 +375,44 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let frame = stack.pop().unwrap();
-            let mut children = frame.children.into_iter();
-            let groups = frame
-                .groups
-                .iter()
-                .map(|g| {
-                    g.iter()
-                        .map(|_| children.next().unwrap().0 as u64)
-                        .collect()
-                })
-                .collect();
-            let raw = RawNode {
-                kind: &frame.kind,
-                annotations: frame.annotations.0 as u64,
-                groups,
-                value: frame.value.map(|v| v.0 as u64),
-                map_arg: frame.map_arg.map(|_| children.next().unwrap().0 as u64),
-                map_pattern: frame.pattern,
-            };
             let id = NodeId(self.nodes.len());
-            let node = build_node(
-                &raw,
-                format_args!("native.nodes[{}]", id.0),
-                id.0,
-                &self.nodes,
-                &self.terms,
-            )?;
+            let node = if direct {
+                direct_node(
+                    &frame.kind,
+                    frame.annotations,
+                    frame.value,
+                    &frame.groups,
+                    frame.children,
+                    frame.pattern,
+                    id,
+                )?
+            } else {
+                let mut children = frame.children.into_iter();
+                let groups = frame
+                    .groups
+                    .iter()
+                    .map(|g| {
+                        g.iter()
+                            .map(|_| children.next().unwrap().0 as u64)
+                            .collect()
+                    })
+                    .collect();
+                let raw = RawNode {
+                    kind: &frame.kind,
+                    annotations: frame.annotations.0 as u64,
+                    groups,
+                    value: frame.value.map(|v| v.0 as u64),
+                    map_arg: frame.map_arg.map(|_| children.next().unwrap().0 as u64),
+                    map_pattern: frame.pattern,
+                };
+                build_node(
+                    &raw,
+                    format_args!("native.nodes[{}]", id.0),
+                    id.0,
+                    &self.nodes,
+                    &self.terms,
+                )?
+            };
             self.nodes.push(node);
             if let Some(parent) = stack.last_mut() {
                 parent.children.push(id);
@@ -402,6 +421,67 @@ impl<'a> Builder<'a> {
             }
         }
     }
+    fn core_view(&mut self, view: &CleanView) -> Result<NodeId, String> {
+        struct Frame {
+            kind: &'static str,
+            annotations: TermId,
+            value: Option<TermId>,
+            groups: Vec<Vec<ViewRef>>,
+            pattern: Option<bool>,
+            source_children: Vec<ViewRef>,
+            at: usize,
+            children: Vec<NodeId>,
+        }
+        let make = |this: &mut Self, reference| -> Result<Frame, String> {
+            let shape = view.shape(reference)?;
+            let source_children = shape
+                .groups
+                .iter()
+                .flatten()
+                .copied()
+                .chain(shape.map_arg)
+                .collect();
+            Ok(Frame {
+                kind: shape.kind,
+                annotations: this.value(view.arena(), shape.annotations)?,
+                value: shape
+                    .value
+                    .map(|v| this.value(view.arena(), v))
+                    .transpose()?,
+                groups: shape.groups,
+                pattern: shape.pattern,
+                source_children,
+                at: 0,
+                children: Vec::new(),
+            })
+        };
+        let mut stack = vec![make(self, view.root())?];
+        loop {
+            let frame = stack.last_mut().ok_or("native fused: missing frame")?;
+            if let Some(child) = frame.source_children.get(frame.at).copied() {
+                frame.at += 1;
+                stack.push(make(self, child)?);
+                continue;
+            }
+            let frame = stack.pop().unwrap();
+            let id = NodeId(self.nodes.len());
+            self.nodes.push(direct_node(
+                frame.kind,
+                frame.annotations,
+                frame.value,
+                &frame.groups,
+                frame.children,
+                frame.pattern,
+                id,
+            )?);
+            if let Some(parent) = stack.last_mut() {
+                parent.children.push(id);
+            } else {
+                return Ok(id);
+            }
+        }
+    }
+
     fn contracts(&mut self, input: &Arc<ErlangTerms>) -> Result<BTreeMap<TermId, TermId>, String> {
         fn variable(input: &ErlangTerms, id: TermId) -> Option<TermId> {
             let f = tuple(input, id).ok()?;
@@ -531,6 +611,156 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Native compilation already fixes record shapes. Build the typed node once;
+/// cross-node semantics are checked by CoreProgram's final validation gate.
+fn direct_node<C>(
+    kind: &str,
+    annotations: TermId,
+    value: Option<TermId>,
+    groups: &[Vec<C>],
+    children: Vec<NodeId>,
+    pattern: Option<bool>,
+    id: NodeId,
+) -> Result<CoreNode, String> {
+    struct Children<'a, C> {
+        groups: std::slice::Iter<'a, Vec<C>>,
+        nodes: std::vec::IntoIter<NodeId>,
+    }
+    impl<C> Children<'_, C> {
+        fn count(&mut self) -> usize {
+            self.groups.next().unwrap().len()
+        }
+        fn one(&mut self) -> NodeId {
+            let count = self.count();
+            debug_assert_eq!(count, 1);
+            self.nodes.next().unwrap()
+        }
+        fn group(&mut self) -> Vec<NodeId> {
+            let count = self.count();
+            self.nodes.by_ref().take(count).collect()
+        }
+        fn pairs(&mut self) -> Vec<(NodeId, NodeId)> {
+            let count = self.count();
+            debug_assert_eq!(count % 2, 0);
+            (0..count / 2)
+                .map(|_| (self.nodes.next().unwrap(), self.nodes.next().unwrap()))
+                .collect()
+        }
+    }
+    let mut children = Children {
+        groups: groups.iter(),
+        nodes: children.into_iter(),
+    };
+    let expr = match kind {
+        "literal" => CoreExpr::Literal(value.ok_or("native direct: missing literal value")?),
+        "var" => CoreExpr::Var(value.ok_or("native direct: missing variable value")?),
+        "opaque" => CoreExpr::Opaque(value.ok_or("native direct: missing opaque value")?),
+        "values" => CoreExpr::Values(children.group()),
+        "tuple" => CoreExpr::Tuple(children.group()),
+        "binary" => CoreExpr::Binary(children.group()),
+        "bitstr" => CoreExpr::Bitstr {
+            value: children.one(),
+            size: children.one(),
+            unit: children.one(),
+            typ: children.one(),
+            flags: children.one(),
+        },
+        "cons" => CoreExpr::Cons {
+            head: children.one(),
+            tail: children.one(),
+        },
+        "map" => {
+            // Compiler transport numbers map pairs before its base argument.
+            let pairs = children.group();
+            CoreExpr::Map {
+                base: children
+                    .nodes
+                    .next()
+                    .ok_or("native direct: missing map base")?,
+                pairs,
+                pattern: pattern.ok_or("native direct: missing map pattern flag")?,
+            }
+        }
+        "map_pair" => CoreExpr::MapPair {
+            operation: children.one(),
+            key: children.one(),
+            value: children.one(),
+        },
+        "let" => CoreExpr::Let {
+            vars: children.group(),
+            argument: children.one(),
+            body: children.one(),
+        },
+        "seq" => CoreExpr::Seq {
+            argument: children.one(),
+            body: children.one(),
+        },
+        "apply" => CoreExpr::Apply {
+            operator: children.one(),
+            args: children.group(),
+        },
+        "call" => CoreExpr::Call {
+            module: children.one(),
+            name: children.one(),
+            args: children.group(),
+        },
+        "primop" => CoreExpr::Primop {
+            name: children.one(),
+            args: children.group(),
+        },
+        "case" => CoreExpr::Case {
+            argument: children.one(),
+            clauses: children.group(),
+        },
+        "clause" => CoreExpr::Clause {
+            patterns: children.group(),
+            guard: children.one(),
+            body: children.one(),
+        },
+        "alias" => CoreExpr::Alias {
+            variable: children.one(),
+            pattern: children.one(),
+        },
+        "fun" => CoreExpr::Fun {
+            params: children.group(),
+            body: children.one(),
+        },
+        "receive" => CoreExpr::Receive {
+            clauses: children.group(),
+            timeout: children.one(),
+            action: children.one(),
+        },
+        "try" => CoreExpr::Try {
+            argument: children.one(),
+            vars: children.group(),
+            body: children.one(),
+            exception_vars: children.group(),
+            handler: children.one(),
+        },
+        "catch" => CoreExpr::Catch {
+            body: children.one(),
+        },
+        "letrec" => CoreExpr::Letrec {
+            definitions: children.pairs(),
+            body: children.one(),
+        },
+        "module" => CoreExpr::Module {
+            name: children.one(),
+            exports: children.group(),
+            attributes: children.pairs(),
+            definitions: children.pairs(),
+        },
+        _ => return Err(format!("native direct: unknown Core kind {kind}")),
+    };
+    debug_assert!(children.groups.next().is_none());
+    debug_assert!(children.nodes.next().is_none());
+    Ok(CoreNode {
+        id,
+        annotations,
+        expr,
+    })
+}
+
 /// Convert without serialization, with maps ordered in the selected atom scope.
 /// The compact cache representation intentionally preserves source atom order
 /// and declarations in Core attributes rather than retaining expanded ASTs.
@@ -554,6 +784,74 @@ pub fn module(compilation: Compilation, layout: &NativeAtomLayout) -> Result<Cor
     builder.nodes.freeze_shared();
     Ok(CoreModule {
         name: compilation.module,
+        source_forms,
+        core,
+        terms: builder.terms,
+        nodes: builder.nodes,
+        map_iterator_orders: builder.orders,
+        contract_variable_maps,
+    })
+}
+
+/// Emit typed nodes directly. Callers must apply CoreProgram validation before analysis.
+pub fn module_direct(
+    compilation: Compilation,
+    layout: &NativeAtomLayout,
+) -> Result<CoreModule, String> {
+    let forms = Arc::new(compilation.source_forms);
+    let cleaned = Arc::new(compilation.cleaned_core);
+    let mut builder = Builder {
+        layout,
+        terms: SharedVec::new(),
+        nodes: SharedVec::new(),
+        hashes: FastHashMap::default(),
+        atoms: FastHashMap::default(),
+        orders: BTreeMap::new(),
+        values: FastHashMap::default(),
+    };
+    let source_forms = builder.intern(T::Nil, None);
+    builder.source_atoms(&forms)?;
+    let core = builder.core_mode(&cleaned, true)?;
+    let contract_variable_maps = builder.contracts(&forms)?;
+    builder.terms.freeze_shared();
+    builder.nodes.freeze_shared();
+    Ok(CoreModule {
+        name: compilation.module,
+        source_forms,
+        core,
+        terms: builder.terms,
+        nodes: builder.nodes,
+        map_iterator_orders: builder.orders,
+        contract_variable_maps,
+    })
+}
+
+/// Apply selected cleanup while emitting final typed nodes. The view shares the
+/// raw Core prefix and allocates only sparse goto replacement records.
+pub fn module_view(
+    module: String,
+    forms: ErlangTerms,
+    view: &CleanView,
+    layout: &NativeAtomLayout,
+) -> Result<CoreModule, String> {
+    let forms = Arc::new(forms);
+    let mut builder = Builder {
+        layout,
+        terms: SharedVec::new(),
+        nodes: SharedVec::new(),
+        hashes: FastHashMap::default(),
+        atoms: FastHashMap::default(),
+        orders: BTreeMap::new(),
+        values: FastHashMap::default(),
+    };
+    let source_forms = builder.intern(T::Nil, None);
+    builder.source_atoms(&forms)?;
+    let core = builder.core_view(view)?;
+    let contract_variable_maps = builder.contracts(&forms)?;
+    builder.terms.freeze_shared();
+    builder.nodes.freeze_shared();
+    Ok(CoreModule {
+        name: module,
         source_forms,
         core,
         terms: builder.terms,

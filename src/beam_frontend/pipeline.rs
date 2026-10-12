@@ -91,6 +91,13 @@ pub fn assemble(
     compiled: Vec<Compilation>,
     source: ContextSource<'_>,
 ) -> Result<LoadedNative, String> {
+    assemble_direct(compiled, source, false)
+}
+fn assemble_direct(
+    compiled: Vec<Compilation>,
+    source: ContextSource<'_>,
+    direct: bool,
+) -> Result<LoadedNative, String> {
     if compiled.is_empty() {
         return Err("native frontend requires at least one compilation".into());
     }
@@ -115,7 +122,12 @@ pub fn assemble(
     let context_seconds = started.elapsed().as_secs_f64();
     let started = Instant::now();
     let modules = setup_map(&compiled, |compilation| {
-        adapter::module(
+        let adapt = if direct {
+            adapter::module_direct
+        } else {
+            adapter::module
+        };
+        adapt(
             Compilation {
                 module: compilation.module.clone(),
                 source_forms: compilation.source_forms.clone(),
@@ -129,6 +141,14 @@ pub fn assemble(
     .collect::<Result<Vec<_>, _>>()?;
     drop(compiled);
     let adapter_seconds = started.elapsed().as_secs_f64();
+    complete(runtime, modules, context_seconds, adapter_seconds)
+}
+fn complete(
+    runtime: RuntimeContext,
+    modules: Vec<crate::core::CoreModule>,
+    context_seconds: f64,
+    adapter_seconds: f64,
+) -> Result<LoadedNative, String> {
     let started = Instant::now();
     let core = CoreProgram::from_modules(&runtime.context, modules)?;
     let validation_seconds = started.elapsed().as_secs_f64();
@@ -146,4 +166,132 @@ pub fn assemble(
             "context_seconds":context_seconds, "atoms":atom_count, "nodes":node_count, "terms":term_count,
             "adapter_seconds":adapter_seconds,"validation_seconds":validation_seconds}),
     })
+}
+
+/// Experimental emission paths; the reference path remains the default.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Emission {
+    #[default]
+    Reference,
+    Direct,
+    Fused,
+}
+impl Emission {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Reference => "reference",
+            Self::Direct => "direct",
+            Self::Fused => "fused",
+        }
+    }
+}
+pub fn load_emission(
+    paths: &[String],
+    source: ContextSource<'_>,
+    emission: Emission,
+) -> Result<LoadedNative, String> {
+    if paths.is_empty() {
+        return Err("native frontend requires at least one BEAM file".into());
+    }
+    let started = Instant::now();
+    let mut loaded = match emission {
+        Emission::Reference => load(paths, source)?,
+        Emission::Direct => {
+            let compiled = setup_map(paths, |path| {
+                std::fs::read(path)
+                    .map_err(|e| format!("{path}: {e}"))
+                    .and_then(|bytes| compile_beam(&bytes).map_err(|e| format!("{path}: {e}")))
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+            let elapsed = started.elapsed().as_secs_f64();
+            let mut loaded = assemble_direct(compiled, source, true)?;
+            loaded.timings["compile_seconds"] = elapsed.into();
+            loaded
+        }
+        Emission::Fused => load_fused(paths, source)?,
+    };
+    loaded.timings["core_emission"] = emission.name().into();
+    Ok(loaded)
+}
+fn load_fused(paths: &[String], source: ContextSource<'_>) -> Result<LoadedNative, String> {
+    let started = Instant::now();
+    let compiled = setup_map(paths, |path| {
+        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let raw = super::compile_beam_raw(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let view = super::clean_view::CleanView::new(raw.raw_core)?;
+        Ok((raw.module, raw.source_forms, view))
+    })
+    .into_iter()
+    .collect::<Result<Vec<_>, String>>()?;
+    let compile_seconds = started.elapsed().as_secs_f64();
+    let started = Instant::now();
+    let runtime = match source {
+        ContextSource::Imported {
+            context,
+            closure_profile,
+        } => RuntimeContext::import(context.clone(), closure_profile)?,
+        ContextSource::Native {
+            typesig_beam,
+            contracts_beam,
+        } => {
+            let mut names = FastHashSet::default();
+            for (module, forms, view) in &compiled {
+                names.insert(module.clone());
+                names.extend(view.atoms()?);
+                let mut visited = vec![false; forms.terms.len()];
+                let mut pending = vec![forms.root];
+                while let Some(id) = pending.pop() {
+                    if std::mem::replace(&mut visited[id.0], true) {
+                        continue;
+                    }
+                    match &forms.terms[id.0] {
+                        ErlangTerm::Atom(name) => {
+                            if !names.contains(name) {
+                                names.insert(name.clone());
+                            }
+                        }
+                        ErlangTerm::ExternalFun {
+                            module, function, ..
+                        } => {
+                            names.insert(module.clone());
+                            names.insert(function.clone());
+                        }
+                        ErlangTerm::Tuple(items) => pending.extend(items.iter().copied()),
+                        ErlangTerm::List { items, tail } => {
+                            pending.extend(items.iter().copied());
+                            pending.push(*tail);
+                        }
+                        ErlangTerm::Map(entries) => {
+                            for &(key, value) in entries {
+                                pending.extend([key, value]);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            RuntimeContext::native(
+                names,
+                typesig_beam,
+                contracts_beam,
+                Limits::default(),
+            )?
+        }
+    };
+    let layout =
+        NativeAtomLayout::parse(&runtime.context["atom_layout"]).map_err(|e| e.to_string())?;
+    let context_seconds = started.elapsed().as_secs_f64();
+    let started = Instant::now();
+    let modules = setup_map(&compiled, |(module, forms, view)| {
+        adapter::module_view(module.clone(), forms.clone(), view, &layout)
+            .map_err(|e| format!("{module}: {e}"))
+    })
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()?;
+    drop(compiled);
+    let adapter_seconds = started.elapsed().as_secs_f64();
+    let mut loaded = complete(runtime, modules, context_seconds, adapter_seconds)?;
+    loaded.timings["compile_seconds"] = compile_seconds.into();
+    Ok(loaded)
 }

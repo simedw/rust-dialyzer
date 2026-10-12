@@ -40,14 +40,21 @@ fn load(manifest: &Value) -> Result<Loaded, String> {
                     .ok_or("BEAM path must be a string")
             })
             .collect::<Result<Vec<_>, _>>()?;
-        use rust_dialyzer_poc::beam_frontend::pipeline::{self, ContextSource};
+        use rust_dialyzer_poc::beam_frontend::pipeline::{self, ContextSource, Emission};
+        let emission = match manifest.get("core_emission").and_then(Value::as_str) {
+            None | Some("reference") => Emission::Reference,
+            Some("direct") => Emission::Direct,
+            Some("fused") => Emission::Fused,
+            _ => return Err("core_emission must be reference, direct or fused".into()),
+        };
         let loaded = match manifest["runtime_context"].as_str() {
-            Some("imported") => pipeline::load(
+            Some("imported") => pipeline::load_emission(
                 &paths,
                 ContextSource::Imported {
                     context: &manifest["context"],
                     closure_profile: &manifest["closure_profile"],
                 },
+                emission,
             )?,
             Some("native") => {
                 let read = |key: &str| -> Result<Vec<u8>, String> {
@@ -58,12 +65,13 @@ fn load(manifest: &Value) -> Result<Loaded, String> {
                 };
                 let typesig = read("dialyzer_typesig_beam")?;
                 let contracts = read("dialyzer_contracts_beam")?;
-                pipeline::load(
+                pipeline::load_emission(
                     &paths,
                     ContextSource::Native {
                         typesig_beam: &typesig,
                         contracts_beam: &contracts,
                     },
+                    emission,
                 )?
             }
             _ => {
