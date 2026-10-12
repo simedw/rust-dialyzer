@@ -161,7 +161,8 @@ fn load(manifest: &Value) -> Result<Loaded, String> {
     })
 }
 
-fn run(library: &str, manifest: &Value, options: &Value) -> Value {
+// The result object, plus the serialized signature rows when analysis succeeded.
+fn run(library: &str, manifest: &Value, options: &Value) -> (Value, Option<Vec<Vec<u8>>>) {
     let started = Instant::now();
     let Loaded {
         core,
@@ -169,7 +170,9 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
         frontend,
     } = match load(manifest) {
         Ok(loaded) => loaded,
-        Err(error) => return json!({"status": "error", "stage": "load", "detail": error}),
+        Err(error) => {
+            return (json!({"status": "error", "stage": "load", "detail": error}), None);
+        }
     };
     let load_seconds = started.elapsed().as_secs_f64();
     let modules = core.modules.len();
@@ -177,7 +180,7 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
     rust_dialyzer_poc::teardown::skip_drops_at_exit();
     let started = Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| {
-        rust_dialyzer_poc::compiled_probe::analyze(&core, options, library, &profile)
+        rust_dialyzer_poc::compiled_probe::analyze_projected(&core, options, library, &profile)
     }));
     let analysis_seconds = started.elapsed().as_secs_f64();
     rust_dialyzer_poc::teardown::release(core);
@@ -187,6 +190,7 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
         "load_seconds": load_seconds,
         "analysis_seconds": analysis_seconds,
     });
+    let mut signatures = None;
     let outcome = match result {
         Ok(Ok(_)) if rust_dialyzer_poc::constraints::generation::generation_parallel_faulted() => {
             json!({
@@ -197,9 +201,10 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
         }
         Ok(Ok(mut output)) => {
             let mut outcome = json!({"status": "ok"});
-            for key in ["public_warning_count", "warnings", "signatures"] {
-                outcome[key] = output[key].take();
+            for key in ["public_warning_count", "warnings"] {
+                outcome[key] = output.result[key].take();
             }
+            signatures = Some(output.signatures);
             outcome
         }
         Ok(Err(error)) => json!({"status": "error", "stage": "analysis", "detail": error}),
@@ -218,48 +223,37 @@ fn run(library: &str, manifest: &Value, options: &Value) -> Value {
         unreachable!("analysis outcome is an object")
     };
     merged.as_object_mut().expect("object").extend(outcome);
-    merged
+    (merged, signatures)
 }
 
-// Match the analysis/setup worker stack for recursive Value serialization.
-const SIGNATURE_WRITER_STACK_BYTES: usize = 1 << 30;
-
-fn serialize_signature_parts(rows: &[Value], workers: usize, sequential: bool) -> Vec<Vec<u8>> {
-    let serialize = |rows: &[Value]| {
-        let mut out = Vec::new();
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                out.push(b',');
-            }
-            #[cfg(test)]
-            tests::SERIALIZED_ROWS.with(|count| count.set(count.get() + 1));
-            serde_json::to_writer(&mut out, row).expect("serialize signature");
-        }
-        out
+// The analysis serialized the signature rows; splice them in where
+// serde_json would have written the array, keeping its key order.
+fn write_result(
+    out: &mut impl Write,
+    mut output: Value,
+    signatures: Option<Vec<Vec<u8>>>,
+) -> std::io::Result<()> {
+    const PLACEHOLDER: &str = "\u{0}signatures\u{0}";
+    let Some(rows) = signatures else {
+        return serde_json::to_writer(&mut *out, &output).map_err(std::io::Error::other);
     };
-    if rows.is_empty() {
-        return Vec::new();
+    output["signatures"] = Value::String(PLACEHOLDER.into());
+    let text = serde_json::to_string(&output).map_err(std::io::Error::other)?;
+    let marker = serde_json::to_string(PLACEHOLDER).map_err(std::io::Error::other)?;
+    let at = text.find(&marker).expect("signature placeholder");
+    out.write_all(text[..at].as_bytes())?;
+    out.write_all(b"[")?;
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            out.write_all(b",")?;
+        }
+        out.write_all(row)?;
     }
-    if sequential || workers <= 1 {
-        return vec![serialize(rows)];
-    }
-    let chunk = rows.len().div_ceil(workers);
-    std::thread::scope(|scope| {
-        let serialize = &serialize;
-        let handles: Vec<_> = rows
-            .chunks(chunk)
-            .map(|rows| {
-                std::thread::Builder::new()
-                    .stack_size(SIGNATURE_WRITER_STACK_BYTES)
-                    .spawn_scoped(scope, move || serialize(rows))
-                    .expect("spawn signature writer")
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("signature writer"))
-            .collect()
-    })
+    out.write_all(b"]")?;
+    out.write_all(text[at + marker.len()..].as_bytes())?;
+    // Exiting right after; the operating system reclaims the rows.
+    std::mem::forget(rows);
+    Ok(())
 }
 
 fn main() {
@@ -300,7 +294,7 @@ fn main() {
     }
     let options = parse(&args[2]);
     // Guard analysis recurses up to MAX_GUARD_DEPTH; give it a stack to match.
-    let output = std::thread::Builder::new()
+    let (output, signatures) = std::thread::Builder::new()
         .stack_size(4 << 30)
         .spawn(move || run(&library, &manifest, &options))
         .expect("analysis thread")
@@ -318,50 +312,8 @@ fn main() {
             rust_dialyzer_poc::core_phases::diagnostic_snapshot_resumes()
         );
     }
-    let mut output = output;
     let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
-    // The signature array is most of the output: serialize its rows on all
-    // cores, then splice the bytes where serde_json would have written them.
-    const PLACEHOLDER: &str = "\u{0}signatures\u{0}";
-    let signatures = match output.get_mut("signatures") {
-        Some(slot @ Value::Array(_)) => {
-            Some(std::mem::replace(slot, Value::String(PLACEHOLDER.into())))
-        }
-        _ => None,
-    };
-    let text = serde_json::to_string(&output).expect("serialize analysis result");
-    match signatures {
-        Some(Value::Array(rows)) => {
-            let marker = serde_json::to_string(PLACEHOLDER).expect("placeholder");
-            let at = text.find(&marker).expect("signature placeholder");
-            let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-            let parts = serialize_signature_parts(
-                &rows,
-                workers,
-                rust_dialyzer_poc::ordered_parallel::sequential(),
-            );
-            stdout
-                .write_all(text[..at].as_bytes())
-                .expect("write analysis result");
-            stdout.write_all(b"[").expect("write analysis result");
-            for (i, part) in parts.iter().enumerate() {
-                if i > 0 {
-                    stdout.write_all(b",").expect("write analysis result");
-                }
-                stdout.write_all(part).expect("write analysis result");
-            }
-            stdout.write_all(b"]").expect("write analysis result");
-            stdout
-                .write_all(text[at + marker.len()..].as_bytes())
-                .expect("write analysis result");
-            std::mem::forget(parts);
-            std::mem::forget(rows);
-        }
-        _ => stdout
-            .write_all(text.as_bytes())
-            .expect("write analysis result"),
-    }
-    std::mem::forget(output);
+    write_result(&mut stdout, output, signatures).expect("write analysis result");
     stdout.write_all(b"\n").expect("write analysis newline");
     stdout.flush().expect("flush analysis result");
     std::process::exit(if ok { 0 } else { 1 });
@@ -370,10 +322,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    std::thread_local! {
-        pub(super) static SERIALIZED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    }
 
     #[test]
     fn frontend_selection_preserves_explicit_inputs_and_never_falls_back() {
@@ -392,82 +340,42 @@ mod tests {
         assert!(both.get("beam_files").is_none());
     }
 
-    fn array_bytes(parts: &[Vec<u8>]) -> Vec<u8> {
-        let mut bytes = vec![b'['];
-        for (i, part) in parts.iter().enumerate() {
-            if i > 0 {
-                bytes.push(b',');
-            }
-            bytes.extend_from_slice(part);
-        }
-        bytes.push(b']');
+    fn written(output: &Value, rows: &[Value]) -> Vec<u8> {
+        let serialized = rows.iter().map(|row| serde_json::to_vec(row).unwrap()).collect();
+        let mut bytes = Vec::new();
+        write_result(&mut bytes, output.clone(), Some(serialized)).unwrap();
         bytes
     }
 
     #[test]
-    fn signature_parts_empty_and_single_match_native_array() {
-        for rows in [
+    fn spliced_rows_match_native_serialization() {
+        let output = json!({"status":"ok","modules":2,"warnings":[],"public_warning_count":0});
+        let cases = [
             vec![],
             vec![json!({"module":"m","function":"private","arity":0})],
-        ] {
-            for (workers, sequential) in [(1, false), (4, false), (4, true)] {
-                let parts = serialize_signature_parts(&rows, workers, sequential);
-                assert_eq!(array_bytes(&parts), serde_json::to_vec(&rows).unwrap());
-            }
-        }
-    }
-
-    #[test]
-    fn signature_parts_preserve_multiple_chunk_row_order() {
-        let rows: Vec<_> = (0..7).map(|i| json!({"ordinal":i,"arity":i})).collect();
-        for workers in [2, 3, 16] {
-            let parts = serialize_signature_parts(&rows, workers, false);
-            assert!(parts.len() > 1);
-            let bytes = array_bytes(&parts);
-            assert_eq!(bytes, serde_json::to_vec(&rows).unwrap());
-            assert_eq!(
-                serde_json::from_slice::<Value>(&bytes).unwrap(),
-                Value::Array(rows.clone())
-            );
-        }
-    }
-
-    #[test]
-    fn signature_parts_preserve_unicode_marker_and_nested_types() {
-        let rows = vec![
-            json!({"module":"λ雪","function":"\u{0}signatures\u{0}","arity":1,
-                "arguments":[{"kind":"tuple","elements":[{"kind":"atom","value":"é"}]}],
-                "result":{"kind":"map","entries":[{"key":{"kind":"atom","value":"key"},
-                    "presence":"mandatory","value":{"kind":"list","elements":{"kind":"any"},
-                    "tail":{"kind":"nil"},"nonempty":false}}]}}),
-            json!({"module":"m","function":"private","arity":0,"arguments":[],
-                "result":{"kind":"nominal_raw","name":"quoted\"\\name","inner":{"kind":"none"}}}),
-            json!({"module":"m","function":"public","arity":0,"arguments":[],
-                "result":{"kind":"product_raw","values":[{"kind":"unit"}]}}),
+            (0..7).map(|i| json!({"ordinal":i,"arity":i})).collect(),
+            vec![
+                json!({"module":"λ雪","function":"\u{0}signatures\u{0}","arity":1,
+                    "arguments":[{"kind":"tuple","elements":[{"kind":"atom","value":"é"}]}],
+                    "result":{"kind":"map","entries":[{"key":{"kind":"atom","value":"key"},
+                        "presence":"mandatory","value":{"kind":"list","elements":{"kind":"any"},
+                        "tail":{"kind":"nil"},"nonempty":false}}]}}),
+                json!({"module":"m","function":"private","arity":0,"arguments":[],
+                    "result":{"kind":"nominal_raw","name":"quoted\"\\name","inner":{"kind":"none"}}}),
+            ],
         ];
-        for sequential in [false, true] {
-            let parts = serialize_signature_parts(&rows, 2, sequential);
-            assert_eq!(array_bytes(&parts), serde_json::to_vec(&rows).unwrap());
+        for rows in cases {
+            let mut expected = output.clone();
+            expected["signatures"] = Value::Array(rows.clone());
+            assert_eq!(written(&output, &rows), serde_json::to_vec(&expected).unwrap());
         }
     }
 
     #[test]
-    fn signature_parts_sequential_and_one_worker_run_on_caller() {
-        let rows = vec![
-            json!({"ordinal":0}),
-            json!({"ordinal":1}),
-            json!({"ordinal":2}),
-        ];
-        for (workers, sequential) in [(4, true), (1, false)] {
-            SERIALIZED_ROWS.with(|count| count.set(0));
-            let parts = serialize_signature_parts(&rows, workers, sequential);
-            assert_eq!(parts.len(), 1);
-            SERIALIZED_ROWS.with(|count| assert_eq!(count.get(), rows.len()));
-            assert_eq!(array_bytes(&parts), serde_json::to_vec(&rows).unwrap());
-        }
-        SERIALIZED_ROWS.with(|count| count.set(0));
-        let parts = serialize_signature_parts(&rows, 2, false);
-        SERIALIZED_ROWS.with(|count| assert_eq!(count.get(), 0));
-        assert_eq!(array_bytes(&parts), serde_json::to_vec(&rows).unwrap());
+    fn failed_runs_write_without_signatures() {
+        let output = json!({"status":"error","stage":"analysis","detail":"boom"});
+        let mut bytes = Vec::new();
+        write_result(&mut bytes, output.clone(), None).unwrap();
+        assert_eq!(bytes, serde_json::to_vec(&output).unwrap());
     }
 }

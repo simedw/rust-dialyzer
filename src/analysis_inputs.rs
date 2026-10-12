@@ -92,15 +92,21 @@ impl PreparedRecords {
             .map(|(key, record)| (key.clone(), record.prototype.clone()))
             .collect();
         let modules = modules.into_iter().collect::<Vec<_>>();
-        let tables = crate::ordered_parallel::setup_map(&modules, |&module| {
-            let table = definitions
-                .module_table(module)
-                .ok_or_else(|| format!("prepared module {} has no record table", module.0))?;
-            CaptureEnvironment::literal_roots(table.arena(), &[table.root()])
-                .map(|capture| (module, capture))
-        })
-        .into_iter()
-        .collect::<Result<_, _>>()?;
+        // A table's comparison arena is built once a closure comparison
+        // reaches it; most modules' tables are never compared.
+        let tables = modules
+            .into_iter()
+            .map(|module| {
+                let table = definitions
+                    .module_table(module)
+                    .ok_or_else(|| format!("prepared module {} has no record table", module.0))?;
+                let capture = CaptureEnvironment::literal_roots_lazy(
+                    table.shared_arena().clone(),
+                    vec![table.root()],
+                );
+                Ok((module, capture))
+            })
+            .collect::<Result<_, String>>()?;
         Ok(Self { prototypes, tables })
     }
 }

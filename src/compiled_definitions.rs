@@ -1038,7 +1038,7 @@ fn contract_capture(
     contract: &Contract,
     summary: &ContractSummary,
 ) -> Result<RawFormTerm, FormError> {
-    let mut b = ReasonBuilder::new();
+    let mut b = ReasonBuilder::interning();
     let mut pairs = Vec::new();
     for (index, alternative) in summary.alternatives.iter().enumerate() {
         let signature = b.native(&alternative.signature.to_native_value());

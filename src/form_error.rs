@@ -125,12 +125,27 @@ impl FormError {
 pub(crate) struct ReasonBuilder {
     terms: crate::shared_vec::SharedVec<ErlangTerm>,
     nil: TermId,
+    /// Set by `interning`: equal terms share one id.
+    seen: Option<crate::fast_hash::FastHashMap<ErlangTerm, TermId>>,
 }
 impl ReasonBuilder {
     pub fn new() -> Self {
         Self {
             terms: vec![ErlangTerm::Nil].into(),
             nil: TermId(0),
+            seen: None,
+        }
+    }
+    /// A builder whose equal subterms share storage. Long-lived captures
+    /// repeat the same types many times (each argument appears in the
+    /// signature, the argument list and constraints); readers only walk
+    /// the structure, so sharing is invisible to them.
+    pub fn interning() -> Self {
+        let mut seen = crate::fast_hash::FastHashMap::default();
+        seen.insert(ErlangTerm::Nil, TermId(0));
+        Self {
+            seen: Some(seen),
+            ..Self::new()
         }
     }
     pub(crate) fn from_terms(mut terms: crate::shared_vec::SharedVec<ErlangTerm>) -> Self {
@@ -141,11 +156,25 @@ impl ReasonBuilder {
             terms.push(ErlangTerm::Nil);
             id
         };
-        Self { terms, nil }
+        Self {
+            terms,
+            nil,
+            seen: None,
+        }
     }
     pub fn push(&mut self, t: ErlangTerm) -> TermId {
         let id = TermId(self.terms.len());
-        self.terms.push(t);
+        if let Some(seen) = &mut self.seen {
+            match seen.entry(t) {
+                std::collections::hash_map::Entry::Occupied(entry) => return *entry.get(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    self.terms.push(entry.key().clone());
+                    entry.insert(id);
+                }
+            }
+        } else {
+            self.terms.push(t);
+        }
         id
     }
     pub fn atom(&mut self, s: &str) -> TermId {
@@ -175,7 +204,42 @@ impl ReasonBuilder {
         self.push(ErlangTerm::Tuple(items))
     }
     pub fn copy(&mut self, raw: &RawFormTerm) -> TermId {
-        crate::form_cache_wire::copy_arena(&mut self.terms, &raw.arena.terms, raw.id)
+        if self.seen.is_none() {
+            return crate::form_cache_wire::copy_arena(&mut self.terms, &raw.arena.terms, raw.id);
+        }
+        // Children before parents, so each child's new id is known.
+        let terms = &raw.arena.terms;
+        let mut ids = crate::fast_hash::FastHashMap::<usize, TermId>::default();
+        let mut work = vec![(raw.id, false)];
+        while let Some((id, expanded)) = work.pop() {
+            if ids.contains_key(&id.0) {
+                continue;
+            }
+            let children: Vec<TermId> = match &terms[id.0] {
+                ErlangTerm::Tuple(v) => v.clone(),
+                ErlangTerm::List { items, tail } => items.iter().copied().chain([*tail]).collect(),
+                ErlangTerm::Map(v) => v.iter().flat_map(|(k, v)| [*k, *v]).collect(),
+                _ => Vec::new(),
+            };
+            if !expanded && children.iter().any(|c| !ids.contains_key(&c.0)) {
+                work.push((id, true));
+                work.extend(children.into_iter().map(|c| (c, false)));
+                continue;
+            }
+            let at = |c: &TermId| ids[&c.0];
+            let term = match &terms[id.0] {
+                ErlangTerm::Tuple(v) => ErlangTerm::Tuple(v.iter().map(at).collect()),
+                ErlangTerm::List { items, tail } => ErlangTerm::List {
+                    items: items.iter().map(at).collect(),
+                    tail: at(tail),
+                },
+                ErlangTerm::Map(v) => ErlangTerm::Map(v.iter().map(|(k, v)| (at(k), at(v))).collect()),
+                v => v.clone(),
+            };
+            let new = self.push(term);
+            ids.insert(id.0, new);
+        }
+        ids[&raw.id.0]
     }
     pub(crate) fn native(&mut self, value: &crate::lattice::NativeValue) -> TermId {
         use crate::lattice::NativeValue as N;
@@ -214,7 +278,13 @@ impl ReasonBuilder {
         values.pop().expect("native value traversal emits one root")
     }
     pub fn finish(self, root: TermId) -> RawFormTerm {
-        let terms = self.terms;
+        let terms = if self.seen.is_some() {
+            let mut terms = self.terms.to_vec();
+            terms.shrink_to_fit();
+            terms.into()
+        } else {
+            self.terms
+        };
         RawFormTerm {
             arena: Arc::new(ErlangTerms { root, terms }),
             id: root,
@@ -275,4 +345,62 @@ fn native_reason(error: &NativeTransferError) -> Option<RawFormTerm> {
     let mut builder = ReasonBuilder::new();
     let root = builder.native(&value);
     Some(builder.finish(root))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The term as a tree, independent of arena layout and sharing.
+    fn tree(raw: &RawFormTerm) -> String {
+        fn go(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId, out: &mut String) {
+            let children: Vec<TermId> = match &terms[id.0] {
+                ErlangTerm::Tuple(items) => items.clone(),
+                ErlangTerm::List { items, tail } => items.iter().copied().chain([*tail]).collect(),
+                other => return out.push_str(&format!("{other:?}")),
+            };
+            out.push_str(if matches!(terms[id.0], ErlangTerm::Tuple(_)) { "{" } else { "[" });
+            for child in children {
+                go(terms, child, out);
+                out.push(',');
+            }
+            out.push(')');
+        }
+        let mut out = String::new();
+        go(&raw.arena.terms, raw.id, &mut out);
+        out
+    }
+
+    fn build(mut b: ReasonBuilder, source: &RawFormTerm) -> RawFormTerm {
+        let pair = {
+            let x = b.atom("x");
+            let n = b.integer(7);
+            b.tuple(vec![x, n])
+        };
+        let again = {
+            let x = b.atom("x");
+            let n = b.integer(7);
+            b.tuple(vec![x, n])
+        };
+        let copied = b.copy(source);
+        let copied_again = b.copy(source);
+        let text = b.string("ab");
+        let items = b.list(vec![pair, again, copied, copied_again, text]);
+        b.finish(items)
+    }
+
+    #[test]
+    fn interning_shares_equal_subterms_without_changing_the_term() {
+        let mut source = ReasonBuilder::new();
+        let leaf = source.atom("leaf");
+        let shared = source.tuple(vec![leaf, leaf]);
+        let root = source.list(vec![shared, shared, leaf]);
+        let source = source.finish(root);
+        let plain = build(ReasonBuilder::new(), &source);
+        let interned = build(ReasonBuilder::interning(), &source);
+        assert_eq!(tree(&plain), tree(&interned));
+        assert!(interned.arena.terms.len() < plain.arena.terms.len());
+        let distinct = interned.arena.terms.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(distinct.len(), interned.arena.terms.len());
+    }
 }

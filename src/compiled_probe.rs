@@ -13,12 +13,36 @@ use crate::{
 };
 use serde_json::{Value, json};
 
+/// Analysis outcome with the signature rows already serialized as JSON.
+/// Each `signatures` entry is one row; `result` holds everything else.
+pub struct Projected {
+    pub result: Value,
+    pub signatures: Vec<Vec<u8>>,
+}
+
 pub fn analyze(
     core: &CoreProgram,
     row: &Value,
     library: &str,
     profile: &ClosureCodeProfile,
 ) -> Result<Value, String> {
+    let Projected { mut result, signatures } = analyze_projected(core, row, library, profile)?;
+    result["signatures"] = signatures
+        .iter()
+        .map(|row| serde_json::from_slice::<Value>(row).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into();
+    Ok(result)
+}
+
+// A signature's Value tree is about twenty times its JSON text and the
+// analysis state is still live here, so rows are serialized one at a time.
+pub fn analyze_projected(
+    core: &CoreProgram,
+    row: &Value,
+    library: &str,
+    profile: &ClosureCodeProfile,
+) -> Result<Projected, String> {
     let mut timings = crate::phase_timings::PhaseTimings::new("probe_run");
     let tags: Vec<Tag> =
         serde_json::from_value(row["legal_warnings"].clone()).map_err(|error| error.to_string())?;
@@ -102,11 +126,14 @@ pub fn analyze(
         })
         .collect::<Vec<_>>();
     let signatures = crate::ordered_parallel::setup_map(&signature_rows, |(name, signature)| {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::jobj!({
-            "module":json!(name.module),"function":json!(name.function),"arity":name.arity,
-            "arguments":signature.arguments.iter().map(Type::to_value).collect::<Vec<_>>(),
-            "result":signature.result.to_value(),
-        })))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            serde_json::to_vec(&crate::jobj!({
+                "module":json!(name.module),"function":json!(name.function),"arity":name.arity,
+                "arguments":signature.arguments.iter().map(Type::to_value).collect::<Vec<_>>(),
+                "result":signature.result.to_value(),
+            }))
+            .expect("serialize signature")
+        }))
     })
     .into_iter()
     .map(|completed| match completed {
@@ -116,12 +143,12 @@ pub fn analyze(
     .collect::<Vec<_>>();
     drop(signature_rows);
     let result = crate::jobj!({"id":row["id"].clone(),"warnings":crate::type_exports::arena_to_value(&raw.arena().terms,raw.id()),
-        "public_warning_count":output.warnings.raw.len(), "signatures":signatures,
+        "public_warning_count":output.warnings.raw.len(),
         "cleanup_warning_count":output.cleanup.missing_calls.len(),
         "unknown_warning_count":output.unknown.by_module.len(),
         "module_dependencies":serde_json::to_value(output.module_dependencies.named_projection()?).map_err(|e| e.to_string())?});
     timings.mark("signatures_and_output_projection");
     crate::teardown::release(output);
     crate::teardown::release(raw);
-    Ok(result)
+    Ok(Projected { result, signatures })
 }
