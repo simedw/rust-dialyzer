@@ -593,9 +593,17 @@ impl Lift {
             Some("Elixir.Date" | "Elixir.DateTime" | "Elixir.NaiveDateTime" | "Elixir.Time")
         ) && name == "shift"
         {
-            let args = self.a.list_items(t[2])?;
+            let mut args = self.a.list_items(t[2])?;
             if args.len() >= 2 && self.basic(args[1])? {
-                return Err(self.error("compiler inline duration options"));
+                if let Some(duration) = self.duration(module.as_deref().unwrap(), args[1])? {
+                    args[1] = duration;
+                    let left = self.expr(parts[0], ann, scope)?;
+                    let right = self.atom_node(ann, &name);
+                    let remote = self.node("remote", ann, vec![left, right]);
+                    let args = self.a.list(args);
+                    let args = self.arguments(args, ann, scope)?;
+                    return Ok(self.node("call", ann, vec![remote, args]));
+                }
             }
         }
         let left = self.expr(parts[0], ann, scope)?;
@@ -603,6 +611,68 @@ impl Lift {
         let remote = self.node("remote", ann, vec![left, right]);
         let args = self.arguments(t[2], ann, scope)?;
         Ok(self.node("call", ann, vec![remote, args]))
+    }
+    fn duration(&mut self, module: &str, arg: TermId) -> Result<Option<TermId>> {
+        let Ok(pairs) = self.a.list_items(arg) else {
+            return Ok(None);
+        };
+        let zero = self.a.integer(0);
+        let microsecond = self.a.tuple(vec![zero, zero]);
+        let mut fields = BTreeMap::from([
+            ("year", zero),
+            ("month", zero),
+            ("week", zero),
+            ("day", zero),
+            ("hour", zero),
+            ("minute", zero),
+            ("second", zero),
+            ("microsecond", microsecond),
+        ]);
+        for pair in pairs {
+            let Ok(pair) = self.a.tuple_fields(pair) else {
+                return Ok(None);
+            };
+            let [key, value] = pair else {
+                return Ok(None);
+            };
+            let Some(key) = self.a.as_atom(*key) else {
+                return Ok(None);
+            };
+            if !fields.contains_key(key)
+                || (module == "Elixir.Date"
+                    && matches!(key, "hour" | "minute" | "second" | "microsecond"))
+                || (module == "Elixir.Time" && matches!(key, "year" | "month" | "week" | "day"))
+            {
+                return Ok(None);
+            }
+            if key == "microsecond" {
+                let Ok(parts) = self.a.tuple_fields(*value) else {
+                    return Ok(None);
+                };
+                if parts.len() != 2
+                    || !matches!(self.a.get(parts[0]), ErlangTerm::Integer(_))
+                    || !self
+                        .a
+                        .as_integer(parts[1])
+                        .is_some_and(|p| (0..=6).contains(&p))
+                {
+                    return Ok(None);
+                }
+            } else if !matches!(self.a.get(*value), ErlangTerm::Integer(_)) {
+                return Ok(None);
+            }
+            let value = *value;
+            let key = fields.keys().copied().find(|field| *field == key).unwrap();
+            fields.insert(key, value);
+        }
+        let mut entries = Vec::with_capacity(9);
+        let key = self.a.atom("__struct__");
+        let value = self.a.atom("Elixir.Duration");
+        entries.push((key, value));
+        for (key, value) in fields {
+            entries.push((self.a.atom(key), value));
+        }
+        Ok(Some(self.a.push(ErlangTerm::Map(entries))))
     }
     fn string_units(&mut self, bytes: &[u8], graphemes: bool) -> Vec<TermId> {
         use unicode_segmentation::UnicodeSegmentation;
@@ -639,6 +709,57 @@ impl Lift {
         units
     }
     fn pure(&mut self, module: &str, name: &str, args: Vec<TermId>) -> Result<Option<TermId>> {
+        if module == "Elixir.Kernel" && name == "to_timeout" {
+            let [arg] = args.as_slice() else {
+                return Ok(None);
+            };
+            if self.a.as_atom(*arg) == Some("infinity") {
+                return Ok(Some(*arg));
+            }
+            let nonnegative = |term: &ErlangTerm| -> Option<num_bigint::BigInt> {
+                let ErlangTerm::Integer(value) = term else {
+                    return None;
+                };
+                let value = value.parse::<num_bigint::BigInt>().ok()?;
+                (value >= num_bigint::BigInt::from(0)).then_some(value)
+            };
+            if nonnegative(self.a.get(*arg)).is_some() {
+                return Ok(Some(*arg));
+            }
+            let Ok(components) = self.a.list_items(*arg) else {
+                return Ok(None);
+            };
+            let mut seen = std::collections::BTreeSet::new();
+            let mut total = num_bigint::BigInt::from(0);
+            for component in components {
+                let Ok(fields) = self.a.tuple_fields(component) else {
+                    return Ok(None);
+                };
+                let [key, value] = fields else {
+                    return Ok(None);
+                };
+                let Some(key) = self.a.as_atom(*key) else {
+                    return Ok(None);
+                };
+                if !seen.insert(key.to_owned()) {
+                    return Ok(None);
+                }
+                let factor: u64 = match key {
+                    "week" => 604_800_000,
+                    "day" => 86_400_000,
+                    "hour" => 3_600_000,
+                    "minute" => 60_000,
+                    "second" => 1_000,
+                    "millisecond" => 1,
+                    _ => return Ok(None),
+                };
+                let Some(value) = nonnegative(self.a.get(*value)) else {
+                    return Ok(None);
+                };
+                total += value * factor;
+            }
+            return Ok(Some(self.a.integer(total)));
+        }
         if module == "Elixir.MapSet" && name == "new" {
             let keys = match args.as_slice() {
                 [] => vec![],
@@ -2036,6 +2157,56 @@ mod tests {
         let body = l.a.list_items(fields[4]).unwrap();
         let body = l.fields(body[0], 3).unwrap();
         assert_eq!(l.a.as_atom(body[2]), Some("_x@1"));
+    }
+    #[test]
+    fn duration_constants_use_calendar_specific_units() {
+        let mut l = translator();
+        let month = l.a.atom("month");
+        let one = l.a.integer(1);
+        let two = l.a.integer(2);
+        let first = l.a.tuple(vec![month, one]);
+        let last = l.a.tuple(vec![month, two]);
+        let options = l.a.list(vec![first, last]);
+        let result = l.duration("Elixir.Date", options).unwrap().unwrap();
+        assert_eq!(l.a.map_get(result, "month"), Some(two));
+        assert_eq!(
+            l.a.as_atom(l.a.map_get(result, "__struct__").unwrap()),
+            Some("Elixir.Duration")
+        );
+        assert_eq!(l.duration("Elixir.Time", options).unwrap(), None);
+        let second = l.a.atom("second");
+        let time = l.a.tuple(vec![second, one]);
+        let options = l.a.list(vec![time]);
+        assert_eq!(l.duration("Elixir.Date", options).unwrap(), None);
+        assert!(l.duration("Elixir.DateTime", options).unwrap().is_some());
+    }
+    #[test]
+    fn timeout_constants_fold_without_integer_overflow() {
+        let mut l = translator();
+        let second = l.a.atom("second");
+        let huge = l.a.integer("100000000000000000000");
+        let component = l.a.tuple(vec![second, huge]);
+        let components = l.a.list(vec![component]);
+        let result = l
+            .pure("Elixir.Kernel", "to_timeout", vec![components])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            l.a.get(result),
+            &ErlangTerm::Integer("100000000000000000000000".into())
+        );
+        let duplicate = l.a.list(vec![component, component]);
+        assert_eq!(
+            l.pure("Elixir.Kernel", "to_timeout", vec![duplicate])
+                .unwrap(),
+            None
+        );
+        let infinity = l.a.atom("infinity");
+        assert_eq!(
+            l.pure("Elixir.Kernel", "to_timeout", vec![infinity])
+                .unwrap(),
+            Some(infinity)
+        );
     }
     #[test]
     fn unsupported_construct_has_module_function_and_tag() {

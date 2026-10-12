@@ -38,29 +38,54 @@ pub struct UnknownWarnings {
 fn sort_unknown(
     warnings: Vec<(RawFormTerm, NativeWarning)>,
 ) -> Result<Vec<(RawFormTerm, NativeWarning)>, PublicationError> {
-    let mut sorted: Vec<(RawFormTerm, (RawFormTerm, NativeWarning))> = Vec::new();
-    for (module, warning) in warnings {
-        let mut builder = ReasonBuilder::new();
-        let m = builder.copy(&module);
-        let w = builder.copy(&warning.raw);
-        let root = builder.tuple(vec![m, w]);
-        let pair = builder.finish(root);
-        let mut at = sorted.len();
-        while at > 0
-            && crate::term_order::compare_terms(
-                pair.arena(),
+    let keys = warnings
+        .iter()
+        .map(|(module, warning)| {
+            let mut builder = ReasonBuilder::new();
+            let m = builder.copy(module);
+            let w = builder.copy(&warning.raw);
+            let root = builder.tuple(vec![m, w]);
+            let pair = builder.finish(root);
+            Ok((
+                crate::term_order::TermOrderArena::new(pair.arena())
+                    .map_err(PublicationError::Boundary)?,
                 pair.id(),
-                sorted[at - 1].0.arena(),
-                sorted[at - 1].0.id(),
-            )
-            .map_err(PublicationError::Boundary)?
-            .is_lt()
-        {
-            at -= 1;
+            ))
+        })
+        .collect::<Result<Vec<_>, PublicationError>>()?;
+    let mut indices = (0..warnings.len()).collect::<Vec<_>>();
+    let mut width = 1;
+    while width < indices.len() {
+        let mut output = Vec::with_capacity(indices.len());
+        for start in (0..indices.len()).step_by(width * 2) {
+            let middle = (start + width).min(indices.len());
+            let end = (start + width * 2).min(indices.len());
+            let (mut left, mut right) = (start, middle);
+            while left < middle && right < end {
+                let (a, ai) = &keys[indices[left]];
+                let (b, bi) = &keys[indices[right]];
+                if a.compare(*ai, b, *bi)
+                    .map_err(PublicationError::Boundary)?
+                    .is_gt()
+                {
+                    output.push(indices[right]);
+                    right += 1;
+                } else {
+                    output.push(indices[left]);
+                    left += 1;
+                }
+            }
+            output.extend_from_slice(&indices[left..middle]);
+            output.extend_from_slice(&indices[right..end]);
         }
-        sorted.insert(at, (pair, (module, warning)));
+        indices = output;
+        width *= 2;
     }
-    Ok(sorted.into_iter().map(|(_, warning)| warning).collect())
+    let mut warnings = warnings.into_iter().map(Some).collect::<Vec<_>>();
+    Ok(indices
+        .into_iter()
+        .map(|i| warnings[i].take().expect("each sorted index occurs once"))
+        .collect())
 }
 
 pub fn collect_unknown(
@@ -273,4 +298,64 @@ pub fn publish(
             .map(|id| RawFormTerm::new(arena.clone(), id).map_err(PublicationError::Boundary))
             .collect::<Result<_, _>>()?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unknown_warning_sort_matches_insertion_order_and_preserves_duplicates() {
+        let warnings = (0..128)
+            .map(|i| {
+                let mut b = ReasonBuilder::new();
+                let root = b.atom(&format!("M{}", (i * 13) % 5));
+                let module = b.finish(root);
+                let mut b = ReasonBuilder::new();
+                let root = b.integer((i * 37) % 17);
+                (
+                    module,
+                    NativeWarning {
+                        raw: b.finish(root),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let pairs = warnings
+            .iter()
+            .map(|(module, warning)| {
+                let mut b = ReasonBuilder::new();
+                let m = b.copy(module);
+                let w = b.copy(&warning.raw);
+                let root = b.tuple(vec![m, w]);
+                b.finish(root)
+            })
+            .collect::<Vec<_>>();
+        let mut expected: Vec<usize> = Vec::new();
+        for i in 0..warnings.len() {
+            let mut at = expected.len();
+            while at > 0
+                && crate::term_order::compare_terms(
+                    pairs[i].arena(),
+                    pairs[i].id(),
+                    pairs[expected[at - 1]].arena(),
+                    pairs[expected[at - 1]].id(),
+                )
+                .unwrap()
+                .is_lt()
+            {
+                at -= 1;
+            }
+            expected.insert(at, i);
+        }
+        let sorted = sort_unknown(warnings.clone()).unwrap();
+        assert_eq!(sorted.len(), warnings.len());
+        for ((module, warning), index) in sorted.iter().zip(expected) {
+            assert!(Arc::ptr_eq(module.arena(), warnings[index].0.arena()));
+            assert!(Arc::ptr_eq(
+                warning.raw.arena(),
+                warnings[index].1.raw.arena()
+            ));
+        }
+        assert!(sort_unknown(Vec::new()).unwrap().is_empty());
+    }
 }

@@ -22,16 +22,44 @@ mod tests {
             }));
             root = TermId(terms.len() - 1);
         }
-        ErlangTerms { root, terms: terms.into() }
+        ErlangTerms {
+            root,
+            terms: terms.into(),
+        }
     }
     #[test]
-    fn deep_and_expanding_literals_fail_before_recursive_type_ownership() {
-        for arena in [nested(50_000, false), nested(31, true)] {
-            assert!(matches!(
-                LiteralTypes::build(&arena),
-                Err(LiteralError::ResourceLimit)
-            ));
+    fn deep_and_shared_literals_preserve_exact_interned_types() {
+        for (count, shared) in [(50_000, false), (31, true)] {
+            let arena = nested(count, shared);
+            let types = LiteralTypes::build(&arena).unwrap();
+            let mut expected = Type::atom("value");
+            for _ in 0..count {
+                expected = Type::tuple(if shared {
+                    vec![expected, expected]
+                } else {
+                    vec![expected]
+                })
+                .unwrap();
+            }
+            assert_eq!(types.get(arena.root), Some(&expected));
+            assert!(!expected.is_limited(3));
+            assert!(expected.limit(3).unwrap().is_limited(3));
         }
+    }
+    #[test]
+    fn excessive_materialization_work_is_still_rejected() {
+        let arena = ErlangTerms {
+            root: TermId(1),
+            terms: vec![
+                ErlangTerm::Nil,
+                ErlangTerm::Tuple(vec![TermId(0); 1_000_000]),
+            ]
+            .into(),
+        };
+        assert!(matches!(
+            LiteralTypes::build(&arena),
+            Err(LiteralError::ResourceLimit)
+        ));
     }
     #[test]
     fn overwritten_map_values_do_not_consume_the_type_materialization_budget() {
@@ -69,7 +97,8 @@ mod tests {
                     } else {
                         ErlangTerm::Nil
                     },
-                ].into(),
+                ]
+                .into(),
             };
             let tail = arena.root;
             let items = (0..10_000).map(|i| TermId(i % 2)).collect::<Vec<_>>();
@@ -89,7 +118,7 @@ mod tests {
         }
     }
     #[test]
-    fn nested_list_elements_still_exceed_the_ownership_depth_limit() {
+    fn deep_list_elements_preserve_exact_interned_types() {
         let mut arena = ErlangTerms {
             root: TermId(0),
             terms: vec![ErlangTerm::Nil].into(),
@@ -102,10 +131,12 @@ mod tests {
                 tail: TermId(0),
             });
         }
-        assert!(matches!(
-            LiteralTypes::build(&arena),
-            Err(LiteralError::ResourceLimit)
-        ));
+        let types = LiteralTypes::build(&arena).unwrap();
+        let mut expected = Type::nil();
+        for _ in 0..200 {
+            expected = Type::cons(expected, Type::nil()).unwrap();
+        }
+        assert_eq!(types.get(arena.root), Some(&expected));
     }
     #[test]
     fn compact_lists_have_shallow_type_ownership() {
@@ -118,7 +149,8 @@ mod tests {
                     items: vec![TermId(0); 10_000],
                     tail: TermId(1),
                 },
-            ].into(),
+            ]
+            .into(),
         };
         assert!(LiteralTypes::build(&arena).is_ok());
     }
@@ -180,6 +212,7 @@ impl LiteralTypes {
     fn build_with(arena: &ErlangTerms, roots: &[TermId], order: &TermOrderArena) -> Result<Self> {
         let mut needed = vec![false; arena.terms.len()];
         let mut pending = roots.to_vec();
+        let mut work = 0usize;
         while let Some(id) = pending.pop() {
             let active = needed
                 .get_mut(id.0)
@@ -188,29 +221,7 @@ impl LiteralTypes {
                 continue;
             }
             *active = true;
-            match &arena.terms[id.0] {
-                ErlangTerm::Tuple(items) => pending.extend(items),
-                ErlangTerm::List { items, tail } => {
-                    pending.extend(items);
-                    pending.push(*tail);
-                }
-                ErlangTerm::Map(pairs) => pending.extend(
-                    order
-                        .canonical_map_pairs(pairs)?
-                        .iter()
-                        .flat_map(|(key, value)| [*key, *value]),
-                ),
-                _ => {}
-            }
-        }
-        let mut depths: Vec<usize> = vec![0; arena.terms.len()];
-        let mut occurrences: Vec<usize> = vec![0; arena.terms.len()];
-        let mut list_types = vec![false; arena.terms.len()];
-        for (index, term) in arena.terms.iter().enumerate() {
-            if !needed[index] {
-                continue;
-            }
-            let children: Vec<_> = match term {
+            let children: Vec<_> = match &arena.terms[id.0] {
                 ErlangTerm::Tuple(items) => items.clone(),
                 ErlangTerm::List { items, tail } => items.iter().copied().chain([*tail]).collect(),
                 ErlangTerm::Map(pairs) => order
@@ -218,45 +229,17 @@ impl LiteralTypes {
                     .into_iter()
                     .flat_map(|(key, value)| [key, value])
                     .collect(),
-                _ => vec![],
+                _ => Vec::new(),
             };
-            if let ErlangTerm::List { items, tail } = term {
-                if items.is_empty() {
-                    depths[index] = depths[tail.0];
-                    occurrences[index] = occurrences[tail.0];
-                    list_types[index] = list_types[tail.0];
-                } else {
-                    // Type::cons joins the head into the tail's element domain.
-                    // A cons spine therefore owns one list envelope, regardless
-                    // of how many input term nodes represent the spine.
-                    let tail_depth =
-                        depths[tail.0].saturating_add(usize::from(!list_types[tail.0]));
-                    depths[index] = items
-                        .iter()
-                        .map(|id| depths[id.0].saturating_add(1))
-                        .chain([tail_depth])
-                        .max()
-                        .unwrap_or(tail_depth);
-                    occurrences[index] = items.iter().fold(
-                        occurrences[tail.0].saturating_add(usize::from(!list_types[tail.0])),
-                        |sum, id| sum.saturating_add(occurrences[id.0]),
-                    );
-                    list_types[index] = true;
-                }
-            } else {
-                depths[index] = children
-                    .iter()
-                    .map(|id| depths[id.0])
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_add(1);
-                occurrences[index] = children
-                    .iter()
-                    .fold(1usize, |sum, id| sum.saturating_add(occurrences[id.0]));
-            }
-            if depths[index] > 128 || occurrences[index] > 1_000_000 {
+            // Interned types share their children. Bound actual construction work,
+            // rather than the depth or expanded size of an imaginary owned tree.
+            work = work
+                .checked_add(1 + children.len())
+                .ok_or(LiteralError::ResourceLimit)?;
+            if work > 1_000_000 {
                 return Err(LiteralError::ResourceLimit);
             }
+            pending.extend(children);
         }
         let mut types: Vec<Option<Type>> = Vec::with_capacity(arena.terms.len());
         for (index, term) in arena.terms.iter().enumerate() {
