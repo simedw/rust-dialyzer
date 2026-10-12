@@ -214,13 +214,62 @@ pub fn load_emission(
     loaded.timings["core_emission"] = emission.name().into();
     Ok(loaded)
 }
+fn fused_atom_names(
+    module: &str,
+    forms: &crate::core::ErlangTerms,
+    view: &super::clean_view::CleanView,
+) -> Result<FastHashSet<String>, String> {
+    let mut names = view.atoms()?;
+    names.insert(module.to_owned());
+    let mut visited = vec![false; forms.terms.len()];
+    let mut pending = vec![forms.root];
+    while let Some(id) = pending.pop() {
+        if std::mem::replace(&mut visited[id.0], true) {
+            continue;
+        }
+        match &forms.terms[id.0] {
+            ErlangTerm::Atom(name) => {
+                if !names.contains(name) {
+                    names.insert(name.clone());
+                }
+            }
+            ErlangTerm::ExternalFun {
+                module, function, ..
+            } => {
+                names.insert(module.clone());
+                names.insert(function.clone());
+            }
+            ErlangTerm::Tuple(items) => pending.extend(items.iter().copied()),
+            ErlangTerm::List { items, tail } => {
+                pending.extend(items.iter().copied());
+                pending.push(*tail);
+            }
+            ErlangTerm::Map(entries) => {
+                for &(key, value) in entries {
+                    pending.extend([key, value]);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(names)
+}
 fn load_fused(paths: &[String], source: ContextSource<'_>) -> Result<LoadedNative, String> {
     let started = Instant::now();
-    let compiled = setup_map(paths, |path| {
+    let discover_atoms = matches!(&source, ContextSource::Native { .. });
+    let mut compiled = setup_map(paths, |path| {
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         let raw = super::compile_beam_raw(&bytes).map_err(|e| format!("{path}: {e}"))?;
         let view = super::clean_view::CleanView::new(raw.raw_core)?;
-        Ok((raw.module, raw.source_forms, view))
+        let atoms = if discover_atoms {
+            Some(
+                fused_atom_names(&raw.module, &raw.source_forms, &view)
+                    .map_err(|e| format!("{path}: {e}"))?,
+            )
+        } else {
+            None
+        };
+        Ok((raw.module, raw.source_forms, view, atoms))
     })
     .into_iter()
     .collect::<Result<Vec<_>, String>>()?;
@@ -236,54 +285,17 @@ fn load_fused(paths: &[String], source: ContextSource<'_>) -> Result<LoadedNativ
             contracts_beam,
         } => {
             let mut names = FastHashSet::default();
-            for (module, forms, view) in &compiled {
-                names.insert(module.clone());
-                names.extend(view.atoms()?);
-                let mut visited = vec![false; forms.terms.len()];
-                let mut pending = vec![forms.root];
-                while let Some(id) = pending.pop() {
-                    if std::mem::replace(&mut visited[id.0], true) {
-                        continue;
-                    }
-                    match &forms.terms[id.0] {
-                        ErlangTerm::Atom(name) => {
-                            if !names.contains(name) {
-                                names.insert(name.clone());
-                            }
-                        }
-                        ErlangTerm::ExternalFun {
-                            module, function, ..
-                        } => {
-                            names.insert(module.clone());
-                            names.insert(function.clone());
-                        }
-                        ErlangTerm::Tuple(items) => pending.extend(items.iter().copied()),
-                        ErlangTerm::List { items, tail } => {
-                            pending.extend(items.iter().copied());
-                            pending.push(*tail);
-                        }
-                        ErlangTerm::Map(entries) => {
-                            for &(key, value) in entries {
-                                pending.extend([key, value]);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+            for (_, _, _, atoms) in &mut compiled {
+                names.extend(atoms.take().expect("native compilation collected atoms"));
             }
-            RuntimeContext::native(
-                names,
-                typesig_beam,
-                contracts_beam,
-                Limits::default(),
-            )?
+            RuntimeContext::native(names, typesig_beam, contracts_beam, Limits::default())?
         }
     };
     let layout =
         NativeAtomLayout::parse(&runtime.context["atom_layout"]).map_err(|e| e.to_string())?;
     let context_seconds = started.elapsed().as_secs_f64();
     let started = Instant::now();
-    let modules = setup_map(&compiled, |(module, forms, view)| {
+    let modules = setup_map(&compiled, |(module, forms, view, _)| {
         adapter::module_view(module.clone(), forms.clone(), view, &layout)
             .map_err(|e| format!("{module}: {e}"))
     })
