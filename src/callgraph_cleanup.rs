@@ -135,7 +135,7 @@ pub fn module_dependencies(graph: &SourceCallGraph) -> Result<BTreeMap<String, B
     let mut result = BTreeMap::new();
     for v in g.unordered_vertices() {
         if let GraphVertex::Named { module, .. } = v {
-            result.entry(module.clone()).or_insert_with(BTreeSet::new);
+            result.entry(module.to_string()).or_insert_with(BTreeSet::new);
         }
     }
     for edge in g.unordered_edges() {
@@ -144,16 +144,16 @@ pub fn module_dependencies(graph: &SourceCallGraph) -> Result<BTreeMap<String, B
             && from != to
         {
             result
-                .get_mut(to)
+                .get_mut(to.as_str())
                 .ok_or("module vertex missing")?
-                .insert(from.clone());
+                .insert(from.to_string());
         }
     }
     if crate::lattice::verify_fast_paths() {
         let mut ordered = BTreeMap::new();
         for v in g.ordered_vertices().map_err(CallGraphError::RuntimeOrdering)? {
             if let GraphVertex::Named { module, .. } = v {
-                ordered.entry(module).or_insert_with(BTreeSet::new);
+                ordered.entry(module.to_string()).or_insert_with(BTreeSet::new);
             }
         }
         for id in g.ordered_edges().map_err(CallGraphError::RuntimeOrdering)? {
@@ -162,9 +162,9 @@ pub fn module_dependencies(graph: &SourceCallGraph) -> Result<BTreeMap<String, B
                 GraphVertex::Named { module: to, .. },
             )) = g.edge(&id)
                 && from != to
-                && let Some(callers) = ordered.get_mut(to)
+                && let Some(callers) = ordered.get_mut(to.as_str())
             {
-                callers.insert(from.clone());
+                callers.insert(from.to_string());
             }
         }
         assert_eq!(ordered, result, "module call dependencies");

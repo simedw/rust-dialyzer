@@ -151,14 +151,14 @@ impl<A: RuntimeReferenceAllocator> SourceSchedule<A> {
                 && from != to
             {
                 edges.insert(NativeHashKey::Tuple(vec![
-                    NativeHashKey::Atom(from.clone()),
-                    NativeHashKey::Atom(to.clone()),
+                    NativeHashKey::Atom(from.to_string()),
+                    NativeHashKey::Atom(to.to_string()),
                 ]));
             }
         }
         let mut active = SourceDigraph::new(Some(layout.clone()), true);
         for module in modules {
-            active.add_vertex(NativeHashKey::Atom(module), true)?;
+            active.add_vertex(NativeHashKey::Atom(module.to_string()), true)?;
         }
         for edge in native_map_order::ordered_keys(&layout, edges)? {
             if let NativeHashKey::Tuple(pair) = edge

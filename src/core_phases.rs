@@ -1065,7 +1065,7 @@ mod lookup_index_tests {
         let mut graph = empty_graph();
         for i in 0..1024u64 {
             graph.named_labels.insert(GraphVertex::Named {
-                module: format!("Module{i:04}"), function: "function".into(), arity: 1.into(),
+                module: format!("Module{i:04}").into(), function: "function".into(), arity: 1.into(),
             }, CoreLabel(i));
         }
         let names = index_function_names(&graph.named_labels);

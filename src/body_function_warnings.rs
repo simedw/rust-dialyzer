@@ -48,8 +48,8 @@ impl BodyFlow<'_, '_, '_> {
             let vertex =
                 mfa.as_ref()
                     .map_or(GraphVertex::Label(*label), |mfa| GraphVertex::Named {
-                        module: mfa.module.clone().to_string(),
-                        function: mfa.function.clone().to_string(),
+                        module: mfa.module,
+                        function: mfa.function,
                         arity: mfa.arity.into(),
                     });
             let incoming = graph.in_neighbours(&vertex).unwrap_or(&[]);

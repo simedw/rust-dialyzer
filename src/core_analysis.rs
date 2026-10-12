@@ -271,10 +271,10 @@ impl CoreAnalyzer<'_> {
     }
     /// Modules owning the reached named functions, in module order.
     fn modules_of(&self, reached: &std::collections::BTreeSet<GraphVertex>) -> Vec<ModuleId> {
-        let names: std::collections::BTreeSet<&String> = reached
+        let names: std::collections::BTreeSet<&str> = reached
             .iter()
             .filter_map(|v| match v {
-                GraphVertex::Named { module, .. } => Some(module),
+                GraphVertex::Named { module, .. } => Some(module.as_str()),
                 _ => None,
             })
             .collect();
@@ -282,7 +282,7 @@ impl CoreAnalyzer<'_> {
             .module_names
             .iter()
             .enumerate()
-            .filter(|(_, name)| names.contains(name))
+            .filter(|(_, name)| names.contains(name.as_str()))
             .map(|(i, _)| ModuleId(i))
             .collect()
     }

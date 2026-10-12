@@ -36,9 +36,11 @@ impl std::error::Error for CallGraphError {}
 pub enum GraphVertex {
     Label(CoreLabel),
     Top,
+    /// Names are interned: the graph keeps many copies of each vertex
+    /// (module edge lists, the digraph's edges and adjacency lists).
     Named {
-        module: String,
-        function: String,
+        module: crate::atom::Atom,
+        function: crate::atom::Atom,
         arity: BigInt,
     },
 }
@@ -148,8 +150,8 @@ impl SourceCallGraph {
                 .ok_or("function has no Core label")?;
             let vertex = match &f.identity {
                 FunctionIdentity::Named(name) => GraphVertex::Named {
-                    module: name.module.clone(),
-                    function: name.name.clone(),
+                    module: crate::atom::Atom::new(&name.module),
+                    function: crate::atom::Atom::new(&name.name),
                     arity: name.arity.into(),
                 },
                 _ => GraphVertex::Label(label),
@@ -486,8 +488,8 @@ impl SourceCallGraph {
                 .ok_or("local function label")?;
             let vertex = match &f.identity {
                 FunctionIdentity::Named(n) => GraphVertex::Named {
-                    module: n.module.clone(),
-                    function: n.name.clone(),
+                    module: crate::atom::Atom::new(&n.module),
+                    function: crate::atom::Atom::new(&n.name),
                     arity: n.arity.into(),
                 },
                 _ => GraphVertex::Label(label),
@@ -546,8 +548,8 @@ impl crate::source_digraph::RuntimeGraphKey for GraphVertex {
                 function,
                 arity,
             } => K::Tuple(vec![
-                K::Atom(module.clone()),
-                K::Atom(function.clone()),
+                K::Atom(module.to_string()),
+                K::Atom(function.to_string()),
                 K::Integer(arity.clone()),
             ]),
         })

@@ -118,7 +118,7 @@ pub fn analyze_prepared<'a>(
                 .graph
                 .module_names
                 .iter()
-                .position(|module| module == &name)
+                .position(|module| module.as_str() == name.as_str())
                 .map(ModuleId)
                 .ok_or_else(|| PipelineError::Boundary("unpruned external module".into()))
         })
