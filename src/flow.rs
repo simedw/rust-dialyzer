@@ -787,7 +787,7 @@ impl<B: BifProvider, C: ConstraintProvider> Context<'_, B, C> {
         Ok(())
     }
     fn is_comprehension_default(&self, module: ModuleId, node: NodeId) -> bool {
-        if !self.engine.program.origins[module.0][node.0].generated {
+        if !self.engine.program.origins[module.0].node(node.0).generated {
             return false;
         }
         let m = &self.engine.core.modules[module.0];

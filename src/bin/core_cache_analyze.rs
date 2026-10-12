@@ -16,8 +16,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 // Analysis allocates heavily from all cores; the system allocator spends
 // about a third of CPU time under that load.
+#[cfg(not(feature = "live_bytes"))]
 #[cfg_attr(not(dialyzer_tsan), global_allocator)]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(feature = "live_bytes")]
+#[cfg_attr(not(dialyzer_tsan), global_allocator)]
+static GLOBAL: rust_dialyzer_poc::live_bytes::Counting<mimalloc::MiMalloc> =
+    rust_dialyzer_poc::live_bytes::Counting(mimalloc::MiMalloc);
 use std::{io::Write, time::Instant};
 
 struct Loaded {
@@ -258,6 +263,8 @@ fn serialize_signature_parts(rows: &[Value], workers: usize, sequential: bool) -
 }
 
 fn main() {
+    #[cfg(feature = "live_bytes")]
+    rust_dialyzer_poc::live_bytes::start_sampler();
     let args: Vec<_> = std::env::args().skip(1).collect();
     let frontend = match args.as_slice() {
         [_, _, _] => None,

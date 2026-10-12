@@ -345,15 +345,17 @@ fn function_term(module: &CoreModule, id: TermId) -> Result<FunctionName> {
 }
 /// `source_origin` for every node of a module: nodes share annotation
 /// lists and file names, so each distinct term is decoded once.
-pub(super) fn module_source_origins(module: &CoreModule) -> Result<Vec<SourceOrigin>> {
-    let mut by_raw: std::collections::HashMap<TermId, SourceOrigin> = Default::default();
+pub(super) fn module_source_origins(module: &CoreModule) -> Result<super::ModuleOrigins> {
+    // Nodes sharing an annotation term share one origin.
+    let mut by_raw: std::collections::HashMap<TermId, u32> = Default::default();
     let mut files: std::collections::HashMap<TermId, String> = Default::default();
-    module
+    let mut distinct = Vec::new();
+    let of_node = module
         .nodes
         .iter()
         .map(|node| {
-            if let Some(origin) = by_raw.get(&node.annotations) {
-                return Ok(origin.clone());
+            if let Some(&index) = by_raw.get(&node.annotations) {
+                return Ok(index);
             }
             let origin = source_origin_with(module, node.annotations, &mut |id| {
                 if let Some(file) = files.get(&id) {
@@ -363,10 +365,13 @@ pub(super) fn module_source_origins(module: &CoreModule) -> Result<Vec<SourceOri
                 files.insert(id, file.clone());
                 Ok(file)
             })?;
-            by_raw.insert(node.annotations, origin.clone());
-            Ok(origin)
+            let index = u32::try_from(distinct.len()).map_err(|_| "too many source origins")?;
+            distinct.push(origin);
+            by_raw.insert(node.annotations, index);
+            Ok(index)
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(super::ModuleOrigins { distinct, of_node })
 }
 pub(super) fn source_origin(module: &CoreModule, raw: TermId) -> Result<SourceOrigin> {
     source_origin_with(module, raw, &mut |id| characters(module, id))

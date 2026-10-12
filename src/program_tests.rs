@@ -396,12 +396,12 @@ fn exact_source_origins_keep_columns_files_and_generation() {
     c.nodes[body.0].annotations = annotations;
     c.named("source", vec![], body);
     let p = Program::build(&c.finish()).unwrap();
-    let origin = &p.origins[0][body.0];
+    let origin = p.origins[0].node(body.0);
     assert_eq!(origin.file.as_deref(), Some("a"));
     assert_eq!(origin.line, Some(12));
     assert_eq!(origin.column, Some(9));
     assert!(!origin.generated);
-    assert!(p.origins[0].last().unwrap().generated);
+    assert!(p.origins[0].iter().last().unwrap().generated);
 }
 #[test]
 fn unbound_uses_and_ambiguous_dag_binding_reuse_are_errors() {

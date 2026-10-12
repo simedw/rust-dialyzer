@@ -110,10 +110,17 @@ impl<'a> PreparedPhaseInputs<'a> {
         labels: &'a crate::labels::Labels,
         modules: usize,
     ) -> Self {
+        let mut timings = crate::phase_timings::PhaseTimings::new("prepared_phase_inputs");
+        let records = PreparedRecords::for_modules(definitions, (0..modules).map(ModuleId));
+        timings.mark("records");
+        let folded_nodes = DataflowNodes::build(&folded.program, labels);
+        timings.mark("folded_nodes");
+        let guard_literals = GuardLiterals::new(folded);
+        timings.mark("guard_literals");
         Self {
-            records: PreparedRecords::for_modules(definitions, (0..modules).map(ModuleId)),
-            folded_nodes: DataflowNodes::build(&folded.program, labels),
-            guard_literals: GuardLiterals::new(folded),
+            records,
+            folded_nodes,
+            guard_literals,
         }
     }
 }

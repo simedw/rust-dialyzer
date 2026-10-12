@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 default-run = "rust-dialyzer-poc"
 
+[features]
+# Count live heap bytes and sample them into the job trace.
+live_bytes = []
+
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.148"

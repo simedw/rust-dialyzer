@@ -133,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     match engine.infer() {
         Ok(out) => {
-            let warnings:Vec<_>=out.warnings.iter().map(|w|{let origin=&program.origins[w.origin.module.0][w.origin.node];json!({"function":format!("{:?}",program.functions[w.function.0].identity),"named_function":match &program.functions[w.function.0].identity {rust_dialyzer_poc::program::FunctionIdentity::Named(n)=>Some(n),_=>None},"line":origin.line,"column":origin.column,"generated":origin.generated,"forced":w.forced,"provenance":{"module":w.provenance.module.0,"node":w.provenance.node},"cause":format!("{:?}",w.cause),"details":detail(&w.cause)})}).collect();
+            let warnings:Vec<_>=out.warnings.iter().map(|w|{let origin=program.origins[w.origin.module.0].node(w.origin.node);json!({"function":format!("{:?}",program.functions[w.function.0].identity),"named_function":match &program.functions[w.function.0].identity {rust_dialyzer_poc::program::FunctionIdentity::Named(n)=>Some(n),_=>None},"line":origin.line,"column":origin.column,"generated":origin.generated,"forced":w.forced,"provenance":{"module":w.provenance.module.0,"node":w.provenance.node},"cause":format!("{:?}",w.cause),"details":detail(&w.cause)})}).collect();
             let signatures:Vec<_>=program.functions.iter().zip(out.signatures).map(|(f,s)|json!({"identity":format!("{:?}",f.identity),"named_function":match &f.identity {rust_dialyzer_poc::program::FunctionIdentity::Named(n)=>Some(n),_=>None},"exported":f.exported,"arguments":s.arguments.iter().map(|t|t.to_value()).collect::<Vec<_>>(),"result":s.result.to_value()})).collect();
             println!(
                 "{}",

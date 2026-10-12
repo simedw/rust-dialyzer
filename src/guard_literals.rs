@@ -4,7 +4,7 @@ use crate::{
     program::NodeRef,
     term_order::TermOrderArena,
 };
-use std::cmp::Ordering;
+use std::{cmp::Ordering, sync::OnceLock};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Comparison {
     Less,
@@ -12,22 +12,39 @@ pub enum Comparison {
     Greater,
     GreaterEqual,
 }
+type RawLiterals = (std::sync::Arc<ErlangTerms>, Vec<Option<TermId>>);
+/// Per-module term orders and raw literal arenas are built on first use:
+/// few modules compare guard literals, and building them for every module
+/// copies every term arena.
 pub struct GuardLiterals<'a> {
     folded: &'a FoldedCore,
-    orders: Vec<TermOrderArena>,
-    raw_literals: Vec<(std::sync::Arc<ErlangTerms>, Vec<Option<TermId>>)>,
+    orders: Vec<OnceLock<Result<TermOrderArena, String>>>,
+    raw_literals: Vec<OnceLock<RawLiterals>>,
 }
 impl<'a> GuardLiterals<'a> {
     pub fn new(folded: &'a FoldedCore) -> Result<Self, String> {
-        let orders = crate::ordered_parallel::setup_map(&folded.program.modules, |module| {
-            TermOrderArena::new(&ErlangTerms {
-                root: module.source_forms,
-                terms: module.terms.clone(),
-            })
+        let modules = folded.program.modules.len();
+        Ok(Self {
+            folded,
+            orders: (0..modules).map(|_| OnceLock::new()).collect(),
+            raw_literals: (0..modules).map(|_| OnceLock::new()).collect(),
         })
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
-        let raw_literals = crate::ordered_parallel::setup_map(&folded.program.modules, |module| {
+    }
+    fn order(&self, module: usize) -> Result<&TermOrderArena, String> {
+        self.orders[module]
+            .get_or_init(|| {
+                let module = &self.folded.program.modules[module];
+                TermOrderArena::new(&ErlangTerms {
+                    root: module.source_forms,
+                    terms: module.terms.clone(),
+                })
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+    fn raw_literals(&self, module: usize) -> &RawLiterals {
+        self.raw_literals[module].get_or_init(|| {
+            let module = &self.folded.program.modules[module];
             let mut terms = module.terms.clone();
             let tag = TermId(terms.len());
             terms.push(ErlangTerm::Atom("c_literal".into()));
@@ -51,11 +68,6 @@ impl<'a> GuardLiterals<'a> {
                 }),
                 roots,
             )
-        });
-        Ok(Self {
-            folded,
-            orders,
-            raw_literals,
         })
     }
     pub fn value(&self, node: NodeRef) -> Result<Option<&ErlangTerm>, String> {
@@ -69,7 +81,7 @@ impl<'a> GuardLiterals<'a> {
         node: NodeRef,
     ) -> Result<crate::native_type_operand::NativeTypeOperand, String> {
         let folded = self.folded.root(node)?;
-        let (arena, roots) = &self.raw_literals[folded.module.0];
+        let (arena, roots) = self.raw_literals(folded.module.0);
         let id = roots[folded.node].ok_or("expected folded Core literal operand")?;
         Ok(crate::native_type_operand::NativeTypeOperand::Raw(
             crate::native_form_environment::RawFormTerm::new(arena.clone(), id)?,
@@ -87,7 +99,7 @@ impl<'a> GuardLiterals<'a> {
             return Ok(None);
         };
         Ok(Some(
-            self.orders[a.module.0].compare_map_keys(left, &self.orders[b.module.0], right)?
+            self.order(a.module.0)?.compare_map_keys(left, self.order(b.module.0)?, right)?
                 == Ordering::Equal,
         ))
     }
@@ -100,7 +112,7 @@ impl<'a> GuardLiterals<'a> {
         let Some((left, right)) = self.ids(a, b)? else {
             return Ok(None);
         };
-        let order = self.orders[a.module.0].compare(left, &self.orders[b.module.0], right)?;
+        let order = self.order(a.module.0)?.compare(left, self.order(b.module.0)?, right)?;
         Ok(Some(match operator {
             Comparison::Less => order == Ordering::Less,
             Comparison::LessEqual => order != Ordering::Greater,

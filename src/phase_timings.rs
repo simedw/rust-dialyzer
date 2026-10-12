@@ -10,7 +10,9 @@ struct Active {
     label: Option<String>,
     started: Instant,
     checkpoint: Instant,
-    phases: Vec<(&'static str, f64)>,
+    /// Live heap bytes at the checkpoint (0 unless built with `live_bytes`).
+    live: isize,
+    phases: Vec<(&'static str, f64, isize)>,
 }
 
 /// `RUST_DIALYZER_TIMINGS`: unset/0 off, 1 phase scopes, 2 also per-SCC and
@@ -43,6 +45,7 @@ impl PhaseTimings {
                 label: None,
                 started,
                 checkpoint: started,
+                live: crate::live_bytes::live(),
                 phases: Vec::new(),
             })
         } else {
@@ -62,10 +65,14 @@ impl PhaseTimings {
     pub fn mark(&mut self, name: &'static str) {
         if let Some(active) = &mut self.active {
             let now = Instant::now();
-            active
-                .phases
-                .push((name, (now - active.checkpoint).as_secs_f64() * 1000.0));
+            let live = crate::live_bytes::live();
+            active.phases.push((
+                name,
+                (now - active.checkpoint).as_secs_f64() * 1000.0,
+                live - active.live,
+            ));
             active.checkpoint = now;
+            active.live = live;
         }
     }
 }
@@ -81,7 +88,7 @@ impl Drop for PhaseTimings {
             "label": active.label,
             "build_mode": if cfg!(debug_assertions) { "debug" } else { "release" },
             "total_ms": active.checkpoint.duration_since(active.started).as_secs_f64() * 1000.0,
-            "phases": active.phases.iter().map(|(name, ms)| serde_json::json!({"name": name, "ms": ms})).collect::<Vec<_>>(),
+            "phases": active.phases.iter().map(|(name, ms, live)| serde_json::json!({"name": name, "ms": ms, "live_delta": live})).collect::<Vec<_>>(),
         });
         let _ = writeln!(std::io::stderr().lock(), "RUST_DIALYZER_TIMING {record}");
     }
@@ -107,6 +114,7 @@ mod tests {
                 scope: "test",
                 started,
                 checkpoint: started,
+                live: 0,
                 phases: Vec::new(),
             }),
         };
@@ -114,7 +122,7 @@ mod tests {
         timings.mark("second");
         let active = timings.active.take().unwrap();
         assert_eq!(active.phases.len(), 2);
-        let sum: f64 = active.phases.iter().map(|(_, ms)| ms).sum();
+        let sum: f64 = active.phases.iter().map(|(_, ms, _)| ms).sum();
         assert!(
             (sum - active
                 .checkpoint

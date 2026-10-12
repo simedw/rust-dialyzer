@@ -11,6 +11,7 @@ macro_rules! jobj {
 }
 pub mod bifs;
 pub mod job_trace;
+pub mod live_bytes;
 pub mod compiled_analysis;
 pub mod contracts;
 pub mod core;

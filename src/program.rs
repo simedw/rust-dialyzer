@@ -47,6 +47,28 @@ pub struct SourceOrigin {
     pub column: Option<u64>,
     pub generated: bool,
 }
+/// A module's node origins. Most nodes share an annotation, so each distinct
+/// origin is stored once and nodes refer to it by index.
+#[derive(Clone, Debug)]
+pub struct ModuleOrigins {
+    distinct: Vec<SourceOrigin>,
+    of_node: Vec<u32>,
+}
+impl ModuleOrigins {
+    pub fn node(&self, node: usize) -> &SourceOrigin {
+        &self.distinct[self.of_node[node] as usize]
+    }
+    pub fn len(&self) -> usize {
+        self.of_node.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.of_node.is_empty()
+    }
+    /// Every node's origin, in node order.
+    pub fn iter(&self) -> impl Iterator<Item = &SourceOrigin> {
+        self.of_node.iter().map(|&i| &self.distinct[i as usize])
+    }
+}
 #[derive(Clone, Debug)]
 pub enum FunctionIdentity {
     Named(FunctionName),
@@ -159,7 +181,7 @@ pub struct Program {
     pub calls: Vec<CallEdge>,
     pub metadata: Vec<Metadata>,
     pub type_dependencies: BTreeSet<TypeDependency>,
-    pub origins: Vec<Vec<SourceOrigin>>,
+    pub origins: Vec<ModuleOrigins>,
     pub variable_uses: BTreeMap<NodeRef, BindingId>,
     pub binder_nodes: BTreeMap<NodeRef, BindingId>,
     pub named: BTreeMap<FunctionName, FunctionId>,
@@ -334,13 +356,13 @@ impl Program {
             located_nodes: self
                 .origins
                 .iter()
-                .flatten()
+                .flat_map(ModuleOrigins::iter)
                 .filter(|o| o.line.is_some())
                 .count(),
             generated_nodes: self
                 .origins
                 .iter()
-                .flatten()
+                .flat_map(ModuleOrigins::iter)
                 .filter(|o| o.generated)
                 .count(),
         }
