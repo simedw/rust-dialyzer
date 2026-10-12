@@ -154,10 +154,46 @@ impl NativeHashKey {
         }
         let mut terms = Vec::new();
         let root = append(self, &mut terms);
-        ErlangTerms { root, terms: terms.into() }
+        ErlangTerms {
+            root,
+            terms: terms.into(),
+        }
     }
 }
 impl NativeAtomLayout {
+    /// Allocate deterministic identities in a native-only scope. These are not
+    /// atom indexes recovered from any Erlang VM or BEAM file.
+    pub fn deterministic_native(
+        scope: String,
+        names: impl IntoIterator<Item = String>,
+    ) -> Result<Self, RuntimeHashError> {
+        if !scope.starts_with("native-atoms-v1:") {
+            return Err(RuntimeHashError::Boundary(
+                "native atom scope must identify its namespace".into(),
+            ));
+        }
+        let names: std::collections::BTreeSet<_> = names.into_iter().collect();
+        let mut atoms = BTreeMap::new();
+        for (index, name) in names.into_iter().enumerate() {
+            let index = u64::try_from(index)
+                .map_err(|_| RuntimeHashError::Boundary("atom index overflow".into()))?;
+            let identity = index
+                .checked_add(1)
+                .and_then(|n| n.checked_mul(64))
+                .map(|n| n | 11)
+                .ok_or_else(|| RuntimeHashError::Boundary("atom identity overflow".into()))?;
+            atoms.insert(name, identity);
+        }
+        Ok(Self { scope, atoms })
+    }
+    pub fn to_wire(&self) -> serde_json::Value {
+        let hashes: BTreeMap<_, _> = self
+            .atoms
+            .iter()
+            .map(|(name, identity)| (name.clone(), mix64(*identity).to_string()))
+            .collect();
+        serde_json::json!({"version":1,"word_size":8,"scope":self.scope,"atom_hashes":hashes})
+    }
     pub fn parse(value: &serde_json::Value) -> Result<Self, RuntimeHashError> {
         let fail = |message: &str| RuntimeHashError::Boundary(message.into());
         if value["version"].as_u64() != Some(1) || value["word_size"].as_u64() != Some(8) {
