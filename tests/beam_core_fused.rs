@@ -1,6 +1,6 @@
 use rust_dialyzer_poc::{
-    beam_frontend::{self, Compilation, adapter, clean_view::CleanView},
-    core::{ErlangTerm, ErlangTerms},
+    beam_frontend::{Compilation, adapter, clean_view::CleanView},
+    core::{ErlangTerm, ErlangTerms, TermId, etf::module_from_etf},
     external_term::{Limits, decode},
     native_runtime_hash::NativeAtomLayout,
 };
@@ -10,27 +10,48 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn compare(name: &str, forms: ErlangTerms, raw: ErlangTerms, layout: &NativeAtomLayout) {
-    let cleaned = beam_frontend::clean::clean(&raw).unwrap();
-    let view = CleanView::new(raw).unwrap();
-    let reference = adapter::module(
-        Compilation {
-            module: name.to_owned(),
-            source_forms: forms.clone(),
-            cleaned_core: cleaned,
-        },
-        layout,
-    )
-    .unwrap();
-    let fused = adapter::module_view(name.to_owned(), forms, &view, layout).unwrap();
-    assert_eq!(
-        fused, reference,
-        "{name}: complete compact module, IDs, map order and contracts"
-    );
+fn atoms(arena: &ErlangTerms) -> BTreeSet<String> {
+    let mut result = BTreeSet::new();
+    let mut visited = vec![false; arena.terms.len()];
+    let mut pending = vec![arena.root];
+    while let Some(TermId(id)) = pending.pop() {
+        if std::mem::replace(&mut visited[id], true) {
+            continue;
+        }
+        match &arena.terms[id] {
+            ErlangTerm::Atom(name) => {
+                result.insert(name.clone());
+            }
+            ErlangTerm::ExternalFun {
+                module, function, ..
+            } => {
+                result.insert(module.clone());
+                result.insert(function.clone());
+            }
+            ErlangTerm::Tuple(children) => pending.extend(children.iter().copied()),
+            ErlangTerm::List { items, tail } => {
+                pending.extend(items.iter().copied());
+                pending.push(*tail);
+            }
+            ErlangTerm::Map(entries) => {
+                pending.extend(entries.iter().flat_map(|&(key, value)| [key, value]));
+            }
+            _ => {}
+        }
+    }
+    result
 }
+
+fn fixture_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/beam_core_port")
+}
+fn read_terms(path: impl AsRef<Path>) -> ErlangTerms {
+    decode(&fs::read(path).unwrap(), Limits::default()).unwrap()
+}
+
 #[test]
-fn fused_emission_matches_reference_in_imported_atom_scopes() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/beam_core_port");
+fn fused_emission_matches_independent_compiler_transport() {
+    let root = fixture_root();
     for name in [
         "Elixir.NativeSlice",
         "Elixir.Walkthrough.Numbers",
@@ -43,20 +64,25 @@ fn fused_emission_matches_reference_in_imported_atom_scopes() {
         "core_lower_implicit_nifs",
         "core_lower_try",
     ] {
-        let read = |suffix: &str| fs::read(root.join(format!("{name}.{suffix}"))).unwrap();
-        let layout =
-            NativeAtomLayout::parse(&serde_json::from_slice(&read("layout.json")).unwrap())
+        let path = |suffix: &str| root.join(format!("{name}.{suffix}"));
+        let layout = NativeAtomLayout::parse(
+            &serde_json::from_slice(&fs::read(path("layout.json")).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let view = CleanView::new(read_terms(path("raw_core.etf"))).unwrap();
+        let actual =
+            adapter::module_view(name.into(), read_terms(path("forms.etf")), &view, &layout)
                 .unwrap();
-        compare(
-            name,
-            decode(&read("forms.etf"), Limits::default()).unwrap(),
-            decode(&read("raw_core.etf"), Limits::default()).unwrap(),
-            &layout,
+        let expected = module_from_etf(&fs::read(path("native.etf")).unwrap()).unwrap();
+        assert_eq!(
+            actual, expected,
+            "{name}: full compact module including IDs and provenance"
         );
     }
 }
+
 #[test]
-fn fused_emission_matches_reference_across_all_raw_core_fixtures() {
+fn borrowed_cleanup_matches_all_captured_clean_core_modules_and_atom_sets() {
     fn collect(dir: &Path, files: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -67,53 +93,73 @@ fn fused_emission_matches_reference_across_all_raw_core_fixtures() {
             }
         }
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/beam_core_port");
     let mut files = Vec::new();
-    collect(&root, &mut files);
+    collect(&fixture_root(), &mut files);
     files.sort();
-    let mut tested = 0;
-    for path in files {
-        let base = path
+    let mut checked = 0;
+    let mut kinds = BTreeSet::new();
+    for raw_path in files {
+        let base = raw_path
             .to_string_lossy()
             .trim_end_matches(".raw_core.etf")
             .to_owned();
+        let clean_path = format!("{base}.clean_core.etf");
         let forms_path = format!("{base}.forms.etf");
-        if !Path::new(&forms_path).exists() {
+        if !Path::new(&clean_path).exists() || !Path::new(&forms_path).exists() {
             continue;
         }
-        let forms = decode(&fs::read(forms_path).unwrap(), Limits::default()).unwrap();
-        let raw = decode(&fs::read(&path).unwrap(), Limits::default()).unwrap();
-        let view = CleanView::new(raw.clone()).unwrap();
-        let mut atoms = view.atoms().unwrap().into_iter().collect::<BTreeSet<_>>();
-        atoms.insert("nil".to_owned());
-        for term in &forms.terms {
-            match term {
-                ErlangTerm::Atom(name) => {
-                    atoms.insert(name.clone());
-                }
-                ErlangTerm::ExternalFun {
-                    module, function, ..
-                } => {
-                    atoms.insert(module.clone());
-                    atoms.insert(function.clone());
-                }
-                _ => {}
-            }
-        }
+        let forms = read_terms(forms_path);
+        let clean = read_terms(clean_path);
+        let view = CleanView::new(read_terms(&raw_path)).unwrap();
+        let view_atoms: BTreeSet<_> = view.atoms().unwrap().into_iter().collect();
+        assert_eq!(
+            view_atoms,
+            atoms(&clean),
+            "{}: exact cleaned namespace",
+            raw_path.display()
+        );
+        let mut names = atoms(&forms);
+        names.extend(view_atoms);
+        names.insert("nil".into());
         let layout =
-            NativeAtomLayout::deterministic_native("native-atoms-v1:fused-fixtures".into(), atoms)
+            NativeAtomLayout::deterministic_native("native-atoms-v1:fused-fixtures".into(), names)
                 .unwrap();
-        let name = path
+        let name = raw_path
             .file_name()
             .unwrap()
             .to_string_lossy()
             .trim_end_matches(".raw_core.etf")
             .to_owned();
-        compare(&name, forms, raw, &layout);
-        tested += 1;
+        let reference = adapter::module(
+            Compilation {
+                module: name.clone(),
+                source_forms: forms.clone(),
+                cleaned_core: clean,
+            },
+            &layout,
+        )
+        .unwrap();
+        let actual = adapter::module_view(name, forms, &view, &layout).unwrap();
+        assert_eq!(
+            actual,
+            reference,
+            "{}: all terms, nodes, IDs and maps",
+            raw_path.display()
+        );
+        kinds.extend(actual.nodes.iter().map(|node| node.expr.kind()));
+        checked += 1;
     }
     assert!(
-        tested >= 30,
-        "expected broad raw Core fixture coverage, found {tested}"
+        checked >= 20,
+        "fixture inventory unexpectedly small: {checked}"
     );
+    for kind in [
+        "module", "literal", "var", "binary", "bitstr", "map", "map_pair", "fun", "letrec", "try",
+        "catch", "case", "clause", "apply", "call", "primop",
+    ] {
+        assert!(
+            kinds.contains(kind),
+            "missing compiler fixture coverage for {kind}"
+        );
+    }
 }

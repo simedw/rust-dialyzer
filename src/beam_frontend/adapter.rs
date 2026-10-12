@@ -2,7 +2,7 @@
 //! The selected runtime atom scope determines map layout, never the compiler.
 use super::{
     Compilation,
-    clean_view::{CleanView, ViewRef},
+    clean_view::{CleanView, GroupChildren, NodeShape, ViewRef},
 };
 use crate::{
     core::{
@@ -381,7 +381,7 @@ impl<'a> Builder<'a> {
                     &frame.kind,
                     frame.annotations,
                     frame.value,
-                    &frame.groups,
+                    frame.groups.iter().map(Vec::len),
                     frame.children,
                     frame.pattern,
                     id,
@@ -422,58 +422,70 @@ impl<'a> Builder<'a> {
         }
     }
     fn core_view(&mut self, view: &CleanView) -> Result<NodeId, String> {
-        struct Frame {
-            kind: &'static str,
+        struct Frame<'a> {
+            shape: NodeShape<'a>,
             annotations: TermId,
             value: Option<TermId>,
-            groups: Vec<Vec<ViewRef>>,
-            pattern: Option<bool>,
-            source_children: Vec<ViewRef>,
-            at: usize,
+            group_at: usize,
+            cursor: Option<GroupChildren<'a>>,
+            counts: [usize; 5],
             children: Vec<NodeId>,
         }
-        let make = |this: &mut Self, reference| -> Result<Frame, String> {
+        impl Frame<'_> {
+            fn next_child(&mut self) -> Result<Option<ViewRef>, String> {
+                while self.group_at < self.shape.group_count() {
+                    let cursor = self
+                        .cursor
+                        .get_or_insert_with(|| self.shape.group_children(self.group_at));
+                    if let Some(child) = cursor.next() {
+                        let child = child?;
+                        self.counts[self.group_at] += 1;
+                        return Ok(Some(child));
+                    }
+                    self.cursor = None;
+                    self.group_at += 1;
+                }
+                // Match compiler transport: map pairs are numbered before base.
+                Ok(self.shape.map_arg.take())
+            }
+        }
+        let input = view.arena();
+        let make = |this: &mut Self, reference| -> Result<Frame<'_>, String> {
             let shape = view.shape(reference)?;
-            let source_children = shape
-                .groups
-                .iter()
-                .flatten()
-                .copied()
-                .chain(shape.map_arg)
-                .collect();
+            let annotations = this.value(input, shape.annotations)?;
+            let value = shape.value.map(|id| this.value(input, id)).transpose()?;
             Ok(Frame {
-                kind: shape.kind,
-                annotations: this.value(view.arena(), shape.annotations)?,
-                value: shape
-                    .value
-                    .map(|v| this.value(view.arena(), v))
-                    .transpose()?,
-                groups: shape.groups,
-                pattern: shape.pattern,
-                source_children,
-                at: 0,
+                shape,
+                annotations,
+                value,
+                group_at: 0,
+                cursor: None,
+                counts: [0; 5],
                 children: Vec::new(),
             })
         };
         let mut stack = vec![make(self, view.root())?];
         loop {
-            let frame = stack.last_mut().ok_or("native fused: missing frame")?;
-            if let Some(child) = frame.source_children.get(frame.at).copied() {
-                frame.at += 1;
+            let child = stack
+                .last_mut()
+                .ok_or("native view: missing frame")?
+                .next_child()?;
+            if let Some(child) = child {
                 stack.push(make(self, child)?);
                 continue;
             }
             let frame = stack.pop().unwrap();
             let id = NodeId(self.nodes.len());
-            self.nodes.push(direct_node(
-                frame.kind,
+            let node = direct_node(
+                frame.shape.kind,
                 frame.annotations,
                 frame.value,
-                &frame.groups,
+                frame.counts[..frame.shape.group_count()].iter().copied(),
                 frame.children,
-                frame.pattern,
+                frame.shape.pattern,
                 id,
-            )?);
+            )?;
+            self.nodes.push(node);
             if let Some(parent) = stack.last_mut() {
                 parent.children.push(id);
             } else {
@@ -481,7 +493,6 @@ impl<'a> Builder<'a> {
             }
         }
     }
-
     fn contracts(&mut self, input: &Arc<ErlangTerms>) -> Result<BTreeMap<TermId, TermId>, String> {
         fn variable(input: &ErlangTerms, id: TermId) -> Option<TermId> {
             let f = tuple(input, id).ok()?;
@@ -613,22 +624,22 @@ impl<'a> Builder<'a> {
 
 /// Native compilation already fixes record shapes. Build the typed node once;
 /// cross-node semantics are checked by CoreProgram's final validation gate.
-fn direct_node<C>(
+fn direct_node(
     kind: &str,
     annotations: TermId,
     value: Option<TermId>,
-    groups: &[Vec<C>],
+    groups: impl Iterator<Item = usize>,
     children: Vec<NodeId>,
     pattern: Option<bool>,
     id: NodeId,
 ) -> Result<CoreNode, String> {
-    struct Children<'a, C> {
-        groups: std::slice::Iter<'a, Vec<C>>,
+    struct Children<I> {
+        groups: I,
         nodes: std::vec::IntoIter<NodeId>,
     }
-    impl<C> Children<'_, C> {
+    impl<I: Iterator<Item = usize>> Children<I> {
         fn count(&mut self) -> usize {
-            self.groups.next().unwrap().len()
+            self.groups.next().unwrap()
         }
         fn one(&mut self) -> NodeId {
             let count = self.count();
@@ -648,7 +659,7 @@ fn direct_node<C>(
         }
     }
     let mut children = Children {
-        groups: groups.iter(),
+        groups,
         nodes: children.into_iter(),
     };
     let expr = match kind {
@@ -826,15 +837,14 @@ pub fn module_direct(
     })
 }
 
-/// Apply selected cleanup while emitting final typed nodes. The view shares the
-/// raw Core prefix and allocates only sparse goto replacement records.
+/// Fuse lazy cleanup with typed emission; validate the assembled program before analysis.
 pub fn module_view(
     module: String,
-    forms: ErlangTerms,
+    source_forms: ErlangTerms,
     view: &CleanView,
     layout: &NativeAtomLayout,
 ) -> Result<CoreModule, String> {
-    let forms = Arc::new(forms);
+    let forms = Arc::new(source_forms);
     let mut builder = Builder {
         layout,
         terms: SharedVec::new(),

@@ -22,13 +22,182 @@ impl ViewRef {
         Self { id, clean: false }
     }
 }
-pub struct NodeShape {
+#[derive(Clone, Copy)]
+enum Group {
+    Empty,
+    One(ViewRef),
+    List {
+        root: TermId,
+        clean: bool,
+        filter: bool,
+    },
+    Pairs {
+        root: TermId,
+        clean: bool,
+    },
+}
+pub struct NodeShape<'a> {
     pub kind: &'static str,
     pub annotations: TermId,
     pub value: Option<TermId>,
-    pub groups: Vec<Vec<ViewRef>>,
     pub map_arg: Option<ViewRef>,
     pub pattern: Option<bool>,
+    terms: &'a SharedVec<T>,
+    groups: [Group; 5],
+    count: usize,
+}
+impl<'a> NodeShape<'a> {
+    pub fn group_count(&self) -> usize {
+        self.count
+    }
+    pub fn group_children(&self, index: usize) -> GroupChildren<'a> {
+        assert!(index < self.count);
+        GroupChildren::new(self.terms, self.groups[index])
+    }
+    pub fn children(&self) -> Children<'a> {
+        Children {
+            terms: self.terms,
+            groups: self.groups,
+            count: self.count,
+            next: 0,
+            current: GroupChildren::new(self.terms, Group::Empty),
+            map_arg: self.map_arg,
+        }
+    }
+}
+/// Cursor over existing list chunks; neither chunks nor definitions are copied.
+struct ListCursor<'a> {
+    terms: &'a SharedVec<T>,
+    next: Option<TermId>,
+    items: std::slice::Iter<'a, TermId>,
+}
+impl<'a> ListCursor<'a> {
+    fn new(terms: &'a SharedVec<T>, root: TermId) -> Self {
+        Self {
+            terms,
+            next: Some(root),
+            items: [].iter(),
+        }
+    }
+}
+impl Iterator for ListCursor<'_> {
+    type Item = Result<TermId>;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(&id) = self.items.next() {
+                return Some(Ok(id));
+            }
+            let id = self.next.take()?;
+            match self.terms.get(id.0) {
+                Some(T::Nil) => return None,
+                Some(T::List { items, tail }) => {
+                    self.items = items.iter();
+                    self.next = Some(*tail);
+                }
+                _ => return Some(Err(format!("clean view: expected proper list at {}", id.0))),
+            }
+        }
+    }
+}
+pub struct GroupChildren<'a> {
+    terms: &'a SharedVec<T>,
+    group: Group,
+    list: Option<ListCursor<'a>>,
+    pending: Option<ViewRef>,
+    failed: bool,
+}
+impl<'a> GroupChildren<'a> {
+    fn new(terms: &'a SharedVec<T>, group: Group) -> Self {
+        let list = match group {
+            Group::List { root, .. } | Group::Pairs { root, .. } => {
+                Some(ListCursor::new(terms, root))
+            }
+            _ => None,
+        };
+        let pending = if let Group::One(reference) = group {
+            Some(reference)
+        } else {
+            None
+        };
+        Self {
+            terms,
+            group,
+            list,
+            pending,
+            failed: false,
+        }
+    }
+    fn step(&mut self) -> Result<Option<ViewRef>> {
+        if let Some(reference) = self.pending.take() {
+            return Ok(Some(reference));
+        }
+        loop {
+            let Some(cursor) = self.list.as_mut() else {
+                return Ok(None);
+            };
+            let Some(id) = cursor.next() else {
+                return Ok(None);
+            };
+            let id = id?;
+            match self.group {
+                Group::List { clean, filter, .. } => {
+                    if filter && drop_clause(self.terms, id)? {
+                        continue;
+                    }
+                    return Ok(Some(ViewRef { id, clean }));
+                }
+                Group::Pairs { clean, .. } => {
+                    let pair = tuple(self.terms, id)?;
+                    if pair.len() != 2 {
+                        return Err("clean view: malformed definition pair".into());
+                    }
+                    self.pending = Some(ViewRef { id: pair[1], clean });
+                    return Ok(Some(ViewRef::preserved(pair[0])));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+impl Iterator for GroupChildren<'_> {
+    type Item = Result<ViewRef>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        match self.step() {
+            Ok(Some(reference)) => Some(Ok(reference)),
+            Ok(None) => None,
+            Err(e) => {
+                self.failed = true;
+                Some(Err(e))
+            }
+        }
+    }
+}
+pub struct Children<'a> {
+    terms: &'a SharedVec<T>,
+    groups: [Group; 5],
+    count: usize,
+    next: usize,
+    current: GroupChildren<'a>,
+    map_arg: Option<ViewRef>,
+}
+impl Iterator for Children<'_> {
+    type Item = Result<ViewRef>;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(child) = self.current.next() {
+                return Some(child);
+            }
+            if self.next < self.count {
+                self.current = GroupChildren::new(self.terms, self.groups[self.next]);
+                self.next += 1;
+            } else {
+                return self.map_arg.take().map(Ok);
+            }
+        }
+    }
 }
 pub struct CleanView {
     arena: Arc<ErlangTerms>,
@@ -48,19 +217,6 @@ fn atom(terms: &SharedVec<T>, id: TermId) -> Option<&str> {
         _ => None,
     }
 }
-fn list(terms: &SharedVec<T>, mut id: TermId) -> Result<Vec<TermId>> {
-    let mut result = Vec::new();
-    loop {
-        match terms.get(id.0) {
-            Some(T::Nil) => return Ok(result),
-            Some(T::List { items, tail }) => {
-                result.extend_from_slice(items);
-                id = *tail;
-            }
-            _ => return Err(format!("clean view: expected proper list at {}", id.0)),
-        }
-    }
-}
 fn tag(terms: &SharedVec<T>, id: TermId) -> Option<&str> {
     tuple(terms, id)
         .ok()?
@@ -78,9 +234,13 @@ fn resolve(mut reference: ViewRef, replacements: &FastHashMap<TermId, TermId>) -
 fn ignored(terms: &SharedVec<T>, id: TermId) -> Result<bool> {
     let f = tuple(terms, id)?;
     let ann = *f.get(1).ok_or("clean view: missing annotations")?;
-    Ok(list(terms, ann)?
-        .into_iter()
-        .any(|id| atom(terms, id) == Some("dialyzer_ignore")))
+    let mut found = false;
+    for id in ListCursor::new(terms, ann) {
+        if atom(terms, id?) == Some("dialyzer_ignore") {
+            found = true;
+        }
+    }
+    Ok(found)
 }
 fn drop_clause(terms: &SharedVec<T>, id: TermId) -> Result<bool> {
     let f = tuple(terms, id)?;
@@ -100,12 +260,12 @@ fn drop_clause(terms: &SharedVec<T>, id: TermId) -> Result<bool> {
     }
     Ok(false)
 }
-fn shape(
-    terms: &SharedVec<T>,
+fn shape<'a>(
+    terms: &'a SharedVec<T>,
     reference: ViewRef,
     replacements: &FastHashMap<TermId, TermId>,
     raw_len: usize,
-) -> Result<NodeShape> {
+) -> Result<NodeShape<'a>> {
     let reference = resolve(reference, replacements);
     let f = tuple(terms, reference.id)?;
     let (kind, arity) = match tag(terms, reference.id) {
@@ -141,118 +301,102 @@ fn shape(
     if reference.clean && matches!(kind, "alias" | "opaque" | "receive") {
         return Err(format!("clean view: unsupported cleaned record {kind}"));
     }
-    let child = |id, clean| {
-        resolve(
-            ViewRef {
-                id,
-                clean: reference.clean && clean,
+    // Child resolution is deferred to shape(child), so cursors only borrow the
+    // immutable source arena while sparse replacement preparation can mutate.
+    let one = |i, clean| {
+        Group::One(ViewRef {
+            id: f[i],
+            clean: reference.clean && clean,
+        })
+    };
+    let many = |i, clean| Group::List {
+        root: f[i],
+        clean: reference.clean && clean,
+        filter: false,
+    };
+    let pairs = |i, clean| Group::Pairs {
+        root: f[i],
+        clean: reference.clean && clean,
+    };
+    let mut s = NodeShape {
+        kind,
+        annotations: f[1],
+        value: None,
+        map_arg: None,
+        pattern: None,
+        terms,
+        groups: [Group::Empty; 5],
+        count: 0,
+    };
+    let mut set = |groups: &[Group]| {
+        s.count = groups.len();
+        s.groups[..groups.len()].copy_from_slice(groups);
+    };
+    match kind {
+        "literal" | "var" | "opaque" => s.value = Some(f[2]),
+        "binary" | "tuple" | "values" => set(&[many(2, true)]),
+        "alias" | "cons" | "seq" => set(&[one(2, true), one(3, true)]),
+        "apply" => set(&[one(2, true), many(3, true)]),
+        "primop" => set(&[one(2, false), many(3, true)]),
+        "case" => set(&[
+            one(2, true),
+            Group::List {
+                root: f[3],
+                clean: reference.clean,
+                filter: reference.clean && reference.id.0 < raw_len,
             },
-            replacements,
-        )
-    };
-    let one = |i, clean| vec![child(f[i], clean)];
-    let many = |i, clean| -> Result<Vec<ViewRef>> {
-        Ok(list(terms, f[i])?
-            .into_iter()
-            .map(|id| child(id, clean))
-            .collect())
-    };
-    let pairs = |i, clean| -> Result<Vec<ViewRef>> {
-        let mut result = Vec::new();
-        for pair in list(terms, f[i])? {
-            let p = tuple(terms, pair)?;
-            if p.len() != 2 {
-                return Err("clean view: malformed definition pair".into());
-            }
-            result.extend([child(p[0], false), child(p[1], clean)]);
-        }
-        Ok(result)
-    };
-    let mut value = None;
-    let mut map_arg = None;
-    let mut pattern = None;
-    let groups = match kind {
-        "literal" | "var" | "opaque" => {
-            value = Some(f[2]);
-            vec![]
-        }
-        "binary" | "tuple" | "values" => vec![many(2, true)?],
-        "alias" | "cons" | "seq" => vec![one(2, true), one(3, true)],
-        "apply" => vec![one(2, true), many(3, true)?],
-        "primop" => vec![one(2, false), many(3, true)?],
-        "case" => {
-            let clauses = list(terms, f[3])?
-                .into_iter()
-                .filter_map(|id| {
-                    if !reference.clean || reference.id.0 >= raw_len {
-                        Some(Ok(child(id, reference.clean)))
-                    } else {
-                        match drop_clause(terms, id) {
-                            Ok(true) => None,
-                            Ok(false) => Some(Ok(child(id, true))),
-                            Err(e) => Some(Err(e)),
-                        }
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?;
-            vec![one(2, true), clauses]
-        }
-        "bitstr" => vec![
+        ]),
+        "bitstr" => set(&[
             one(2, true),
             one(3, true),
             one(4, false),
             one(5, false),
             one(6, false),
-        ],
-        "call" => vec![one(2, true), one(3, true), many(4, true)?],
-        "clause" => vec![many(2, false)?, one(3, true), one(4, true)],
-        "let" => vec![many(2, false)?, one(3, true), one(4, true)],
-        "receive" => vec![many(2, false)?, one(3, false), one(4, false)],
-        "fun" => vec![many(2, false)?, one(3, true)],
-        "catch" => vec![one(2, true)],
-        "try" => vec![
+        ]),
+        "call" => set(&[one(2, true), one(3, true), many(4, true)]),
+        "clause" | "let" => set(&[many(2, false), one(3, true), one(4, true)]),
+        "receive" => set(&[many(2, false), one(3, false), one(4, false)]),
+        "fun" => set(&[many(2, false), one(3, true)]),
+        "catch" => set(&[one(2, true)]),
+        "try" => set(&[
             one(2, true),
-            many(3, false)?,
+            many(3, false),
             one(4, true),
-            many(5, false)?,
+            many(5, false),
             one(6, true),
-        ],
-        "letrec" => vec![pairs(2, true)?, one(3, true)],
-        "module" => vec![
+        ]),
+        "letrec" => set(&[pairs(2, true), one(3, true)]),
+        "module" => set(&[
             one(2, false),
-            many(3, false)?,
-            pairs(4, false)?,
-            pairs(5, true)?,
-        ],
-        "map_pair" => vec![one(2, false), one(3, true), one(4, true)],
+            many(3, false),
+            pairs(4, false),
+            pairs(5, true),
+        ]),
+        "map_pair" => set(&[one(2, false), one(3, true), one(4, true)]),
         "map" => {
-            map_arg = Some(child(f[2], true));
-            pattern = Some(match atom(terms, f[4]) {
+            set(&[many(3, true)]);
+            s.map_arg = Some(ViewRef {
+                id: f[2],
+                clean: reference.clean,
+            });
+            s.pattern = Some(match atom(terms, f[4]) {
                 Some("true") => true,
                 Some("false") => false,
                 _ => return Err("clean view: invalid map pattern flag".into()),
             });
-            vec![many(3, true)?]
         }
         _ => unreachable!(),
-    };
-    Ok(NodeShape {
-        kind,
-        annotations: f[1],
-        value,
-        groups,
-        map_arg,
-        pattern,
-    })
+    }
+    Ok(s)
 }
-
-struct Prepare {
+struct Prepare<'a> {
+    raw: &'a ErlangTerms,
     arena: Arena,
     raw_len: usize,
     replacements: FastHashMap<TermId, TermId>,
     visited: FastHashSet<TermId>,
 }
-impl Prepare {
+impl Prepare<'_> {
     fn node(&mut self, reference: ViewRef, depth: usize) -> Result<()> {
         if !reference.clean {
             return Ok(());
@@ -263,27 +407,41 @@ impl Prepare {
         if !self.visited.insert(reference.id) {
             return Ok(());
         }
-        let f = tuple(&self.arena.terms, reference.id)?.to_vec();
-        if tag(&self.arena.terms, reference.id) == Some("c_letrec") && f.len() != 4 {
+        let raw = self.raw;
+        let fields = tuple(&raw.terms, reference.id)?;
+        if tag(&raw.terms, reference.id) == Some("c_letrec") && fields.len() != 4 {
             return Err("clean view: malformed letrec".into());
         }
-        if tag(&self.arena.terms, reference.id) == Some("c_letrec")
-            && list(&self.arena.terms, f[1])?
-                .into_iter()
-                .any(|id| atom(&self.arena.terms, id) == Some("letrec_goto"))
-        {
-            let defs = list(&self.arena.terms, f[2])?;
-            if defs.len() != 1 {
+        let is_goto = if tag(&raw.terms, reference.id) == Some("c_letrec") {
+            let mut found = false;
+            for id in ListCursor::new(&raw.terms, fields[1]) {
+                if atom(&raw.terms, id?) == Some("letrec_goto") {
+                    found = true;
+                }
+            }
+            found
+        } else {
+            false
+        };
+        if is_goto {
+            let f = [fields[0], fields[1], fields[2], fields[3]];
+            let mut defs = ListCursor::new(&raw.terms, f[2]);
+            let definition = defs
+                .next()
+                .transpose()?
+                .ok_or("clean view: goto letrec must have one definition")?;
+            if defs.next().transpose()?.is_some() {
                 return Err("clean view: goto letrec must have one definition".into());
             }
-            let pair = tuple(&self.arena.terms, defs[0])?.to_vec();
+            let pair = tuple(&raw.terms, definition)?;
             if pair.len() != 2 {
                 return Err("clean view: malformed goto definition".into());
             }
-            let fun = tuple(&self.arena.terms, pair[1])?.to_vec();
-            if tag(&self.arena.terms, pair[1]) != Some("c_fun") || fun.len() != 4 {
+            let fields = tuple(&raw.terms, pair[1])?;
+            if tag(&raw.terms, pair[1]) != Some("c_fun") || fields.len() != 4 {
                 return Err("clean view: goto target must be fun".into());
             }
+            let fun = [fields[0], fields[1], fields[2], fields[3]];
             self.node(ViewRef::cleaned(fun[3]), depth + 1)?;
             self.node(ViewRef::cleaned(f[3]), depth + 1)?;
             let fun_body = resolve(ViewRef::cleaned(fun[3]), &self.replacements).id;
@@ -296,19 +454,9 @@ impl Prepare {
             self.replacements.insert(reference.id, replacement);
             return Ok(());
         }
-        let description = shape(
-            &self.arena.terms,
-            reference,
-            &self.replacements,
-            self.raw_len,
-        )?;
-        for child in description
-            .groups
-            .into_iter()
-            .flatten()
-            .chain(description.map_arg)
-        {
-            self.node(child, depth + 1)?;
+        let description = shape(&raw.terms, reference, &self.replacements, self.raw_len)?;
+        for child in description.children() {
+            self.node(child?, depth + 1)?;
         }
         Ok(())
     }
@@ -325,7 +473,9 @@ impl Prepare {
         let a = self.literal("a");
         let b = self.literal("b");
         let mut elements = vec![b];
-        elements.extend(list(&self.arena.terms, fun[2])?);
+        for id in ListCursor::new(&self.arena.terms, fun[2]) {
+            elements.push(id?);
+        }
         let ann = self.arena.nil();
         let pattern_b = if elements.len() == 1 {
             let atom = tuple(&self.arena.terms, b)?[2];
@@ -353,6 +503,7 @@ impl Prepare {
 impl CleanView {
     pub fn new(raw: ErlangTerms) -> Result<Self> {
         let mut prepare = Prepare {
+            raw: &raw,
             arena: Arena::from_terms(&raw),
             raw_len: raw.terms.len(),
             replacements: FastHashMap::default(),
@@ -373,7 +524,7 @@ impl CleanView {
     pub fn root(&self) -> ViewRef {
         self.root
     }
-    pub fn shape(&self, reference: ViewRef) -> Result<NodeShape> {
+    pub fn shape(&self, reference: ViewRef) -> Result<NodeShape<'_>> {
         shape(
             &self.arena.terms,
             reference,
@@ -430,8 +581,9 @@ impl CleanView {
             if let Some(pattern) = shape.pattern {
                 names.insert(if pattern { "true" } else { "false" }.into());
             }
-            nodes.extend(shape.groups.into_iter().flatten());
-            nodes.extend(shape.map_arg);
+            for child in shape.children() {
+                nodes.push(child?);
+            }
         }
         let mut visited = FastHashSet::default();
         while let Some(id) = values.pop() {

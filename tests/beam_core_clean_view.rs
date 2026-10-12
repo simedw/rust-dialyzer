@@ -16,13 +16,10 @@ mod oracle;
 fn materialize(view: &CleanView) -> ErlangTerms {
     fn node(view: &CleanView, reference: ViewRef, a: &mut Arena) -> TermId {
         let s = view.shape(reference).unwrap();
-        let g = s
-            .groups
-            .into_iter()
-            .map(|group| {
-                group
-                    .into_iter()
-                    .map(|child| node(view, child, a))
+        let g = (0..s.group_count())
+            .map(|index| {
+                s.group_children(index)
+                    .map(|child| node(view, child.unwrap(), a))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -198,4 +195,53 @@ fn nested_goto_resolves_transformed_root_before_ignore_check() {
     let outer = goto(&mut a, inner, outer_target, vec![]);
     let _ = nil;
     check(a.finish(outer), "nested goto transformed annotations");
+}
+
+#[test]
+fn borrowed_cursors_follow_empty_chunks_and_filter_case_clauses() {
+    let mut a = Arena::default();
+    let nil = a.nil();
+    let ok = literal(&mut a, "ok");
+    let truth = literal(&mut a, "true");
+    let good = a.tagged("c_clause", vec![nil, nil, truth, ok]);
+    let ignored = a.atom("dialyzer_ignore");
+    let ann = a.list(vec![ignored]);
+    let bad = a.tagged("c_clause", vec![ann, nil, truth, ok]);
+    let last = a.push(T::List {
+        items: vec![good],
+        tail: nil,
+    });
+    let empty = a.push(T::List {
+        items: vec![],
+        tail: last,
+    });
+    let clauses = a.push(T::List {
+        items: vec![good, bad],
+        tail: empty,
+    });
+    let root = a.tagged("c_case", vec![nil, ok, clauses]);
+    check(a.finish(root), "segmented filtered clauses");
+}
+
+#[test]
+fn borrowed_definition_cursor_preserves_keys_and_cleans_functions() {
+    let mut a = Arena::default();
+    let nil = a.nil();
+    let ok = literal(&mut a, "ok");
+    let fun = a.tagged("c_fun", vec![nil, nil, ok]);
+    let name_value = a.atom("local");
+    let arity = a.integer(0);
+    let fa = a.tuple(vec![name_value, arity]);
+    let key = a.tagged("c_var", vec![nil, fa]);
+    let pair = a.tuple(vec![key, fun]);
+    let last = a.push(T::List {
+        items: vec![pair],
+        tail: nil,
+    });
+    let empty = a.push(T::List {
+        items: vec![],
+        tail: last,
+    });
+    let root = a.tagged("c_letrec", vec![nil, empty, ok]);
+    check(a.finish(root), "segmented definition pairs");
 }
