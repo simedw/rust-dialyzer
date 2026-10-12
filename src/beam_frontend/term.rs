@@ -194,3 +194,97 @@ mod tests {
         assert_eq!(a.keyword(list, "line"), None);
     }
 }
+
+/// Preserve the reachable term graph and its relative arena order while
+/// dropping compiler drafts that no later stage can observe.
+pub fn compact(input: ErlangTerms) -> Result<ErlangTerms, String> {
+    let mut needed = vec![false; input.terms.len()];
+    let mut pending = vec![input.root];
+    while let Some(id) = pending.pop() {
+        let active = needed.get_mut(id.0).ok_or("compact root outside arena")?;
+        if std::mem::replace(active, true) {
+            continue;
+        }
+        match &input.terms[id.0] {
+            ErlangTerm::Tuple(items) => pending.extend(items.iter().copied()),
+            ErlangTerm::List { items, tail } => {
+                pending.extend(items.iter().copied());
+                pending.push(*tail);
+            }
+            ErlangTerm::Map(pairs) => pending.extend(pairs.iter().flat_map(|(k, v)| [*k, *v])),
+            _ => (),
+        }
+    }
+    let mut remap = vec![usize::MAX; needed.len()];
+    let mut terms = Vec::with_capacity(needed.iter().filter(|&&n| n).count());
+    for (i, term) in input.terms.iter().enumerate() {
+        if !needed[i] {
+            continue;
+        }
+        let mapped = |id: TermId| -> Result<TermId, String> {
+            let value = *remap.get(id.0).ok_or("compact child outside arena")?;
+            if value == usize::MAX {
+                return Err("compact child must precede parent".into());
+            }
+            Ok(TermId(value))
+        };
+        let term = match term {
+            ErlangTerm::Tuple(items) => ErlangTerm::Tuple(
+                items
+                    .iter()
+                    .copied()
+                    .map(mapped)
+                    .collect::<Result<_, _>>()?,
+            ),
+            ErlangTerm::List { items, tail } => ErlangTerm::List {
+                items: items
+                    .iter()
+                    .copied()
+                    .map(mapped)
+                    .collect::<Result<_, _>>()?,
+                tail: mapped(*tail)?,
+            },
+            ErlangTerm::Map(pairs) => ErlangTerm::Map(
+                pairs
+                    .iter()
+                    .map(|(k, v)| Ok((mapped(*k)?, mapped(*v)?)))
+                    .collect::<Result<_, String>>()?,
+            ),
+            term => term.clone(),
+        };
+        remap[i] = terms.len();
+        terms.push(term);
+    }
+    Ok(ErlangTerms {
+        root: TermId(remap[input.root.0]),
+        terms: terms.into(),
+    })
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+    #[test]
+    fn compaction_preserves_complete_terms_and_shared_children() {
+        let mut a = Arena::default();
+        let dead = a.atom("unused compiler draft");
+        let key = a.atom("key");
+        let one = a.integer(1);
+        let pair = a.tuple(vec![key, one]);
+        let list = a.list(vec![pair, pair]);
+        let root = a.push(ErlangTerm::Map(vec![(key, list)]));
+        let input = a.finish(root);
+        let output = compact(input.clone()).unwrap();
+        let limits = crate::external_term::Limits::default();
+        assert_eq!(
+            crate::external_term::encode(&input, limits, false).unwrap(),
+            crate::external_term::encode(&output, limits, false).unwrap()
+        );
+        assert_eq!(output.terms.len(), input.terms.len() - 1);
+        assert!(!output.terms.iter().any(|t| t == &input.terms[dead.0]));
+        let ErlangTerm::List { items, .. } = &output.terms[output.terms.len() - 2] else {
+            panic!("list missing")
+        };
+        assert_eq!(items[0], items[1]);
+    }
+}

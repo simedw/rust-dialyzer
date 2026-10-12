@@ -47,6 +47,22 @@ mod tests {
         }
     }
     #[test]
+    fn independent_literals_do_not_share_one_construction_budget() {
+        let mut terms = vec![ErlangTerm::Nil];
+        let mut roots = Vec::new();
+        for _ in 0..2_100 {
+            roots.push(TermId(terms.len()));
+            terms.push(ErlangTerm::Tuple(vec![TermId(0); 500]));
+        }
+        let arena = ErlangTerms {
+            root: roots[0],
+            terms: terms.into(),
+        };
+        let types = LiteralTypes::build_roots(&arena, &roots).unwrap();
+        let expected = Type::tuple(vec![Type::nil(); 500]).unwrap();
+        assert!(roots.iter().all(|id| types.get(*id) == Some(&expected)));
+    }
+    #[test]
     fn excessive_materialization_work_is_still_rejected() {
         let arena = ErlangTerms {
             root: TermId(1),
@@ -212,7 +228,6 @@ impl LiteralTypes {
     fn build_with(arena: &ErlangTerms, roots: &[TermId], order: &TermOrderArena) -> Result<Self> {
         let mut needed = vec![false; arena.terms.len()];
         let mut pending = roots.to_vec();
-        let mut work = 0usize;
         while let Some(id) = pending.pop() {
             let active = needed
                 .get_mut(id.0)
@@ -231,12 +246,9 @@ impl LiteralTypes {
                     .collect(),
                 _ => Vec::new(),
             };
-            // Interned types share their children. Bound actual construction work,
-            // rather than the depth or expanded size of an imaginary owned tree.
-            work = work
-                .checked_add(1 + children.len())
-                .ok_or(LiteralError::ResourceLimit)?;
-            if work > 1_000_000 {
+            // Arena validation bounds module storage. Interned children share
+            // storage, so limit one constructor's width, not all module literals.
+            if children.len() >= 1_000_000 {
                 return Err(LiteralError::ResourceLimit);
             }
             pending.extend(children);

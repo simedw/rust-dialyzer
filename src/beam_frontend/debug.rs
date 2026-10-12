@@ -63,6 +63,14 @@ pub fn chunks(bytes: &[u8], limits: Limits) -> Result<Vec<([u8; 4], &[u8])>, Str
     Ok(chunks)
 }
 pub fn read_beam(bytes: &[u8], limits: Limits) -> Result<DebugModule, String> {
+    let unpacked;
+    let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
+        unpacked = external_term::zlib::gunzip(bytes, limits.bytes)
+            .map_err(|e| format!("compressed BEAM {e}"))?;
+        unpacked.as_slice()
+    } else {
+        bytes
+    };
     let chunks = chunks(bytes, limits)?;
     let count = chunks.len();
     let mut debug = None;
@@ -195,13 +203,17 @@ mod tests {
             assert!(read_beam(&b"FOR1\0\0\0\x04BEAM"[..n], Limits::default()).is_err());
         }
         let b = wrap(&[(b"Dbgi", vec![131, 106]), (b"Dbgi", vec![131, 106])]);
-        assert!(read_beam(&b, Limits::default())
-            .unwrap_err()
-            .contains("duplicate"));
+        assert!(
+            read_beam(&b, Limits::default())
+                .unwrap_err()
+                .contains("duplicate")
+        );
         let mut b = wrap(&[]);
         b.push(0);
-        assert!(read_beam(&b, Limits::default())
-            .unwrap_err()
-            .contains("length"));
+        assert!(
+            read_beam(&b, Limits::default())
+                .unwrap_err()
+                .contains("length")
+        );
     }
 }

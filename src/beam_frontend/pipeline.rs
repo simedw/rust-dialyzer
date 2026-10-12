@@ -260,6 +260,11 @@ fn load_fused(paths: &[String], source: ContextSource<'_>) -> Result<LoadedNativ
     let mut compiled = setup_map(paths, |path| {
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         let raw = super::compile_beam_raw(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let raw = super::RawCompilation {
+            module: raw.module,
+            source_forms: super::term::compact(raw.source_forms)?,
+            raw_core: super::term::compact(raw.raw_core)?,
+        };
         let view = super::clean_view::CleanView::new(raw.raw_core)?;
         let atoms = if discover_atoms {
             Some(

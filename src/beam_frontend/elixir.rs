@@ -468,6 +468,16 @@ impl Lift {
                         .a
                         .keyword(args[0], "do")
                         .unwrap_or_else(|| self.a.nil());
+                    let clauses = if self.expanded_tag(clauses) == Some("__block__") {
+                        let fields = self.fields(clauses, 3)?;
+                        if self.a.list_items(fields[2])?.is_empty() {
+                            self.a.nil()
+                        } else {
+                            clauses
+                        }
+                    } else {
+                        clauses
+                    };
                     let clauses = self.arrow_clauses(clauses, scope, false, false)?;
                     if let Some(after) = self.a.keyword(args[0], "after") {
                         let after = self.a.list_items(after)?;
@@ -759,6 +769,86 @@ impl Lift {
                 total += value * factor;
             }
             return Ok(Some(self.a.integer(total)));
+        }
+        if module == "Elixir.URI" && matches!(name, "new" | "new!" | "parse") {
+            if let [arg] = args.as_slice() {
+                if matches!(self.a.get(*arg), ErlangTerm::Binary(bytes) if bytes.is_empty()) {
+                    let nil = self.a.atom("nil");
+                    let key = self.a.atom("__struct__");
+                    let value = self.a.atom("Elixir.URI");
+                    let mut entries = vec![(key, value)];
+                    for field in [
+                        "scheme",
+                        "authority",
+                        "userinfo",
+                        "host",
+                        "port",
+                        "path",
+                        "query",
+                        "fragment",
+                    ] {
+                        entries.push((self.a.atom(field), nil));
+                    }
+                    let uri = self.a.push(ErlangTerm::Map(entries));
+                    return Ok(Some(if name == "new" {
+                        let ok = self.a.atom("ok");
+                        self.a.tuple(vec![ok, uri])
+                    } else {
+                        uri
+                    }));
+                }
+            }
+        }
+        if module == "Elixir.String" && name == "split" {
+            if let [text, pattern, options] = args.as_slice() {
+                if let (ErlangTerm::Binary(text), ErlangTerm::Binary(pattern)) =
+                    (self.a.get(*text).clone(), self.a.get(*pattern).clone())
+                {
+                    if !pattern.is_empty() && self.a.list_items(*options).is_ok() {
+                        let trim = match self
+                            .a
+                            .keyword(*options, "trim")
+                            .and_then(|id| self.a.as_atom(id))
+                        {
+                            None | Some("false") => false,
+                            Some("true") => true,
+                            _ => return Ok(None),
+                        };
+                        let parts = match self.a.keyword(*options, "parts") {
+                            None => None,
+                            Some(id) if self.a.as_atom(id) == Some("infinity") => None,
+                            Some(id) => match self.a.as_integer(id) {
+                                Some(n) if n > 0 => Some(n as usize),
+                                _ => return Ok(None),
+                            },
+                        };
+                        let mut result = Vec::new();
+                        let mut rest = text.as_slice();
+                        loop {
+                            if parts.is_some_and(|n| result.len() + 1 == n) {
+                                if !trim || !rest.is_empty() {
+                                    result.push(self.a.push(ErlangTerm::Binary(rest.to_vec())));
+                                }
+                                break;
+                            }
+                            if let Some(at) = rest.windows(pattern.len()).position(|s| s == pattern)
+                            {
+                                if !trim || at != 0 {
+                                    result
+                                        .push(self.a.push(ErlangTerm::Binary(rest[..at].to_vec())));
+                                }
+                                rest = &rest[at + pattern.len()..];
+                            } else {
+                                if !trim || !rest.is_empty() {
+                                    result.push(self.a.push(ErlangTerm::Binary(rest.to_vec())));
+                                }
+                                break;
+                            }
+                        }
+                        return Ok(Some(self.a.list(result)));
+                    }
+                }
+            }
         }
         if module == "Elixir.MapSet" && name == "new" {
             let keys = match args.as_slice() {
@@ -1601,8 +1691,14 @@ impl Lift {
         };
         Ok(self.node("fun", ann, vec![function]))
     }
+    fn expanded_tag(&self, id: TermId) -> Option<&str> {
+        let fields = self.a.tuple_fields(id).ok()?;
+        (fields.len() == 3)
+            .then(|| self.a.as_atom(fields[0]))
+            .flatten()
+    }
     fn extract_guards(&self, condition: TermId) -> Result<(TermId, Vec<TermId>)> {
-        if self.a.tag(condition) != Some("when") {
+        if self.expanded_tag(condition) != Some("when") {
             return Ok((condition, vec![]));
         }
         let t = self.fields(condition, 3)?;
@@ -1612,7 +1708,7 @@ impl Lift {
         }
         let mut guards = Vec::new();
         let mut current = args[1];
-        while self.a.tag(current) == Some("when") {
+        while self.expanded_tag(current) == Some("when") {
             let t = self.fields(current, 3)?;
             let args = self.a.list_items(t[2])?;
             if args.len() != 2 {
@@ -1685,11 +1781,11 @@ impl Lift {
             let mut patterns = self.a.list_items(args[0])?;
             let mut guards = Vec::new();
             if patterns.len() == 1 {
-                if splat && self.a.tag(patterns[0]) == Some("when") {
+                if splat && self.expanded_tag(patterns[0]) == Some("when") {
                     let when = self.fields(patterns[0], 3)?;
                     let mut all = self.a.list_items(when[2])?;
                     let mut guard = all.pop().ok_or_else(|| self.error("fn guard"))?;
-                    while self.a.tag(guard) == Some("when") {
+                    while self.expanded_tag(guard) == Some("when") {
                         let fields = self.fields(guard, 3)?;
                         let pair = self.a.list_items(fields[2])?;
                         if pair.len() != 2 {

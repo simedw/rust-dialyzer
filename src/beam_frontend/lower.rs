@@ -1608,7 +1608,41 @@ impl Lower {
         };
         Ok(Expr { value, pre })
     }
+    fn literal_expression(&self, root: TermId) -> Result<bool> {
+        let mut pending = vec![root];
+        while let Some(node) = pending.pop() {
+            let fields = self.a.tuple_fields(node)?;
+            match self.a.tag(node) {
+                Some("atom" | "integer" | "char" | "float" | "string" | "nil") => (),
+                Some("tuple") if fields.len() == 3 => pending.extend(self.a.list_items(fields[2])?),
+                Some("cons") if fields.len() == 4 => pending.extend([fields[2], fields[3]]),
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+    fn literal_cons(&mut self, root: TermId) -> Result<Expr> {
+        let mut spine = Vec::new();
+        let mut tail = root;
+        while self.a.tag(tail) == Some("cons") {
+            let fields = self.a.tuple_fields(tail)?.to_vec();
+            let ann = self.annotation(fields[1])?;
+            let ann = self.full_annotation(ann)?;
+            spine.push((ann, fields[2]));
+            tail = fields[3];
+        }
+        let mut result = self.expr(tail)?;
+        for (ann, head) in spine.into_iter().rev() {
+            let head = self.expr(head)?;
+            debug_assert!(head.pre.is_empty() && result.pre.is_empty());
+            result.value = self.a.tagged("c_cons", vec![ann, head.value, result.value]);
+        }
+        Ok(result)
+    }
     fn expr(&mut self, node: TermId) -> Result<Expr> {
+        if self.a.tag(node) == Some("cons") && self.literal_expression(node)? {
+            return self.literal_cons(node);
+        }
         if self.depth >= 1024 {
             return Err(self.err("expression depth limit"));
         }
