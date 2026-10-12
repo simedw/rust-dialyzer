@@ -313,7 +313,13 @@ impl Program {
             index.index_metadata(mid, module)?;
         }
         for (i, module) in core.modules.iter().enumerate() {
+            let first_scope = index.scopes.len();
             index.walk_module(ModuleId(i), module)?;
+            // Scope bindings resolve names while walking their own module
+            // only; most scopes hold one or two, each in a whole map node.
+            for scope in &mut index.scopes[first_scope..] {
+                scope.bindings = BTreeMap::new();
+            }
         }
         Ok(index)
     }
