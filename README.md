@@ -7,12 +7,12 @@ A reimplementation of Erlang's Dialyzer in Rust. It reads compiled BEAM files, l
 Needs OTP 28 and Elixir 1.19 on `PATH`, and the project compiled with them.
 
 ```sh
-cargo build --release --bin core_cache_analyze
+cargo build --release --bin rust-dialyzer
 (cd ~/src/my_app && mix compile)
-python3 scripts/check_project.py ~/src/my_app
+target/release/rust-dialyzer ~/src/my_app
 ```
 
-This analyzes the project together with all its dependencies, Elixir and OTP, without a PLT, and prints warnings for the project's own modules. Add `--include-app mix --include-app ex_unit` if the project uses Mix tasks or test helpers; otherwise calls into them are reported as unknown. The full result is written to `.cache/check/my_app/result.json`.
+This analyzes the project together with all its dependencies, Elixir and OTP, without a PLT, and prints Dialyzer's warnings for the project's own modules. Add `--include-app mix --include-app ex_unit` if the project uses Mix tasks or test helpers; otherwise calls into them are reported as unknown. `--env` picks the build (default `dev`) and `--app` overrides which apps to report on. The exit code is 0 without warnings and 2 with warnings.
 
 Some dependencies still use constructs the BEAM frontend cannot lift; the run then stops with the module and function it failed on.
 
