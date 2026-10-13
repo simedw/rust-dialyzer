@@ -2,6 +2,8 @@
 
 A reimplementation of Erlang's Dialyzer in Rust. It reads compiled BEAM files, lifts them to Core Erlang, and produces the same warnings as OTP Dialyzer.
 
+From a cold start (no PLT), it is currently about 1.5–2× faster than OTP Dialyzer, but uses several times more memory.
+
 ## Check a Mix project
 
 Needs OTP 28 and Elixir 1.19 on `PATH`, and the project compiled with them.
