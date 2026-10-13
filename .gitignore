@@ -7,8 +7,5 @@ __pycache__/
 *.orig
 erl_crash.dump
 **/target/
-# Experiment artifacts (about 22 GB: captured inputs, source snapshots, builds).
-# Their READMEs, summaries and patches are committed explicitly; new files
-# under these directories stay local unless force-added.
-/reports/performance/
-/reports/real-projects/
+# Local run reports and benchmark artifacts.
+/reports/
