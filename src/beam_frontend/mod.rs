@@ -5,6 +5,7 @@ pub mod clean;
 pub mod clean_view;
 pub mod debug;
 pub mod elixir;
+pub mod elixir_pure;
 mod erl_bifs;
 pub mod erl_prepare;
 pub mod lower;

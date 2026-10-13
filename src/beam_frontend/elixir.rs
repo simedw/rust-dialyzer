@@ -7,6 +7,7 @@ use super::term::Arena;
 mod comprehensions;
 #[path = "elixir_try.rs"]
 mod exceptions;
+use super::elixir_pure::Term as PureTerm;
 use crate::core::{ErlangTerm, ErlangTerms, TermId};
 use std::collections::BTreeMap;
 type Result<T> = std::result::Result<T, String>;
@@ -718,7 +719,64 @@ impl Lift {
         }
         units
     }
+    fn pure_term(&self, id: TermId) -> Option<PureTerm> {
+        Some(match self.a.get(id) {
+            ErlangTerm::Atom(a) => PureTerm::Atom(a.clone()),
+            ErlangTerm::Integer(i) => PureTerm::Int(i.parse().ok()?),
+            ErlangTerm::Float(f) => PureTerm::Float(*f),
+            ErlangTerm::Binary(b) => PureTerm::Bin(b.clone()),
+            ErlangTerm::Tuple(items) => PureTerm::Tuple(
+                items.iter().map(|&i| self.pure_term(i)).collect::<Option<_>>()?,
+            ),
+            ErlangTerm::Nil => PureTerm::List(vec![]),
+            ErlangTerm::List { items, tail } => {
+                let mut list: Vec<PureTerm> =
+                    items.iter().map(|&i| self.pure_term(i)).collect::<Option<_>>()?;
+                let PureTerm::List(rest) = self.pure_term(*tail)? else {
+                    return None;
+                };
+                list.extend(rest);
+                PureTerm::List(list)
+            }
+            _ => return None,
+        })
+    }
+    fn push_pure(&mut self, term: PureTerm) -> TermId {
+        match term {
+            PureTerm::Atom(a) => self.a.atom(a),
+            PureTerm::Int(i) => self.a.integer(i),
+            PureTerm::Float(f) => self.a.push(ErlangTerm::Float(f)),
+            PureTerm::Bin(b) => self.a.push(ErlangTerm::Binary(b)),
+            PureTerm::List(items) => {
+                let items = items.into_iter().map(|t| self.push_pure(t)).collect();
+                self.a.list(items)
+            }
+            PureTerm::Tuple(items) => {
+                let items = items.into_iter().map(|t| self.push_pure(t)).collect();
+                self.a.tuple(items)
+            }
+            PureTerm::Map(entries) => {
+                let entries = entries
+                    .into_iter()
+                    .map(|(k, v)| (self.push_pure(k), self.push_pure(v)))
+                    .collect();
+                self.a.push(ErlangTerm::Map(entries))
+            }
+        }
+    }
     fn pure(&mut self, module: &str, name: &str, args: Vec<TermId>) -> Result<Option<TermId>> {
+        if matches!(module, "Elixir.URI" | "Elixir.Version" | "Elixir.Duration")
+            || (module == "Elixir.String" && name == "split")
+        {
+            let Some(values) = args.iter().map(|&a| self.pure_term(a)).collect::<Option<Vec<_>>>()
+            else {
+                return Err(self.error(&format!("compiler inline-pure {module}.{name} argument")));
+            };
+            return match super::elixir_pure::evaluate(module, name, &values) {
+                Ok(value) => Ok(value.map(|v| self.push_pure(v))),
+                Err(what) => Err(self.error(&format!("compiler inline-pure {what}"))),
+            };
+        }
         if module == "Elixir.Kernel" && name == "to_timeout" {
             let [arg] = args.as_slice() else {
                 return Ok(None);
@@ -769,86 +827,6 @@ impl Lift {
                 total += value * factor;
             }
             return Ok(Some(self.a.integer(total)));
-        }
-        if module == "Elixir.URI" && matches!(name, "new" | "new!" | "parse") {
-            if let [arg] = args.as_slice() {
-                if matches!(self.a.get(*arg), ErlangTerm::Binary(bytes) if bytes.is_empty()) {
-                    let nil = self.a.atom("nil");
-                    let key = self.a.atom("__struct__");
-                    let value = self.a.atom("Elixir.URI");
-                    let mut entries = vec![(key, value)];
-                    for field in [
-                        "scheme",
-                        "authority",
-                        "userinfo",
-                        "host",
-                        "port",
-                        "path",
-                        "query",
-                        "fragment",
-                    ] {
-                        entries.push((self.a.atom(field), nil));
-                    }
-                    let uri = self.a.push(ErlangTerm::Map(entries));
-                    return Ok(Some(if name == "new" {
-                        let ok = self.a.atom("ok");
-                        self.a.tuple(vec![ok, uri])
-                    } else {
-                        uri
-                    }));
-                }
-            }
-        }
-        if module == "Elixir.String" && name == "split" {
-            if let [text, pattern, options] = args.as_slice() {
-                if let (ErlangTerm::Binary(text), ErlangTerm::Binary(pattern)) =
-                    (self.a.get(*text).clone(), self.a.get(*pattern).clone())
-                {
-                    if !pattern.is_empty() && self.a.list_items(*options).is_ok() {
-                        let trim = match self
-                            .a
-                            .keyword(*options, "trim")
-                            .and_then(|id| self.a.as_atom(id))
-                        {
-                            None | Some("false") => false,
-                            Some("true") => true,
-                            _ => return Ok(None),
-                        };
-                        let parts = match self.a.keyword(*options, "parts") {
-                            None => None,
-                            Some(id) if self.a.as_atom(id) == Some("infinity") => None,
-                            Some(id) => match self.a.as_integer(id) {
-                                Some(n) if n > 0 => Some(n as usize),
-                                _ => return Ok(None),
-                            },
-                        };
-                        let mut result = Vec::new();
-                        let mut rest = text.as_slice();
-                        loop {
-                            if parts.is_some_and(|n| result.len() + 1 == n) {
-                                if !trim || !rest.is_empty() {
-                                    result.push(self.a.push(ErlangTerm::Binary(rest.to_vec())));
-                                }
-                                break;
-                            }
-                            if let Some(at) = rest.windows(pattern.len()).position(|s| s == pattern)
-                            {
-                                if !trim || at != 0 {
-                                    result
-                                        .push(self.a.push(ErlangTerm::Binary(rest[..at].to_vec())));
-                                }
-                                rest = &rest[at + pattern.len()..];
-                            } else {
-                                if !trim || !rest.is_empty() {
-                                    result.push(self.a.push(ErlangTerm::Binary(rest.to_vec())));
-                                }
-                                break;
-                            }
-                        }
-                        return Ok(Some(self.a.list(result)));
-                    }
-                }
-            }
         }
         if module == "Elixir.MapSet" && name == "new" {
             let keys = match args.as_slice() {
