@@ -1,13 +1,25 @@
 # rust-dialyzer
 
-A reimplementation of Erlang's Dialyzer in Rust. It reads compiled BEAM files, lifts them to Core Erlang, and produces the same warnings as OTP Dialyzer (OTP 28.3).
+A reimplementation of Erlang's Dialyzer in Rust. It reads compiled BEAM files, lifts them to Core Erlang, and produces the same warnings as OTP Dialyzer.
+
+## Check a Mix project
+
+Needs OTP 28 and Elixir 1.19 on `PATH`, and the project compiled with them.
 
 ```sh
 cargo build --release --bin core_cache_analyze
-python3 scripts/beam_core_port/native_manifest.py beams.txt manifest.json --dialyzer-ebin /path/to/otp/lib/dialyzer-5.4/ebin
-target/release/core_cache_analyze prior-library.json manifest.json options.json
+(cd ~/src/my_app && mix compile)
+python3 scripts/check_project.py ~/src/my_app
 ```
 
-`bench/phase0/parity.sh` checks warning parity against OTP Dialyzer.
+This analyzes the project together with all its dependencies, Elixir and OTP, without a PLT, and prints warnings for the project's own modules. Add `--include-app mix --include-app ex_unit` if the project uses Mix tasks or test helpers; otherwise calls into them are reported as unknown. The full result is written to `.cache/check/my_app/result.json`.
 
-MIT licensed. Code adapted from Erlang/OTP and Elixir is under Apache 2.0; see `third_party/otp/NOTICE` and `docs/beam-core-port/NOTICE`.
+Some dependencies still use constructs the BEAM frontend cannot lift; the run then stops with the module and function it failed on.
+
+## Tests
+
+`cargo test --release` runs the unit tests. `bench/phase0/parity.sh` checks warnings and inferred types against OTP Dialyzer on Phoenix, Elixir and a subset corpus; it needs the cached inputs under `.cache/phase0`.
+
+## License
+
+MIT. Code adapted from Erlang/OTP and Elixir is under Apache 2.0; see `third_party/otp/NOTICE` and `docs/beam-core-port/NOTICE`.
