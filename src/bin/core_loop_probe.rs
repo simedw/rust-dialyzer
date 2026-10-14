@@ -230,13 +230,8 @@ fn run(r: &Value) -> Result<Value, String> {
         runtime: GenerationRuntimeCaptures::default(),
         name: name.clone(),
     };
-    let analyzer = CoreAnalyzer {
-        nodes: &nodes,
-        program: &program,
-        graph: &graph,
-        bifs: &bifs,
-        next_core_label: CoreLabel(r["next_label"].as_u64().ok_or("next label")?),
-    };
+    let analyzer = CoreAnalyzer::new(&nodes, &program, &graph, &bifs,
+        CoreLabel(r["next_label"].as_u64().ok_or("next label")?));
     let state = analyzer
         .run(
             AnalysisState {

@@ -9,6 +9,7 @@ Both carry warning terms in the harness wire format. Exits 0 on equality.
 """
 
 import collections
+import gzip
 import json
 import sys
 from functools import lru_cache
@@ -48,8 +49,12 @@ def tag(warning):
 
 def main():
     otp_path, rust_path = sys.argv[1:3]
-    otp = json.loads(open(otp_path).read().strip().splitlines()[-1])
-    rust = json.load(open(rust_path))
+    def read(path):
+        return gzip.open(path, 'rt') if path.endswith('.gz') else open(path)
+    with read(otp_path) as stream:
+        otp = json.loads(stream.read().strip().splitlines()[-1])
+    with read(rust_path) as stream:
+        rust = json.load(stream)
     key = lambda w: json.dumps(w, sort_keys=True)
     otp_c = collections.Counter(map(key, items(otp["warnings"])))
     rust_c = collections.Counter(map(key, items(expand(rust["warnings"]))))

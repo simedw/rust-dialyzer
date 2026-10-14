@@ -59,7 +59,9 @@ impl<'a> DataflowNodes<'a> {
             .get_or_init(|| {
                 let mut named_variables = BTreeMap::new();
                 for (module, m) in self.core.modules.iter().enumerate() {
-                    if let CoreExpr::Module { definitions, .. } = &m.nodes[m.core.0].expr {
+                    if let CoreExpr::Module(module_payload) = &m.nodes[m.core.0].expr {
+                        let crate::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
+
                         for (variable, _) in definitions {
                             let mfa = m.named_mfa(*variable)?;
                             let label = self
@@ -108,9 +110,10 @@ impl<'a> DataflowNodes<'a> {
         }
     }
     fn index_module(module: ModuleId, m: &crate::core::CoreModule) -> ModuleDefinitions {
-        let CoreExpr::Module { definitions, .. } = &m.nodes[m.core.0].expr else {
+        let CoreExpr::Module(module_payload) = &m.nodes[m.core.0].expr else {
             return ModuleDefinitions::NotModule;
         };
+        let crate::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
         let mut functions = FastHashMap::default();
         let mut error = None;
         for (variable, function) in definitions {
@@ -427,33 +430,33 @@ fn fresh_children(expr: &CoreExpr) -> Vec<NodeId> {
             timeout,
             action,
         } => clauses.iter().copied().chain([*timeout, *action]).collect(),
-        CoreExpr::Try {
+        CoreExpr::Try(try_payload) => { let crate::core::TryExpr {
             argument,
             vars,
             body,
             exception_vars,
             handler,
-        } => std::iter::once(*argument)
+        } = try_payload.as_ref(); std::iter::once(*argument)
             .chain(vars.iter().copied())
             .chain([*body])
             .chain(exception_vars.iter().copied())
             .chain([*handler])
-            .collect(),
+            .collect() },
         CoreExpr::Catch { body } => vec![*body],
         CoreExpr::Letrec { definitions, body } => definitions
             .iter()
             .flat_map(|(var, fun)| [*var, *fun])
             .chain([*body])
             .collect(),
-        CoreExpr::Module {
+        CoreExpr::Module(module_payload) => { let crate::core::ModuleExpr {
             name,
             exports,
             attributes,
             definitions,
-        } => std::iter::once(*name)
+        } = module_payload.as_ref(); std::iter::once(*name)
             .chain(exports.iter().copied())
             .chain(attributes.iter().flat_map(|(key, value)| [*key, *value]))
             .chain(definitions.iter().flat_map(|(var, fun)| [*var, *fun]))
-            .collect(),
+            .collect() },
     }
 }

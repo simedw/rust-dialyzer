@@ -48,11 +48,13 @@ pub fn write_with_map_orders(
             continue;
         }
         let doc = match &arena.terms[id.0] {
-            ErlangTerm::ExternalFun {
-                module,
-                function,
-                arity,
-            } => {
+            ErlangTerm::ExternalFun(external_fun_payload) => {
+                let crate::core::ExternalFun {
+                    module,
+                    function,
+                    arity,
+                } = external_fun_payload.as_ref();
+
                 let atom = |name: &str| match encoding {
                     Encoding::Latin1 => context.atom_latin1(name),
                     Encoding::Unicode => context.atom_to_string(name),

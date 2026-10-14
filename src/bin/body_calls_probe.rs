@@ -172,9 +172,10 @@ fn run(row: &Value) -> Result<Value, String> {
         );
     }
     let m = &core.modules[0];
-    let CoreExpr::Module { definitions, .. } = &m.nodes[m.core.0].expr else {
+    let CoreExpr::Module(module_payload) = &m.nodes[m.core.0].expr else {
         return Err("module".into());
     };
+    let rust_dialyzer_poc::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
     let CoreExpr::Fun { params, body } = &m.nodes[definitions[0].1.0].expr else {
         return Err("function".into());
     };

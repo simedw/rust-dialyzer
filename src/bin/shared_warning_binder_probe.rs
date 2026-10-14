@@ -43,9 +43,10 @@ fn run(row: Value) -> Result<Value, String> {
         module: ModuleId(0),
         node: core.modules[0].core.0,
     };
-    let CoreExpr::Module { definitions, .. } = nodes.expression(root)? else {
+    let CoreExpr::Module(module_payload) = nodes.expression(root)? else {
         return Err("expected module root".into());
     };
+    let rust_dialyzer_poc::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
     let CoreExpr::Fun { body, .. } = nodes.expression(NodeRef {
         module: root.module,
         node: definitions[0].1.0,

@@ -600,11 +600,14 @@ pub fn compact_arena(arena: &ErlangTerms) -> ErlangTerms {
 }
 pub fn term_to_value(term: &ErlangTerm, at: impl Fn(TermId) -> usize) -> Value {
     match term {
-        ErlangTerm::ExternalFun {
-            module,
-            function,
-            arity,
-        } => json!({"kind":"external_fun","module":module,"function":function,"arity":arity}),
+        ErlangTerm::ExternalFun(external_fun_payload) => {
+            let crate::core::ExternalFun {
+                module,
+                function,
+                arity,
+            } = external_fun_payload.as_ref();
+            json!({"kind":"external_fun","module":module,"function":function,"arity":arity})
+        }
         ErlangTerm::Atom(v) => json!({"kind":"atom","value":v}),
         ErlangTerm::Integer(v) => json!({"kind":"integer","value":v}),
         ErlangTerm::Float(v) => json!({"kind":"float","value":format!("{v:016X}")}),
@@ -715,11 +718,11 @@ mod tests {
                     bytes: vec![128],
                     bits: 1,
                 },
-                ErlangTerm::ExternalFun {
+                ErlangTerm::ExternalFun(Box::new(crate::core::ExternalFun {
                     module: "m".into(),
                     function: "f".into(),
                     arity: 2,
-                },
+                })),
                 ErlangTerm::List {
                     items: vec![TermId(2), TermId(3)],
                     tail: TermId(2),

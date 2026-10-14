@@ -276,7 +276,7 @@ fn main() {
             let load = started.elapsed().as_secs_f64();
             rust_dialyzer_poc::teardown::skip_drops_at_exit();
             let started = Instant::now();
-            let mut projected = rust_dialyzer_poc::compiled_probe::analyze_projected(
+            let mut projected = rust_dialyzer_poc::compiled_probe::analyze_warnings(
                 &loaded.core,
                 &options,
                 EMPTY_PRIOR,
@@ -287,8 +287,7 @@ fn main() {
                 started.elapsed().as_secs_f64()
             );
             std::mem::forget(loaded);
-            std::mem::forget(projected.signatures);
-            Ok(projected.result["warnings"].take())
+            Ok(projected["warnings"].take())
         })
         .expect("analysis thread")
         .join()

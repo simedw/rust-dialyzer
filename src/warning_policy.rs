@@ -124,14 +124,14 @@ impl Policy {
     ) -> Result<Self, PolicyError> {
         let mut modules = Vec::new();
         for module in &core.modules {
-            let CoreExpr::Module {
+            let CoreExpr::Module(module_payload) = &module.nodes[module.core.0].expr else {
+                unreachable!()
+            };
+            let crate::core::ModuleExpr {
                 attributes,
                 definitions,
                 ..
-            } = &module.nodes[module.core.0].expr
-            else {
-                unreachable!()
-            };
+            } = module_payload.as_ref();
             let mut attribute = module.core.0;
             let result = (|| -> Result<ModulePolicy, String> {
                 let known = definitions

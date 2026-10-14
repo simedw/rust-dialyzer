@@ -22,7 +22,7 @@ use crate::{
     dataflow_nodes::DataflowNodes,
     dependencies::Store,
     folded_core::FoldedCore,
-    function_tree::build_function_state,
+    function_tree::{build_function_layout, FunctionLayout},
     guard_control::GuardControl,
     guard_literals::GuardLiterals,
     guard_producer::GuardProducer,
@@ -143,16 +143,29 @@ pub struct CorePhases<'a> {
     /// Each module's initial binder state; it depends only on the module, so
     /// it is built on first use and shared by every refinement run.
     binder_states: Vec<std::sync::OnceLock<Result<BinderState<AnalysisWarning>, ModuleBinderError>>>,
+    function_layouts: Vec<std::sync::OnceLock<Result<FunctionLayout, String>>>,
     function_names: BTreeMap<CoreLabel, Mfa>,
     core_captures: CoreCaptureStore<'a>,
-    scc_memo: std::sync::Mutex<BTreeMap<Vec<Mfa>, std::sync::Arc<SccMemo>>>,
+    /// Sharded by key hash: every SCC job reads and writes it.
+    scc_memo: Vec<std::sync::Mutex<crate::fast_hash::FastHashMap<Vec<Mfa>, std::sync::Arc<SccMemo>>>>,
     module_memo: std::sync::Mutex<BTreeMap<ModuleId, std::sync::Arc<ModuleMemo<'a>>>>,
+    diagnostic_snapshots: Vec<bool>,
     module_memo_counts: ModuleMemoCounts,
     /// Generation's view of each entry of `world.active_contracts`, converted
     /// once when the contract is activated instead of at every call site.
     generation_contracts: BTreeMap<Mfa, Result<GenerationActiveContract, String>>,
 }
 impl<'a> CorePhases<'a> {
+    /// Inference workers have joined. Diagnostics need only snapshots of
+    /// reported modules; SCC result memos are no longer read.
+    pub(crate) fn release_inference_memos(&mut self, reported: &[ModuleId]) {
+        for shard in &mut self.scc_memo {
+            drop(std::mem::take(shard.get_mut().unwrap()));
+        }
+        let mut keep = vec![false; self.nodes.core().modules.len()];
+        for module in reported { keep[module.0] = true; }
+        self.module_memo.get_mut().unwrap().retain(|module, _| keep[module.0]);
+    }
     pub fn new(
         inputs: CorePhaseInputs<'a>,
         library: &'a Store,
@@ -196,10 +209,14 @@ impl<'a> CorePhases<'a> {
             binder_states: (0..inputs.nodes.core().modules.len())
                 .map(|_| std::sync::OnceLock::new())
                 .collect(),
+            function_layouts: (0..inputs.nodes.core().modules.len())
+                .map(|_| std::sync::OnceLock::new())
+                .collect(),
             function_names: index_function_names(&inputs.graph.named_labels),
             core_captures: CoreCaptureStore::new(inputs.nodes.core(), inputs.nodes.labels()),
-            scc_memo: Default::default(),
+            scc_memo: (0..SCC_MEMO_SHARDS).map(|_| Default::default()).collect(),
             module_memo: Default::default(),
+            diagnostic_snapshots: vec![true; inputs.nodes.core().modules.len()],
             module_memo_counts: Default::default(),
             generation_contracts: BTreeMap::new(),
         };
@@ -276,7 +293,7 @@ impl<'a> CorePhases<'a> {
             definitions: self.definitions, folded: self.folded, bifs: self.bifs,
             world: &self.world, folded_nodes: &self.folded_nodes,
             guard_literals: &self.guard_literals, letrec: &self.letrec,
-            binder_states: &self.binder_states }
+            binder_states: &self.binder_states, function_layouts: &self.function_layouts }
     }
 
 }
@@ -293,6 +310,7 @@ pub struct ModuleBodies<'phase, 'input> {
     guard_literals: &'phase GuardLiterals<'input>,
     letrec: &'phase BTreeMap<ModuleId, crate::letrec_types::LetrecLinks>,
     binder_states: &'phase [std::sync::OnceLock<Result<BinderState<AnalysisWarning>, ModuleBinderError>>],
+    function_layouts: &'phase [std::sync::OnceLock<Result<FunctionLayout, String>>],
 }
 /// A module body analysis stopped after its inference loop: what the
 /// warning loop of a diagnostic run with the same inputs continues from.
@@ -323,12 +341,22 @@ impl<'input> ModuleBodies<'_, 'input> {
         let (mut functions, mut patterns, inferred) = match resume {
             Some(snapshot) => (snapshot.functions, snapshot.patterns, Some(snapshot.state)),
             None => {
-                let inputs = self
-                    .graph
-                    .function_inputs(module, self.program, self.nodes.labels(), previous.clone())
-                    .map_err(CorePhaseError::Boundary)?;
-                let functions = build_function_state(self.nodes, module, &inputs)
-                    .map_err(CorePhaseError::Boundary)?;
+                let build = || {
+                    let inputs = self.graph.function_inputs(module, self.program,
+                        self.nodes.labels(), BTreeMap::new())?;
+                    build_function_layout(self.nodes, module, &inputs)
+                };
+                let built;
+                let layout = match self.function_layouts.get(module.0) {
+                    Some(cell) => cell.get_or_init(build).as_ref(),
+                    None => { built = build(); built.as_ref() }
+                }.map_err(|error| CorePhaseError::Boundary(error.clone()))?;
+                let functions = layout.instantiate(previous);
+                if crate::lattice::verify_fast_paths() {
+                    let expected = build().map_err(CorePhaseError::Boundary)?.instantiate(previous);
+                    assert_eq!(format!("{functions:?}"), format!("{expected:?}"),
+                        "cached function layout");
+                }
                 (functions, Patterns::new(self.nodes), None)
             }
         };
@@ -562,6 +590,10 @@ impl AnalysisPhases for CorePhases<'_> {
 }
 
 impl<'a> CorePhases<'a> {
+    pub(crate) fn set_diagnostic_modules(&mut self, modules: &[ModuleId]) {
+        self.diagnostic_snapshots.fill(false);
+        for module in modules { self.diagnostic_snapshots[module.0] = true; }
+    }
     /// Module refinement is memoized across fixpoint iterations like SCCs.
     /// The body analysis depends on the module's Core, the fixed run inputs
     /// (definitions, call sites, guards, letrec links), `previous` and the
@@ -571,7 +603,7 @@ impl<'a> CorePhases<'a> {
     /// `previous` and read exactly the call-world values a body analysis
     /// would read now: a diagnostic run's inference loop would repeat it.
     pub fn take_module_snapshot(&self, module: ModuleId, previous: &FunctionTypes) -> Option<ModuleSnapshot<'a>> {
-        let memo = self.module_memo.lock().unwrap().get(&module).cloned()?;
+        let memo = self.module_memo.lock().unwrap().remove(&module)?;
         if memo.previous == *previous && memo.reads.still_valid(&self.world) {
             memo.snapshot.lock().unwrap().take()
         } else {
@@ -593,7 +625,8 @@ impl<'a> CorePhases<'a> {
                 return Ok(memo.result.clone());
             }
         }
-        let (result, reads, snapshot) = self.refine_module_uncached(request, true)?;
+        let keep_snapshot = self.diagnostic_snapshots.get(request.module.0).copied().unwrap_or(false);
+        let (result, reads, snapshot) = self.refine_module_uncached(request, keep_snapshot)?;
         self.module_memo.lock().unwrap().insert(
             request.module,
             std::sync::Arc::new(ModuleMemo {
@@ -644,7 +677,8 @@ impl<'a> CorePhases<'a> {
         self.analyze_scc_in(&request, &library)
     }
     fn analyze_scc_in(&self, request: &SccInput<'_>, library: &RecordingWorld<'_, '_>) -> Result<FunctionTypes, CorePhaseError> {
-        let memo = self.scc_memo.lock().unwrap().get(request.ordered_mfas).cloned();
+        let shard = &self.scc_memo[scc_memo_shard(request.ordered_mfas)];
+        let memo = shard.lock().unwrap().get(request.ordered_mfas).cloned();
         if crate::job_trace::enabled() {
             let outcome = match &memo {
                 None => "none",
@@ -675,15 +709,15 @@ impl<'a> CorePhases<'a> {
             let same = memo.as_ref().is_some_and(|memo| memo.result == result);
             crate::job_trace::add_note("same_result", serde_json::json!(same));
         }
-        self.scc_memo.lock().unwrap().insert(
-            request.ordered_mfas.to_vec(),
-            std::sync::Arc::new(SccMemo {
-                next_core_label: request.next_core_label,
-                previous: request.previous.clone(),
-                reads: std::mem::take(&mut *library.reads.lock().unwrap()),
-                result: result.clone(),
-            }),
-        );
+        let entry = std::sync::Arc::new(SccMemo {
+            next_core_label: request.next_core_label,
+            previous: request.previous.clone(),
+            reads: std::mem::take(&mut *library.reads.lock().unwrap()),
+            result: result.clone(),
+        });
+        // Drop the replaced entry outside the lock.
+        let replaced = shard.lock().unwrap().insert(request.ordered_mfas.to_vec(), entry);
+        drop(replaced);
         Ok(result)
     }
     fn overlay_entry(&self, published: Published) -> OverlayEntry {
@@ -807,6 +841,13 @@ impl<'g> PhaseOverlay<'g> {
     }
 }
 
+const SCC_MEMO_SHARDS: usize = 64;
+fn scc_memo_shard(key: &[Mfa]) -> usize {
+    use std::hash::{BuildHasher, Hash, Hasher};
+    let mut hasher = crate::fast_hash::FxBuildHasher::default().build_hasher();
+    key.hash(&mut hasher);
+    hasher.finish() as usize % SCC_MEMO_SHARDS
+}
 struct SccMemo {
     next_core_label: CoreLabel,
     previous: FunctionTypes,
@@ -1212,8 +1253,8 @@ mod diagnostic_snapshot_tests {
         let terms = vec![ErlangTerm::Nil, ErlangTerm::Atom("snapshot".into()), ErlangTerm::Atom("f".into()),
                          ErlangTerm::Integer("0".into()), ErlangTerm::Tuple(vec![TermId(2), TermId(3)]), ErlangTerm::Atom("ok".into())];
         let expressions = vec![CoreExpr::Literal(TermId(1)), CoreExpr::Var(TermId(4)), CoreExpr::Literal(TermId(5)),
-            CoreExpr::Fun { params: vec![], body: NodeId(2) }, CoreExpr::Module { name: NodeId(0), exports: vec![NodeId(1)],
-                attributes: vec![], definitions: vec![(NodeId(1), NodeId(3))] }];
+            CoreExpr::Fun { params: vec![], body: NodeId(2) }, CoreExpr::Module(Box::new(crate::core::ModuleExpr { name: NodeId(0), exports: vec![NodeId(1)],
+                attributes: vec![], definitions: vec![(NodeId(1), NodeId(3))] }))];
         let nodes = expressions.into_iter().enumerate().map(|(id, expr)| CoreNode { id: NodeId(id), annotations: TermId(0), expr }).collect();
         CoreProgram { version: CoreVersion::V6, profile: CompilerProfile { otp: "28".into(), erts: "16".into(),
             elixir: "1.20.4".into(), dialyzer: "5".into(), core_options: vec![], term_map_order: TermMapOrder::NativeToListWithIterator },

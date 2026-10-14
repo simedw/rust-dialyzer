@@ -114,8 +114,12 @@ pub fn ordered_prefetch<T: Send, U, E: Send>(
 /// Applies `f` to every item on all cores; results keep input order.
 pub fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let workers = std::thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(items.len());
+        .map_or(1, usize::from);
+    parallel_map_with_workers(items, workers, f)
+}
+
+fn parallel_map_with_workers<T: Sync, R: Send>(items: &[T], workers: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = workers.max(1).min(items.len());
     if workers <= 1 {
         return items.iter().map(f).collect();
     }
@@ -147,6 +151,24 @@ pub fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -
     results.into_iter().map(|r| r.expect("every item analyzed")).collect()
 }
 
+#[cfg(test)]
+#[test]
+fn explicit_worker_limits_process_each_item_once_in_input_order() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let items: Vec<_> = (0..12).collect();
+    for workers in [0, 1, 4, 16] {
+        let visits: [AtomicUsize; 12] = std::array::from_fn(|_| AtomicUsize::new(0));
+        let result = parallel_map_with_workers(&items, workers, |&value| {
+            visits[value].fetch_add(1, Ordering::Relaxed);
+            if value % 3 == 0 { std::thread::yield_now(); }
+            value * 2
+        });
+        assert_eq!(result, items.iter().map(|value| value * 2).collect::<Vec<_>>());
+        assert!(visits.iter().all(|count| count.load(Ordering::Relaxed) == 1));
+    }
+    assert!(parallel_map_with_workers::<usize, usize>(&[], 4, |value| *value).is_empty());
+}
+
 /// Like `setup_map`, but consumes `items` and starts the costliest first so a
 /// large item does not start last and extend the phase. Each item is dropped
 /// on the worker that processed it. Results keep input order.
@@ -162,7 +184,7 @@ pub fn setup_map_owned_by_cost<T: Send, R: Send>(
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by_key(|&i| std::cmp::Reverse(cost[i]));
     let slots: Vec<Mutex<Option<T>>> = items.into_iter().map(|item| Mutex::new(Some(item))).collect();
-    parallel_map(&order, |&i| {
+    setup_map(&order, |&i| {
         let item = slots[i].lock().unwrap().take().expect("each item taken once");
         (i, f(item))
     })
@@ -187,7 +209,11 @@ pub fn setup_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> V
     if sequential() {
         items.iter().map(f).collect()
     } else {
-        parallel_map(items, f)
+        let available = std::thread::available_parallelism().map_or(1, usize::from);
+        static LIMIT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        let limit = *LIMIT.get_or_init(|| std::env::var("RUST_DIALYZER_SETUP_JOBS").ok()
+            .and_then(|value| value.parse::<usize>().ok()).filter(|&value| value > 0));
+        parallel_map_with_workers(items, limit.unwrap_or(available).min(available), f)
     }
 }
 

@@ -22,6 +22,12 @@ use crate::{
     term_order::{CaptureEnvironment, CaptureId, CaptureTerm, TermOrderArena},
 };
 use std::{collections::BTreeMap, sync::Arc};
+#[path = "generation_reuse_probe.rs"]
+mod reuse_probe;
+pub(crate) struct ProbeFlush;
+impl Drop for ProbeFlush {
+    fn drop(&mut self) { reuse_probe::flush(); }
+}
 #[derive(Debug)]
 pub enum GenerationError {
     ConstructionFailure,
@@ -467,6 +473,8 @@ pub struct Generator<'a> {
     library: &'a (dyn LibraryTypes + Sync),
     parallel_library: Option<Box<dyn LibraryTypes + Send + Sync + 'a>>,
     library_queries: Vec<GenerationLibraryQuery>,
+    probe_sequential: bool,
+    entry_probe: Option<reuse_probe::EntryProbe>,
     callgraph: GenerationCallGraph<'a>,
     capture_inputs: Option<&'a GenerationCaptureInputs<'a>>,
     phase_entries: Vec<(ModuleId, NodeId, NodeId)>,
@@ -611,6 +619,8 @@ impl<'a> Generator<'a> {
             library,
             parallel_library: None,
             library_queries: Vec::new(),
+            probe_sequential: false,
+            entry_probe: None,
             callgraph,
             capture_inputs: captures,
             phase_entries: Vec::new(),
@@ -791,10 +801,8 @@ impl<'a> Generator<'a> {
         self.state.bodies.insert(f.clone(), body);
         self.state.scc.insert(f.clone());
         let propagated_domain = match self
-            .propagated
-            .0
-            .get(&self.labels.label(site.reference()).unwrap())
-            .map(Type::view)
+            .propagated_type(self.labels.label(site.reference()).unwrap())
+            .as_ref().map(Type::view)
         {
             Some(crate::lattice::TypeView::Families(slots)) => slots
                 .functions
@@ -851,6 +859,7 @@ impl<'a> Generator<'a> {
         {
             self.generate_chunks(entries, &defined)?;
         } else {
+            self.probe_sequential = reuse_probe::enabled();
             for entry in entries {
                 self.generate_entry(entry, &defined)?;
             }
@@ -893,6 +902,22 @@ impl<'a> Generator<'a> {
         &mut self,
         entry: &(ModuleId, NodeId, NodeId),
         defined: &Defined,
+    ) -> Result<()> {
+        if self.probe_sequential {
+            self.entry_probe = Some(reuse_probe::EntryProbe::new(self.core, &self.phase_entries,
+                entry, self.state.next_label, self.patterns.allocator(), self.arena.len()));
+        }
+        let result = self.generate_entry_inner(entry, defined);
+        if let Some(probe) = self.entry_probe.take() { probe.finish(&self.arena, result.is_ok()); }
+        result
+    }
+    fn propagated_type(&mut self, label: CoreLabel) -> Option<Type> {
+        let result = self.propagated.0.get(&label).copied();
+        if let Some(probe) = &mut self.entry_probe { probe.reads.insert(label, result); }
+        result
+    }
+    fn generate_entry_inner(
+        &mut self, entry: &(ModuleId, NodeId, NodeId), defined: &Defined,
     ) -> Result<()> {
         let (module, variable, function) = entry;
         let function_id = self.variable_id(&Site {
@@ -952,6 +977,8 @@ impl<'a> Generator<'a> {
             library: self.library,
             parallel_library: None,
             library_queries: Vec::new(),
+            probe_sequential: false,
+            entry_probe: None,
             callgraph: self.callgraph,
             capture_inputs: self.capture_inputs,
             phase_entries: self.phase_entries.clone(),
@@ -1539,13 +1566,15 @@ impl<'a> Generator<'a> {
                                     defined,
                                 ));
                             }
-                            CoreExpr::Try {
-                                argument,
-                                vars,
-                                body,
-                                exception_vars,
-                                handler,
-                            } => {
+                            CoreExpr::Try(try_payload) => {
+                                let crate::core::TryExpr {
+                                    argument,
+                                    vars,
+                                    body,
+                                    exception_vars,
+                                    handler,
+                                } = *try_payload;
+
                                 let outer = self.state.clone();
                                 self.state.context.clear();
                                 let context = TryContext {
@@ -1648,7 +1677,7 @@ impl<'a> Generator<'a> {
                                 let saved = self.state.clone();
                                 self.state.context.clear();
                                 let label = self.labels.label(site.reference()).unwrap();
-                                if let Some(propagated) = self.propagated.0.get(&label)
+                                if let Some(propagated) = self.propagated_type(label)
                                     && let crate::lattice::TypeView::Families(slots) =
                                         propagated.view()
                                     && let Some(domain) = slots.functions.and_then(|fun| fun.domain)
@@ -2252,10 +2281,8 @@ impl<'a> Generator<'a> {
                 values.truncate(base);
                 // The source failure constraint uses propagated domain if available, otherwise Any arguments.
                 let domain = match self
-                    .propagated
-                    .0
-                    .get(&self.labels.label(site.reference()).unwrap())
-                    .map(Type::view)
+                    .propagated_type(self.labels.label(site.reference()).unwrap())
+                    .as_ref().map(Type::view)
                 {
                     Some(crate::lattice::TypeView::Families(slots)) => {
                         slots.functions.and_then(|f| f.domain.map(<[Type]>::to_vec))
@@ -2315,6 +2342,7 @@ impl Generator<'_> {
         &mut self,
         mfa: &Mfa,
     ) -> std::result::Result<Option<CallSignature>, String> {
+        if let Some(probe) = &mut self.entry_probe { probe.library_queries += 1; }
         if let Some(library) = &self.parallel_library {
             let result = library.signature(mfa);
             self.library_queries
@@ -2331,6 +2359,7 @@ impl Generator<'_> {
         &mut self,
         mfa: &Mfa,
     ) -> std::result::Result<Option<ActiveContract>, String> {
+        if let Some(probe) = &mut self.entry_probe { probe.library_queries += 1; }
         if let Some(library) = &self.parallel_library {
             let result = library.active_contract(mfa);
             self.library_queries
@@ -2707,12 +2736,12 @@ mod capture_store_tests {
                 params: vec![],
                 body: NodeId(2),
             },
-            CoreExpr::Module {
+            CoreExpr::Module(Box::new(crate::core::ModuleExpr {
                 name: NodeId(0),
                 exports: vec![NodeId(1)],
                 attributes: vec![],
                 definitions: vec![(NodeId(1), NodeId(3))],
-            },
+            })),
         ];
         let nodes = expressions
             .into_iter()
@@ -3184,12 +3213,12 @@ mod capture_store_tests {
             entries.push((ModuleId(0), variable, function));
         }
         module.core = NodeId(expressions.len());
-        expressions.push(CoreExpr::Module {
+        expressions.push(CoreExpr::Module(Box::new(crate::core::ModuleExpr {
             name: NodeId(0),
             exports: definitions.iter().map(|p| p.0).collect(),
             attributes: vec![],
             definitions,
-        });
+        })));
         module.nodes = expressions
             .into_iter()
             .enumerate()

@@ -982,7 +982,9 @@ impl<B: BifProvider, C: ConstraintProvider> Context<'_, B, C> {
                 continue;
             }
             let t = match term {
-                ErlangTerm::ExternalFun { arity, .. } => {
+                ErlangTerm::ExternalFun(external_fun_payload) => {
+                    let crate::core::ExternalFun { arity, .. } = external_fun_payload.as_ref();
+
                     Type::function(Some(vec![Type::any(); usize::from(*arity)]), Type::any())
                 }
                 ErlangTerm::Atom(a) => Type::atom(a),
@@ -1268,13 +1270,15 @@ impl<B: BifProvider, C: ConstraintProvider> Context<'_, B, C> {
                             });
                             frames.push(Frame::Eval(*argument, env));
                         }
-                        CoreExpr::Try {
-                            argument,
-                            vars,
-                            body,
-                            exception_vars,
-                            handler,
-                        } => {
+                        CoreExpr::Try(try_payload) => {
+                            let crate::core::TryExpr {
+                                argument,
+                                vars,
+                                body,
+                                exception_vars,
+                                handler,
+                            } = try_payload.as_ref();
+
                             frames.push(Frame::Try {
                                 argument: *argument,
                                 vars: vars.clone(),

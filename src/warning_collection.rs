@@ -64,6 +64,23 @@ fn push(arena: &mut ErlangTerms, term: ErlangTerm) -> TermId {
     id
 }
 
+/// The function whose contract origin `postprocess` looks up for a
+/// `warn_contract_range` warning; `None` for every other warning.
+pub fn contract_range_target(arena: &ErlangTerms, id: TermId) -> Option<FunctionName> {
+    let fields = tuple::<3>(arena, id).ok()?;
+    if !matches!(arena.terms.get(fields[0].0), Some(ErlangTerm::Atom(tag)) if tag == "warn_contract_range") {
+        return None;
+    }
+    let message = tuple::<2>(arena, fields[2]).ok()?;
+    let args = arguments(arena, message[1]).ok()?;
+    match (&arena.terms[args[1].0], &arena.terms[args[2].0], &arena.terms[args[3].0]) {
+        (ErlangTerm::Atom(module), ErlangTerm::Atom(function), ErlangTerm::Integer(arity)) => {
+            Some(FunctionName { module: module.clone(), name: function.clone(), arity: arity.parse().ok()? })
+        }
+        _ => None,
+    }
+}
+
 pub fn postprocess(
     arena: &mut ErlangTerms,
     warnings: &[TermId],

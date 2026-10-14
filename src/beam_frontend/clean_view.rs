@@ -596,9 +596,11 @@ impl CleanView {
                         names.insert(a.clone());
                     }
                 }
-                T::ExternalFun {
-                    module, function, ..
-                } => {
+                T::ExternalFun(external_fun_payload) => {
+                    let crate::core::ExternalFun {
+                        module, function, ..
+                    } = external_fun_payload.as_ref();
+
                     names.insert(module.clone());
                     names.insert(function.clone());
                 }

@@ -61,6 +61,21 @@ impl Arena {
     pub fn tuple(&mut self, values: Vec<TermId>) -> TermId {
         self.push(ErlangTerm::Tuple(values))
     }
+    pub fn rebuild_tuple(&mut self, original: TermId, values: Vec<TermId>) -> TermId {
+        if matches!(self.get(original), ErlangTerm::Tuple(previous) if previous == &values) {
+            original
+        } else {
+            self.tuple(values)
+        }
+    }
+    pub fn rebuild_list(&mut self, original: TermId, items: Vec<TermId>, tail: TermId) -> TermId {
+        if matches!(self.get(original), ErlangTerm::List { items: previous, tail: previous_tail }
+            if previous == &items && *previous_tail == tail) {
+            original
+        } else {
+            self.push(ErlangTerm::List { items, tail })
+        }
+    }
     pub fn nil(&mut self) -> TermId {
         if let Some(id) = self.nil {
             return id;
@@ -149,6 +164,22 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rebuilding_retains_unchanged_nodes_without_merging_new_child_ids() {
+        let mut arena = Arena::default();
+        let first = arena.integer(1000);
+        let tuple = arena.tuple(vec![first]);
+        let nil = arena.nil();
+        let list = arena.push(ErlangTerm::List { items: vec![first], tail: nil });
+        let count = arena.terms.len();
+        assert_eq!(arena.rebuild_tuple(tuple, vec![first]), tuple);
+        assert_eq!(arena.rebuild_list(list, vec![first], nil), list);
+        assert_eq!(arena.terms.len(), count);
+        let second = arena.integer(1000);
+        assert_ne!(first, second);
+        assert_ne!(arena.rebuild_tuple(tuple, vec![second]), tuple);
+        assert_ne!(arena.rebuild_list(list, vec![second], nil), list);
+    }
     #[test]
     fn shared_primitives_keep_node_identity_and_integer_spelling() {
         let mut a = Arena::default();

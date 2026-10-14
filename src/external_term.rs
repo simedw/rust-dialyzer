@@ -307,11 +307,13 @@ impl<'a> Reader<'a> {
                             return Err(Error::Invalid);
                         }
                         let arity = self.byte()?;
-                        self.push(ErlangTerm::ExternalFun {
-                            module,
-                            function,
-                            arity,
-                        })?;
+                        self.push(ErlangTerm::ExternalFun(Box::new(
+                            crate::core::ExternalFun {
+                                module,
+                                function,
+                                arity,
+                            },
+                        )))?;
                     }
                     tag @ (82 | 88 | 89 | 90 | 101 | 102 | 103 | 112 | 114 | 117 | 120 | 121) => {
                         return Err(Error::UnsupportedTag(tag));
@@ -482,11 +484,13 @@ pub fn encode_at(
                 }
                 out.extend(text.as_bytes());
             }
-            ErlangTerm::ExternalFun {
-                module,
-                function,
-                arity,
-            } => {
+            ErlangTerm::ExternalFun(external_fun_payload) => {
+                let crate::core::ExternalFun {
+                    module,
+                    function,
+                    arity,
+                } = external_fun_payload.as_ref();
+
                 out.push(113);
                 for text in [module, function] {
                     if text.chars().count() > 255 {
@@ -846,11 +850,11 @@ mod tests {
         let arena = decode(&bytes, Limits::default()).unwrap();
         assert_eq!(
             arena.terms[arena.root.0],
-            ErlangTerm::ExternalFun {
+            ErlangTerm::ExternalFun(Box::new(crate::core::ExternalFun {
                 module: "erlang".into(),
                 function: "length".into(),
                 arity: 1,
-            }
+            }))
         );
         assert_eq!(encode(&arena, Limits::default(), false).unwrap(), bytes);
         let wire = crate::type_exports::arena_to_value(&arena.terms, arena.root);
@@ -956,11 +960,14 @@ mod tests {
             .terms
             .iter()
             .filter_map(|term| match term {
-                ErlangTerm::ExternalFun {
-                    module,
-                    function,
-                    arity,
-                } => Some((module.as_str(), function.as_str(), *arity)),
+                ErlangTerm::ExternalFun(external_fun_payload) => {
+                    let crate::core::ExternalFun {
+                        module,
+                        function,
+                        arity,
+                    } = external_fun_payload.as_ref();
+                    Some((module.as_str(), function.as_str(), *arity))
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();

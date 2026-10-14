@@ -202,32 +202,35 @@ impl Lower {
         Ok(false)
     }
     pub(super) fn finish_named_funs(&mut self, node: TermId) -> Result<TermId> {
-        let mut f = match self.a.get(node).clone() {
-            ErlangTerm::Tuple(f) => f,
+        let mut f = match self.a.get(node) {
+            ErlangTerm::Tuple(f) => f.clone(),
             ErlangTerm::List { items, tail } => {
+                let (items, tail) = (items.clone(), *tail);
                 let mut out = Vec::new();
                 for child in items {
                     out.push(self.finish_named_funs(child)?);
                 }
                 let tail = self.finish_named_funs(tail)?;
-                return Ok(self.a.push(ErlangTerm::List { items: out, tail }));
+                return Ok(self.a.rebuild_list(node, out, tail));
             }
             _ => return Ok(node),
         };
-        let tag = self.a.tag(node).map(str::to_owned);
-        if matches!(tag.as_deref(), Some("c_literal" | "c_var")) {
-            let annotations = self
-                .a
-                .list_items(f[1])?
-                .into_iter()
+        let tag = self.a.tag(node);
+        let leaf = matches!(tag, Some("c_literal" | "c_var"));
+        let core = tag.is_some_and(|tag| tag.starts_with("c_"));
+        let function = tag == Some("c_fun");
+        if leaf {
+            let original = self.a.list_items(f[1])?;
+            let annotations: Vec<_> = original.iter().copied()
                 .filter(|a| self.a.tag(*a) != Some("native_named_fun"))
                 .collect();
+            if annotations == original { return Ok(node); }
             f[1] = self.a.list(annotations);
             return Ok(self.a.tuple(f));
         }
         for child in f
             .iter_mut()
-            .skip(if tag.as_deref().is_some_and(|t| t.starts_with("c_")) {
+            .skip(if core {
                 2
             } else {
                 0
@@ -235,7 +238,7 @@ impl Lower {
         {
             *child = self.finish_named_funs(*child)?;
         }
-        if tag.as_deref() == Some("c_fun") {
+        if function {
             let mut annotations = Vec::new();
             let mut name = None;
             for ann in self.a.list_items(f[1])? {
@@ -245,7 +248,7 @@ impl Lower {
                     annotations.push(ann);
                 }
             }
-            f[1] = self.a.list(annotations);
+            if name.is_some() { f[1] = self.a.list(annotations); }
             if let Some(name) = name {
                 if self.control_uses(f[3], name)? {
                     let arity = self.a.list_items(f[2])?.len();
@@ -270,16 +273,14 @@ impl Lower {
                 }
             }
         }
-        if tag.as_deref().is_some_and(|t| t.starts_with("c_")) {
-            let anns = self
-                .a
-                .list_items(f[1])?
-                .into_iter()
+        if core {
+            let original = self.a.list_items(f[1])?;
+            let anns: Vec<_> = original.iter().copied()
                 .filter(|a| self.a.tag(*a) != Some("native_named_fun"))
                 .collect();
-            f[1] = self.a.list(anns);
+            if anns != original { f[1] = self.a.list(anns); }
         }
-        Ok(self.a.tuple(f))
+        Ok(self.a.rebuild_tuple(node, f))
     }
     fn control_fail(&mut self, pattern: TermId, ann: TermId, reason: TermId) -> TermId {
         let name = self.atom_literal("match_fail");

@@ -48,35 +48,35 @@ impl CoreExpr {
                 timeout,
                 action,
             } => vec![clauses.clone(), vec![*timeout], vec![*action]],
-            Self::Try {
+            Self::Try(try_payload) => { let crate::core::TryExpr {
                 argument,
                 vars,
                 body,
                 exception_vars,
                 handler,
-            } => vec![
+            } = try_payload.as_ref(); vec![
                 vec![*argument],
                 vars.clone(),
                 vec![*body],
                 exception_vars.clone(),
                 vec![*handler],
-            ],
+            ] },
             Self::Catch { body } => vec![vec![*body]],
             Self::Letrec { definitions, body } => vec![
                 definitions.iter().flat_map(|(k, v)| [*k, *v]).collect(),
                 vec![*body],
             ],
-            Self::Module {
+            Self::Module(module_payload) => { let crate::core::ModuleExpr {
                 name,
                 exports,
                 attributes,
                 definitions,
-            } => vec![
+            } = module_payload.as_ref(); vec![
                 vec![*name],
                 exports.clone(),
                 attributes.iter().flat_map(|(k, v)| [*k, *v]).collect(),
                 definitions.iter().flat_map(|(k, v)| [*k, *v]).collect(),
-            ],
+            ] },
         }
     }
 }
@@ -169,9 +169,10 @@ impl CoreModule {
                         return Err(format!("{at}.value: expected canonical decimal integer"));
                     }
                 }
-                ErlangTerm::ExternalFun {
-                    module, function, ..
-                } if module.chars().count() > 255 || function.chars().count() > 255 => {
+                ErlangTerm::ExternalFun(external_fun_payload)
+                    if external_fun_payload.module.chars().count() > 255
+                        || external_fun_payload.function.chars().count() > 255 =>
+                {
                     return Err(format!(
                         "{at}: external function atom exceeds 255 characters"
                     ));
@@ -296,11 +297,13 @@ impl CoreModule {
                 CoreExpr::Alias { variable, .. } => {
                     require_kind(prior, *variable, "var", format_args!("{at}.groups[0][0]"))?
                 }
-                CoreExpr::Try {
+                CoreExpr::Try(try_payload) => {
+                    let crate::core::TryExpr {
                     vars,
                     exception_vars,
                     ..
-                } => {
+                } = try_payload.as_ref();
+
                     require_kinds(prior, vars, "var", format_args!("{at}.groups[1]"))?;
                     require_kinds(prior, exception_vars, "var", format_args!("{at}.groups[3]"))?;
                 }
@@ -312,12 +315,14 @@ impl CoreModule {
                         format_args!("{at}.groups[0]"),
                     )?;
                 }
-                CoreExpr::Module {
+                CoreExpr::Module(module_payload) => {
+                    let crate::core::ModuleExpr {
                     name,
                     exports,
                     attributes,
                     ..
-                } => {
+                } = module_payload.as_ref();
+
                     if literal_atom(*name, prior, &self.terms).is_none() {
                         return Err(format!(
                             "{at}.groups[0][0]: expected literal atom module name"
@@ -366,12 +371,12 @@ impl CoreModule {
         }
         checked(self.core.0, self.nodes.len(), format_args!("{path}.core"))?;
         match &self.nodes[self.core.0].expr {
-            CoreExpr::Module { name, .. }
-                if literal_atom(*name, &self.nodes, &self.terms) == Some(self.name.as_str()) =>
+            CoreExpr::Module(module_payload)
+                if literal_atom(module_payload.name, &self.nodes, &self.terms) == Some(self.name.as_str()) =>
             {
                 Ok(())
             }
-            CoreExpr::Module { .. } => Err(format!(
+            CoreExpr::Module(_) => Err(format!(
                 "{path}.core: Core module name differs from {}",
                 self.name
             )),

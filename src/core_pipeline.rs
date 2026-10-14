@@ -92,14 +92,10 @@ pub fn analyze_prepared<'a>(
     report_modules: Option<&BTreeSet<String>>,
     prepared: Option<PreparedPipeline<'a>>,
 ) -> Result<CollectedAnalysis, PipelineError> {
+    let _probe_flush = crate::constraints::generation::ProbeFlush;
     let mut timings = crate::phase_timings::PhaseTimings::new("core_pipeline");
-    let analyzer = CoreAnalyzer {
-        nodes: inputs.nodes,
-        program: inputs.program,
-        graph: inputs.graph,
-        bifs: inputs.bifs,
-        next_core_label: inputs.nodes.labels().next_label,
-    };
+    let analyzer = CoreAnalyzer::new(inputs.nodes, inputs.program, inputs.graph, inputs.bifs,
+        inputs.nodes.labels().next_label);
     let names = inputs
         .graph
         .source_graph()
@@ -153,6 +149,13 @@ pub fn analyze_prepared<'a>(
             (schedule, phases)
         }
     };
+    let diagnostic_modules: Vec<_> = if mode == AnalysisMode::PltBuild {
+        Vec::new()
+    } else {
+        modules.iter().copied().filter(|module| report_modules
+            .is_none_or(|report| report.contains(&graph.module_names[module.0]))).collect()
+    };
+    phases.set_diagnostic_modules(&diagnostic_modules);
     timings.mark("setup");
     let state = analyzer
         .run(
@@ -174,13 +177,9 @@ pub fn analyze_prepared<'a>(
     }
     // Warnings are only produced for reported modules (dialyxir reports none
     // for PLT modules); inference above still covers every module.
-    let modules = match report_modules {
-        Some(report) => modules
-            .into_iter()
-            .filter(|m| report.contains(&graph.module_names[m.0]))
-            .collect(),
-        None => modules,
-    };
+    let modules = diagnostic_modules;
+    phases.release_inference_memos(&modules);
+    timings.mark("release_inference_memos");
     let mut diagnostic_timings = crate::phase_timings::PhaseTimings::new("diagnostic_components");
     let diagnostics = DiagnosticInputs {
         nodes: phases.nodes,

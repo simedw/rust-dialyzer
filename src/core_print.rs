@@ -872,13 +872,15 @@ impl Planner<'_, '_, '_> {
                     CoreExpr::Catch { body } => {
                         Doc::text("catch").follow_at(child(p(*body, node.module))?, 2)
                     }
-                    CoreExpr::Try {
-                        argument,
-                        vars,
-                        body,
-                        exception_vars,
-                        handler,
-                    } => {
+                    CoreExpr::Try(try_payload) => {
+                        let crate::core::TryExpr {
+                            argument,
+                            vars,
+                            body,
+                            exception_vars,
+                            handler,
+                        } = try_payload.as_ref();
+
                         let vs = self.values(
                             &vars
                                 .iter()
@@ -965,12 +967,14 @@ impl Planner<'_, '_, '_> {
                             0,
                         )
                     }
-                    CoreExpr::Module {
-                        name,
-                        exports,
-                        attributes,
-                        definitions,
-                    } => {
+                    CoreExpr::Module(module_payload) => {
+                        let crate::core::ModuleExpr {
+                            name,
+                            exports,
+                            attributes,
+                            definitions,
+                        } = module_payload.as_ref();
+
                         let xs = Doc::comma(
                             exports
                                 .iter()
@@ -1110,7 +1114,7 @@ impl Planner<'_, '_, '_> {
         let value = self.patterns.term(module, term)?;
         let child = |id| self.literal(LiteralRef::Term { module, term: id }, depth + 1, true);
         Ok(match value {
-            ErlangTerm::ExternalFun { .. } => {
+            ErlangTerm::ExternalFun(_) => {
                 return Err(PlanError::Unsupported(
                     "cerl_prettypr external function literal".into(),
                 ));

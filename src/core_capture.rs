@@ -293,12 +293,12 @@ impl CoreCaptures {
                         module,
                         function,
                         arity,
-                    }) => ErlangTerm::ExternalFun {
+                    }) => ErlangTerm::ExternalFun(Box::new(crate::core::ExternalFun {
                         module,
                         function,
                         arity: u8::try_from(arity)
                             .map_err(|_| "external function arity exceeds 255")?,
-                    },
+                    })),
                     CaptureTerm::Function(_) | CaptureTerm::Runtime { .. } => {
                         return Err("Core source capture contains a runtime handle".into());
                     }
@@ -320,15 +320,18 @@ impl CoreCaptures {
 }
 fn source_term(term: &ErlangTerm, id: impl Fn(TermId) -> CaptureId) -> CaptureTerm {
     match term {
-        ErlangTerm::ExternalFun {
-            module,
-            function,
-            arity,
-        } => CaptureTerm::Function(crate::term_order::CapturedFunction::External {
-            module: module.clone(),
-            function: function.clone(),
-            arity: usize::from(*arity),
-        }),
+        ErlangTerm::ExternalFun(external_fun_payload) => {
+            let crate::core::ExternalFun {
+                module,
+                function,
+                arity,
+            } = external_fun_payload.as_ref();
+            CaptureTerm::Function(crate::term_order::CapturedFunction::External {
+                module: module.clone(),
+                function: function.clone(),
+                arity: usize::from(*arity),
+            })
+        }
         ErlangTerm::Atom(a) => CaptureTerm::Atom(a.clone()),
         ErlangTerm::Integer(n) => CaptureTerm::Integer(n.clone()),
         ErlangTerm::Float(n) => CaptureTerm::Float(*n),
@@ -561,13 +564,15 @@ impl<'t> RecordWriter<'t> {
                 let clauses = clauses.iter().copied().map(child).collect();
                 vec![self.list(clauses), timeout, action]
             }
-            CoreExpr::Try {
-                argument,
-                vars,
-                body,
-                exception_vars,
-                handler,
-            } => {
+            CoreExpr::Try(try_payload) => {
+                let crate::core::TryExpr {
+                    argument,
+                    vars,
+                    body,
+                    exception_vars,
+                    handler,
+                } = try_payload.as_ref();
+
                 let argument = child(*argument);
                 let body = child(*body);
                 let handler = child(*handler);
@@ -586,12 +591,14 @@ impl<'t> RecordWriter<'t> {
                     .collect::<Vec<_>>();
                 vec![self.pairs(definitions), body]
             }
-            CoreExpr::Module {
-                name,
-                exports,
-                attributes,
-                definitions,
-            } => {
+            CoreExpr::Module(module_payload) => {
+                let crate::core::ModuleExpr {
+                    name,
+                    exports,
+                    attributes,
+                    definitions,
+                } = module_payload.as_ref();
+
                 let name = child(*name);
                 let exports = exports.iter().copied().map(child).collect();
                 let attributes = attributes

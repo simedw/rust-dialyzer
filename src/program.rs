@@ -28,11 +28,11 @@ pub struct TypeName {
     pub name: String,
     pub arity: usize,
 }
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VariableName {
-    Atom(String),
-    Integer(String),
-    Function(String, usize),
+    Atom(crate::atom::Atom),
+    Integer(crate::atom::Atom),
+    Function(crate::atom::Atom, usize),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NodeRef {
@@ -219,11 +219,8 @@ impl Program {
     pub fn target_contracts(&self) -> TargetContracts {
         self.target_contracts
     }
-    pub fn build_with_contracts(
-        core: &CoreProgram,
-        target_contracts: TargetContracts,
-    ) -> Result<Self> {
-        let mut index = Self {
+    fn empty(target_contracts: TargetContracts) -> Self {
+        Self {
             target_contracts,
             modules: Vec::new(),
             functions: Vec::new(),
@@ -237,84 +234,98 @@ impl Program {
             binder_nodes: BTreeMap::new(),
             named: BTreeMap::new(),
             function_nodes: Vec::new(),
-        };
+        }
+    }
+    /// Modules are indexed independently on all cores with local ids, then
+    /// merged in module order with each id shifted past the earlier modules'
+    /// entries; ids are allocated per kind in module order, so this numbers
+    /// everything as `build_sequential` does. On any error the sequential
+    /// build runs to report it exactly.
+    pub fn build_with_contracts(
+        core: &CoreProgram,
+        target_contracts: TargetContracts,
+    ) -> Result<Self> {
+        let indices: Vec<usize> = (0..core.modules.len()).collect();
+        let parts = crate::ordered_parallel::setup_map(&indices, |&i| -> Result<Self> {
+            let module = &core.modules[i];
+            let mut part = Self::empty(target_contracts);
+            part.index_module(ModuleId(i), module, metadata::module_source_origins(module))?;
+            part.walk_module(ModuleId(i), 0, module)?;
+            for scope in &mut part.scopes {
+                scope.bindings = BTreeMap::new();
+            }
+            Ok(part)
+        });
+        let mut index = Self::empty(target_contracts);
+        for part in parts {
+            let Ok(part) = part else {
+                return Self::build_sequential(core, target_contracts);
+            };
+            if !index.merge(part) {
+                return Self::build_sequential(core, target_contracts);
+            }
+        }
+        Ok(index)
+    }
+    /// Appends one module's part; false on a duplicate named function.
+    fn merge(&mut self, part: Self) -> bool {
+        let (f, s, b, m) = (self.functions.len(), self.scopes.len(), self.bindings.len(), self.metadata.len());
+        let fid = |id: FunctionId| FunctionId(id.0 + f);
+        let sid = |id: ScopeId| ScopeId(id.0 + s);
+        let bid = |id: BindingId| BindingId(id.0 + b);
+        for (name, id) in part.named {
+            if self.named.insert(name, fid(id)).is_some() {
+                return false;
+            }
+        }
+        self.functions.extend(part.functions.into_iter().map(|function| Function {
+            id: fid(function.id),
+            parent: function.parent.map(fid),
+            scope: function.scope.map(sid),
+            captures: function.captures.into_iter().map(bid).collect(),
+            ..function
+        }));
+        self.bindings.extend(part.bindings.into_iter().map(|binding| Binding {
+            id: bid(binding.id),
+            scope: sid(binding.scope),
+            owner: binding.owner.map(fid),
+            declared_function: binding.declared_function.map(fid),
+            ..binding
+        }));
+        self.scopes.extend(part.scopes.into_iter().map(|scope| Scope {
+            id: sid(scope.id),
+            parent: scope.parent.map(sid),
+            owner: scope.owner.map(fid),
+            bindings: scope.bindings.into_iter().map(|(k, v)| (k, bid(v))).collect(),
+        }));
+        self.calls.extend(part.calls.into_iter().map(|call| CallEdge { caller: fid(call.caller), ..call }));
+        self.metadata.extend(part.metadata);
+        self.type_dependencies.extend(
+            part.type_dependencies
+                .into_iter()
+                .map(|dependency| TypeDependency { metadata: dependency.metadata + m, ..dependency }),
+        );
+        self.origins.extend(part.origins);
+        self.variable_uses.extend(part.variable_uses.into_iter().map(|(k, v)| (k, bid(v))));
+        self.binder_nodes.extend(part.binder_nodes.into_iter().map(|(k, v)| (k, bid(v))));
+        self.function_nodes.extend(
+            part.function_nodes
+                .into_iter()
+                .map(|nodes| nodes.into_iter().map(|(k, v)| (k, fid(v))).collect()),
+        );
+        self.modules.extend(part.modules.into_iter().map(|module| Module { scope: sid(module.scope), ..module }));
+        true
+    }
+    fn build_sequential(core: &CoreProgram, target_contracts: TargetContracts) -> Result<Self> {
+        let mut index = Self::empty(target_contracts);
         let mut origins = crate::ordered_parallel::setup_map(&core.modules, metadata::module_source_origins)
         .into_iter();
         for (i, module) in core.modules.iter().enumerate() {
-            let mid = ModuleId(i);
-            let mut identities = BTreeMap::new();
-            let CoreExpr::Module {
-                definitions,
-                exports,
-                ..
-            } = &module.nodes[module.core.0].expr
-            else {
-                unreachable!()
-            };
-            let exported = exports
-                .iter()
-                .map(|v| function_variable(module, *v))
-                .collect::<Result<BTreeSet<_>>>()?;
-            for (key, node) in definitions {
-                let (name, arity) = function_variable(module, *key)?;
-                identities.insert(
-                    node.0,
-                    (
-                        FunctionIdentity::Named(FunctionName {
-                            module: module.name.clone(),
-                            name: name.clone(),
-                            arity,
-                        }),
-                        exported.contains(&(name, arity)),
-                    ),
-                );
-            }
-            for node in &module.nodes {
-                if let CoreExpr::Letrec { definitions, .. } = &node.expr {
-                    for (key, fun) in definitions {
-                        let (name, arity) = function_variable(module, *key)?;
-                        identities.insert(fun.0, (FunctionIdentity::Local { name, arity }, false));
-                    }
-                }
-            }
-            let mut function_nodes = BTreeMap::new();
-            for node in &module.nodes {
-                if let CoreExpr::Fun { params, .. } = &node.expr {
-                    let id = FunctionId(index.functions.len());
-                    let (identity, exported) = identities
-                        .remove(&node.id.0)
-                        .unwrap_or((FunctionIdentity::Closure, false));
-                    if let FunctionIdentity::Named(name) = &identity
-                        && index.named.insert(name.clone(), id).is_some()
-                    {
-                        return Err(format!(
-                            "module {}: duplicate named function {name:?}",
-                            module.name
-                        ));
-                    }
-                    function_nodes.insert(node.id.0, id);
-                    index.functions.push(Function {
-                        id,
-                        module: mid,
-                        node: node.id,
-                        identity,
-                        parent: None,
-                        scope: None,
-                        exported,
-                        arity: params.len(),
-                        captures: BTreeSet::new(),
-                    });
-                }
-            }
-            index.function_nodes.push(function_nodes);
-            index
-                .origins
-                .push(origins.next().expect("origins for every module")?);
-            index.index_metadata(mid, module)?;
+            index.index_module(ModuleId(i), module, origins.next().expect("origins for every module"))?;
         }
         for (i, module) in core.modules.iter().enumerate() {
             let first_scope = index.scopes.len();
-            index.walk_module(ModuleId(i), module)?;
+            index.walk_module(ModuleId(i), i, module)?;
             // Scope bindings resolve names while walking their own module
             // only; most scopes hold one or two, each in a whole map node.
             for scope in &mut index.scopes[first_scope..] {
@@ -322,6 +333,78 @@ impl Program {
             }
         }
         Ok(index)
+    }
+    /// Creates `module`'s functions and metadata.
+    fn index_module(&mut self, mid: ModuleId, module: &CoreModule, origins: Result<ModuleOrigins>) -> Result<()> {
+        let index = self;
+        let mut identities = BTreeMap::new();
+        let CoreExpr::Module(module_payload) = &module.nodes[module.core.0].expr else {
+            unreachable!()
+        };
+        let crate::core::ModuleExpr {
+            definitions,
+            exports,
+            ..
+        } = module_payload.as_ref();
+        let exported = exports
+            .iter()
+            .map(|v| function_variable(module, *v))
+            .collect::<Result<BTreeSet<_>>>()?;
+        for (key, node) in definitions {
+            let (name, arity) = function_variable(module, *key)?;
+            identities.insert(
+                node.0,
+                (
+                    FunctionIdentity::Named(FunctionName {
+                        module: module.name.clone(),
+                        name: name.clone(),
+                        arity,
+                    }),
+                    exported.contains(&(name, arity)),
+                ),
+            );
+        }
+        for node in &module.nodes {
+            if let CoreExpr::Letrec { definitions, .. } = &node.expr {
+                for (key, fun) in definitions {
+                    let (name, arity) = function_variable(module, *key)?;
+                    identities.insert(fun.0, (FunctionIdentity::Local { name, arity }, false));
+                }
+            }
+        }
+        let mut function_nodes = BTreeMap::new();
+        for node in &module.nodes {
+            if let CoreExpr::Fun { params, .. } = &node.expr {
+                let id = FunctionId(index.functions.len());
+                let (identity, exported) = identities
+                    .remove(&node.id.0)
+                    .unwrap_or((FunctionIdentity::Closure, false));
+                if let FunctionIdentity::Named(name) = &identity
+                    && index.named.insert(name.clone(), id).is_some()
+                {
+                    return Err(format!(
+                        "module {}: duplicate named function {name:?}",
+                        module.name
+                    ));
+                }
+                function_nodes.insert(node.id.0, id);
+                index.functions.push(Function {
+                    id,
+                    module: mid,
+                    node: node.id,
+                    identity,
+                    parent: None,
+                    scope: None,
+                    exported,
+                    arity: params.len(),
+                    captures: BTreeSet::new(),
+                });
+            }
+        }
+        index.function_nodes.push(function_nodes);
+        index.origins.push(origins?);
+        index.index_metadata(mid, module)?;
+        Ok(())
     }
     pub fn inspect(&self) -> Inspection {
         Inspection {
@@ -480,10 +563,12 @@ impl Program {
         }
         Ok(binding)
     }
-    fn walk_module(&mut self, mid: ModuleId, module: &CoreModule) -> Result<()> {
-        let CoreExpr::Module { definitions, .. } = &module.nodes[module.core.0].expr else {
+    /// `local` indexes `function_nodes` for `mid`.
+    fn walk_module(&mut self, mid: ModuleId, local: usize, module: &CoreModule) -> Result<()> {
+        let CoreExpr::Module(module_payload) = &module.nodes[module.core.0].expr else {
             unreachable!()
         };
+        let crate::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
         let global = self.scope(None, None);
         self.modules.push(Module {
             id: mid,
@@ -497,7 +582,7 @@ impl Program {
                 *key,
                 global,
                 BindingKind::Function,
-                Some(self.function_nodes[mid.0][&node.0]),
+                Some(self.function_nodes[local][&node.0]),
             )?;
         }
         let mut tasks: Vec<_> = definitions
@@ -517,7 +602,7 @@ impl Program {
                     self.use_variable(mid, module, task)?;
                 }
                 CoreExpr::Fun { params, body } => {
-                    let owner = self.function_nodes[mid.0][&task.node.0];
+                    let owner = self.function_nodes[local][&task.node.0];
                     if let Some(old) = self.functions[owner.0].scope {
                         if self.scopes[old.0].parent != Some(task.scope)
                             || self.functions[owner.0].parent != task.owner
@@ -566,7 +651,7 @@ impl Program {
                             *var,
                             scope,
                             BindingKind::Function,
-                            Some(self.function_nodes[mid.0][&fun.0]),
+                            Some(self.function_nodes[local][&fun.0]),
                         )?;
                     }
                     tasks.push(Task {
@@ -599,13 +684,15 @@ impl Program {
                     });
                     tasks.extend(uses.into_iter().rev());
                 }
-                CoreExpr::Try {
-                    argument,
-                    vars,
-                    body,
-                    exception_vars,
-                    handler,
-                } => {
+                CoreExpr::Try(try_payload) => {
+                    let crate::core::TryExpr {
+                        argument,
+                        vars,
+                        body,
+                        exception_vars,
+                        handler,
+                    } = try_payload.as_ref();
+
                     let success = self.scope(Some(task.scope), task.owner);
                     for var in vars {
                         self.bind(mid, module, *var, success, BindingKind::TryResult, None)?;
@@ -774,9 +861,10 @@ impl Program {
     pub fn compiler_exports(core: &CoreProgram) -> Result<BTreeSet<FunctionName>> {
         let mut exports = BTreeSet::new();
         for module in &core.modules {
-            let CoreExpr::Module { exports: nodes, .. } = &module.nodes[module.core.0].expr else {
+            let CoreExpr::Module(module_payload) = &module.nodes[module.core.0].expr else {
                 return Err("Core module root is not a module".into());
             };
+            let crate::core::ModuleExpr { exports: nodes, .. } = module_payload.as_ref();
             for node in nodes {
                 let (name, arity) = function_variable(module, *node)?;
                 exports.insert(FunctionName {

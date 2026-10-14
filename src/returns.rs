@@ -114,7 +114,9 @@ pub fn classify(
                     pending.push(*action);
                 }
             }
-            CoreExpr::Try { body, handler, .. } => {
+            CoreExpr::Try(try_payload) => {
+                let crate::core::TryExpr { body, handler, .. } = try_payload.as_ref();
+
                 pending.push(*handler);
                 pending.push(*body);
             }

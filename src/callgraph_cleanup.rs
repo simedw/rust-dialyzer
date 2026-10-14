@@ -322,6 +322,8 @@ pub fn cleanup_callgraph(
     let exports = Program::compiler_exports(context.binder.patterns.nodes.core())?;
     let external = graph.remove_external()?;
     let known_modules = context.original_plt.modules();
+    let analyzed_modules: crate::fast_hash::FastHashSet<&str> =
+        context.program.modules.iter().map(|m| m.name.as_str()).collect();
     let mut bad = Vec::new();
     let mut unknown = Vec::new();
     for (from, to) in external {
@@ -330,11 +332,7 @@ pub fn cleanup_callgraph(
             continue;
         }
         if known_modules.contains(target.module.as_str())
-            || context
-                .program
-                .modules
-                .iter()
-                .any(|m| *m.name == *target.module)
+            || analyzed_modules.contains(&*target.module)
         {
             bad.push((from, to));
         } else {

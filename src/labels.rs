@@ -28,8 +28,8 @@ fn name(module: &CoreModule, node: NodeId) -> Result<VariableName, String> {
         return Err("label binder is not a variable".into());
     };
     match &module.terms[id.0] {
-        ErlangTerm::Atom(name) => Ok(VariableName::Atom(name.clone())),
-        ErlangTerm::Integer(value) => Ok(VariableName::Integer(value.clone())),
+        ErlangTerm::Atom(name) => Ok(VariableName::Atom(name.into())),
+        ErlangTerm::Integer(value) => Ok(VariableName::Integer(value.into())),
         ErlangTerm::Tuple(values) if values.len() == 2 => {
             let ErlangTerm::Atom(function) = &module.terms[values[0].0] else {
                 return Err("function variable name is not an atom".into());
@@ -38,7 +38,7 @@ fn name(module: &CoreModule, node: NodeId) -> Result<VariableName, String> {
                 return Err("function variable arity is not an integer".into());
             };
             Ok(VariableName::Function(
-                function.clone(),
+                function.into(),
                 arity
                     .parse()
                     .map_err(|_| "function variable arity exceeds platform range")?,
@@ -311,13 +311,15 @@ fn module_labels(module: &CoreModule) -> Result<(Vec<Option<CoreLabel>>, Vec<boo
                         children.extend(clauses);
                         children.extend([*timeout, *action]);
                     }
-                    CoreExpr::Try {
-                        argument,
-                        vars,
-                        body,
-                        exception_vars,
-                        handler,
-                    } => {
+                    CoreExpr::Try(try_payload) => {
+                        let crate::core::TryExpr {
+                            argument,
+                            vars,
+                            body,
+                            exception_vars,
+                            handler,
+                        } = try_payload.as_ref();
+
                         todo.push(Action::BindAndWalk {
                             vars: exception_vars.clone(),
                             body: *handler,
@@ -362,12 +364,14 @@ fn module_labels(module: &CoreModule) -> Result<(Vec<Option<CoreLabel>>, Vec<boo
                         );
                         continue;
                     }
-                    CoreExpr::Module {
-                        definitions,
-                        attributes,
-                        exports,
-                        ..
-                    } => {
+                    CoreExpr::Module(module_payload) => {
+                        let crate::core::ModuleExpr {
+                            definitions,
+                            attributes,
+                            exports,
+                            ..
+                        } = module_payload.as_ref();
+
                         let vars = definitions.iter().map(|pair| pair.0).collect::<Vec<_>>();
                         let scoped = bind(
                             module,

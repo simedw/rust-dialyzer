@@ -5,6 +5,10 @@ version = "0.1.0"
 edition = "2024"
 default-run = "rust-dialyzer"
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [features]
 # Count live heap bytes and sample them into the job trace.
 live_bytes = []

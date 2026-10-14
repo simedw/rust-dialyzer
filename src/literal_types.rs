@@ -266,7 +266,9 @@ impl LiteralTypes {
                     .ok_or_else(|| "literal child must precede its parent".to_owned())
             };
             let typ = match term {
-                ErlangTerm::ExternalFun { arity, .. } => {
+                ErlangTerm::ExternalFun(external_fun_payload) => {
+                    let crate::core::ExternalFun { arity, .. } = external_fun_payload.as_ref();
+
                     Type::function(Some(vec![Type::any(); usize::from(*arity)]), Type::any())
                 }
                 ErlangTerm::Atom(value) => Type::atom(value),

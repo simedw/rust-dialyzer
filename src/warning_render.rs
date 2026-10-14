@@ -667,7 +667,7 @@ impl Renderer {
                         _ => Value::Improper(result, values[tail.0].clone()),
                     }
                 }
-                ErlangTerm::ExternalFun { .. } => Value::Other("function"),
+                ErlangTerm::ExternalFun(_) => Value::Other("function"),
                 ErlangTerm::Bitstring { .. } => Value::Other("bitstring"),
                 ErlangTerm::Map(_) => Value::Other("map"),
             };

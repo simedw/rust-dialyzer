@@ -144,34 +144,14 @@ impl From<SolveError> for NormalizationError {
 }
 #[derive(Default)]
 struct AtomicOrderKeys {
-    left: OnceLock<Arc<NativeOrderKey>>,
-    right: OnceLock<Arc<NativeOrderKey>>,
+    left: OnceLock<NativeOrderKey>,
+    right: OnceLock<NativeOrderKey>,
 }
 /// The order key of `t`, from a per-thread memo: the same types recur across
 /// the constraints of an SCC and across SCCs. Types are interned, so equal
 /// types are one key and the key is a function of the type.
-fn order_key(t: &Type) -> Arc<NativeOrderKey> {
-    use std::cell::RefCell;
-    const LIMIT: usize = 1 << 16;
-    thread_local! {
-        static KEYS: RefCell<crate::fast_hash::FastHashMap<Type, Arc<NativeOrderKey>>> =
-            RefCell::new(Default::default());
-    }
-    KEYS.with(|keys| {
-        if let Some(key) = keys.borrow().get(t) {
-            if crate::lattice::verify_fast_paths() {
-                assert_eq!(**key, t.native_order_key(), "order key memo");
-            }
-            return key.clone();
-        }
-        let key = Arc::new(t.native_order_key());
-        let mut keys = keys.borrow_mut();
-        if keys.len() >= LIMIT {
-            keys.clear();
-        }
-        keys.insert(t.clone(), key.clone());
-        key
-    })
+fn order_key(t: &Type) -> NativeOrderKey {
+    t.native_order_key()
 }
 
 #[derive(Default)]
@@ -212,6 +192,39 @@ impl NativeConstraintArena {
     }
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+    /// A diagnostic classifier with type values and derived captures erased.
+    /// Equality is not sufficient for reusing constraints or their ordering.
+    pub(super) fn probe_shape(&self, start: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = crate::fast_hash::FxHasher::default();
+        for node in &self.nodes[start..] {
+            std::mem::discriminant(node).hash(&mut hash);
+            match node {
+                NativeConstraint::Atomic { relation, right, deps, .. } => {
+                    std::mem::discriminant(relation).hash(&mut hash);
+                    std::mem::discriminant(right).hash(&mut hash);
+                    deps.hash(&mut hash);
+                    if let NativeOperand::Derived(id) = right {
+                        if let Some(derived) = self.derived.get(id.0) {
+                            if let Some(op) = self.semantics.get(derived.semantic) {
+                                std::mem::discriminant(op).hash(&mut hash);
+                            }
+                        }
+                    }
+                }
+                NativeConstraint::Group { kind, children, deps } => {
+                    std::mem::discriminant(kind).hash(&mut hash);
+                    for child in children { child.0.hash(&mut hash); }
+                    deps.hash(&mut hash);
+                }
+                NativeConstraint::Reference { function, deps } => {
+                    function.variable().hash(&mut hash);
+                    deps.hash(&mut hash);
+                }
+            }
+        }
+        hash.finish()
     }
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
@@ -318,19 +331,27 @@ impl NativeConstraintArena {
         let keys = AtomicOrderKeys::default();
         let (left, right) = match right {
             NativeOperand::Type(t) if matches!(relation, Relation::Equal) => {
-                let (l, r) = (order_key(&left), order_key(&t));
-                let swap = l >= r;
-                if crate::lattice::verify_fast_paths() {
-                    assert_eq!(
-                        swap,
-                        left.to_native_value() >= t.to_native_value(),
-                        "equality orientation diverged"
-                    );
+                if let Some(order) = left.variable_order(&t) {
+                    if order != Ordering::Less {
+                        (t, NativeOperand::Type(left))
+                    } else {
+                        (left, NativeOperand::Type(t))
+                    }
+                } else {
+                    let (l, r) = (order_key(&left), order_key(&t));
+                    let swap = l >= r;
+                    if crate::lattice::verify_fast_paths() {
+                        assert_eq!(
+                            swap,
+                            left.to_native_value() >= t.to_native_value(),
+                            "equality orientation diverged"
+                        );
+                    }
+                    let (left, right, l, r) = if swap { (t, left, r, l) } else { (left, t, l, r) };
+                    let _ = keys.left.set(l);
+                    let _ = keys.right.set(r);
+                    (left, NativeOperand::Type(right))
                 }
-                let (left, right, l, r) = if swap { (t, left, r, l) } else { (left, t, l, r) };
-                let _ = keys.left.set(l);
-                let _ = keys.right.set(r);
-                (left, NativeOperand::Type(right))
             }
             right => (left, right),
         };
@@ -640,8 +661,7 @@ impl NativeConstraintArena {
         };
         // Variables are `{c, var, Id, unknown}`, so two of them are ordered by
         // their identities: integers before atoms, each in its own order.
-        if let (Some(av), Some(bv)) = (a.variable_ref(), b.variable_ref()) {
-            let order = av.cmp(bv);
+        if let Some(order) = a.variable_order(b) {
             if crate::lattice::verify_fast_paths() {
                 assert_eq!(order, key(ai, a).cmp(key(bi, b)), "variable order diverged");
             }
@@ -667,7 +687,9 @@ impl NativeConstraintArena {
     ) -> Result<Ordering, NormalizationError> {
         Ok(match (a, b) {
             (NativeOperand::Type(a), NativeOperand::Type(b)) => {
-                let order = if a == b {
+                let order = if let Some(order) = a.variable_order(b) {
+                    order
+                } else if a == b {
                     Ordering::Equal
                 } else {
                     let ka = self.order_keys[ai.0].right.get_or_init(|| order_key(a));
@@ -988,11 +1010,11 @@ mod tests {
         assert!(arena.order_keys[second.0].left.get().is_some());
         assert!(arena.order_keys[first.0].right.get().is_none());
         assert!(arena.order_keys[second.0].right.get().is_none());
-        let left = &**arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey;
+        let left = arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey;
         assert_eq!(arena.compare(first, second).unwrap(), Ordering::Less);
         assert_eq!(
             left,
-            &**arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey
+            arena.order_keys[first.0].left.get().unwrap() as *const NativeOrderKey
         );
     }
 

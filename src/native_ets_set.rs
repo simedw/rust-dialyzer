@@ -41,13 +41,17 @@ impl<V> NativeEtsSet<V> {
         layout: &NativeAtomLayout,
     ) -> Result<bool, RuntimeHashError> {
         let hash = layout.ets_hash(&key)?;
+        Ok(self.insert_hashed(key, hash, value))
+    }
+    /// `insert` with `hash` already computed by `NativeAtomLayout::ets_hash`.
+    pub fn insert_hashed(&mut self, key: NativeHashKey, hash: u64, value: V) -> bool {
         let index = self.index(hash);
         if let Some(entry) = self.buckets[index]
             .iter_mut()
             .find(|entry| entry.key == key)
         {
             entry.value = value;
-            return Ok(false);
+            return false;
         }
         self.buckets[index].push(Entry { key, hash, value });
         self.size += 1;
@@ -57,7 +61,7 @@ impl<V> NativeEtsSet<V> {
             }
             self.grow();
         }
-        Ok(true)
+        true
     }
     pub fn get(
         &self,

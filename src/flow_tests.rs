@@ -67,12 +67,12 @@ impl RawCore {
     fn finish(mut self) -> CoreProgram {
         let name = self.lit("probe");
         let exports = self.defs.iter().map(|(key, _)| *key).collect();
-        let core = self.node(CoreExpr::Module {
+        let core = self.node(CoreExpr::Module(Box::new(crate::core::ModuleExpr {
             name,
             exports,
             attributes: self.attrs.clone(),
             definitions: self.defs.clone(),
-        });
+        })));
         let node_count = self.nodes.len();
         let term_count = self.terms.len();
         CoreProgram {
@@ -295,13 +295,13 @@ fn try_handler_is_unconditionally_joined_with_fresh_exception_variables() {
     let reason = c.var("Reason");
     let stack = c.var("Stack");
     let handler = c.lit("caught");
-    let try_node = c.node(CoreExpr::Try {
+    let try_node = c.node(CoreExpr::Try(Box::new(crate::core::TryExpr {
         argument,
         vars: vec![result_var],
         body,
         exception_vars: vec![class, reason, stack],
         handler,
-    });
+    })));
     c.named("try_it", vec![], try_node);
     let out = infer(&c.finish());
     assert_eq!(
@@ -320,13 +320,13 @@ fn try_match_failure_still_evaluates_handler() {
     let reason = c.var("Reason");
     let stack = c.var("Stack");
     let handler = c.lit("caught");
-    let try_node = c.node(CoreExpr::Try {
+    let try_node = c.node(CoreExpr::Try(Box::new(crate::core::TryExpr {
         argument,
         vars: vec![result_var],
         body,
         exception_vars: vec![class, reason, stack],
         handler,
-    });
+    })));
     c.named("try_it", vec![], try_node);
     let out = infer(&c.finish());
     assert_eq!(out.signatures[0].result, Type::atom("caught"));

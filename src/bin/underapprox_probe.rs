@@ -67,9 +67,10 @@ fn run(v: &Value) -> Result<Value, String> {
         return Ok(json!({"id":v["id"],"clauses":results}));
     }
     let module = &core.modules[0];
-    let CoreExpr::Module { definitions, .. } = &module.nodes[module.core.0].expr else {
+    let CoreExpr::Module(module_payload) = &module.nodes[module.core.0].expr else {
         return Err("module expected".into());
     };
+    let rust_dialyzer_poc::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
     let CoreExpr::Fun { body, .. } = &module.nodes[definitions[0].1.0].expr else {
         return Err("fun expected".into());
     };

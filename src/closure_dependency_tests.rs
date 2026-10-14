@@ -68,12 +68,12 @@ impl RawCore {
     fn finish(mut self) -> CoreProgram {
         let name = self.lit("probe");
         let exports = self.defs.iter().map(|(key, _)| *key).collect();
-        let core = self.node(CoreExpr::Module {
+        let core = self.node(CoreExpr::Module(Box::new(crate::core::ModuleExpr {
             name,
             exports,
             attributes: self.attrs.clone(),
             definitions: self.defs.clone(),
-        });
+        })));
         let node_count = self.nodes.len();
         let term_count = self.terms.len();
         CoreProgram {

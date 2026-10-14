@@ -154,6 +154,19 @@ fn fields<const N: usize>(
         .try_into()
         .map_err(|_| PublicationError::Native(NativeTransferError::FunctionClause))
 }
+/// The module a warning is reported for: its origin's module.
+pub fn origin_module(warning: &NativeWarning) -> Option<String> {
+    let (arena, root) = (warning.raw.arena(), warning.raw.id());
+    let [_, info, _] = fields::<3>(arena, root).ok()?;
+    let [_, _, mut key] = fields::<3>(arena, info).ok()?;
+    loop {
+        match &arena.terms[key.0] {
+            ErlangTerm::Atom(module) => return Some(module.clone()),
+            ErlangTerm::Tuple(items) if items.len() == 3 => key = items[0],
+            _ => return None,
+        }
+    }
+}
 fn allowed(arena: &ErlangTerms, root: TermId, policy: &Policy) -> Result<bool, PublicationError> {
     let [tag, info, _] = fields::<3>(arena, root)?;
     let [_, _, origin] = fields::<3>(arena, info)?;
@@ -217,8 +230,20 @@ pub fn publish(
     policy: &Policy,
     location: LocationOption,
 ) -> Result<PublishedWarnings, PublicationError> {
+    // Most analysis warnings are suppressed by the policy, which reads only
+    // each warning's own terms; drop those before copying. Contract range
+    // warnings can discard others in `postprocess` and are filtered after it.
+    let mut kept = Vec::with_capacity(analysis.len());
+    for w in analysis {
+        let (arena, root) = (w.raw.arena(), w.raw.id());
+        let range = matches!(fields::<3>(arena, root)?[0], tag
+            if matches!(&arena.terms[tag.0], ErlangTerm::Atom(t) if t == "warn_contract_range"));
+        if range || allowed(arena, root, policy)? {
+            kept.push(w);
+        }
+    }
     let mut builder = ReasonBuilder::new();
-    let warnings = analysis
+    let warnings = kept
         .iter()
         .map(|w| builder.copy(&w.raw))
         .collect::<Vec<_>>();
@@ -230,15 +255,24 @@ pub fn publish(
         .iter()
         .map(|warning| builder.copy(&warning.raw))
         .collect::<Vec<_>>();
+    // Only contract range warnings look up an origin; copy just those.
+    let targets: std::collections::BTreeSet<FunctionName> = analysis
+        .iter()
+        .filter_map(|w| warning_collection::contract_range_target(w.raw.arena(), w.raw.id()))
+        .collect();
     let mut origins = ContractOrigins::new();
     for (mfa, contract) in definitions.contracts.callables() {
+        let name = FunctionName {
+            module: mfa.module.clone().to_string(),
+            name: mfa.function.clone().to_string(),
+            arity: mfa.arity,
+        };
+        if !targets.contains(&name) {
+            continue;
+        }
         let origin = prepared_origin(contract);
         origins.insert(
-            FunctionName {
-                module: mfa.module.clone().to_string(),
-                name: mfa.function.clone().to_string(),
-                arity: mfa.arity,
-            },
+            name,
             ContractOrigin {
                 file: builder.copy(&origin.file),
                 location: builder.copy(&origin.location),

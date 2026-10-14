@@ -227,8 +227,8 @@ pub struct Node {
     repr: Repr,
 }
 mod interner {
-    use super::{Info, Node, Repr};
-    use std::collections::HashMap;
+    use super::{Info, Node, Repr, VariableId};
+    use crate::fast_hash::FastHashMap;
     use std::hash::{Hash, Hasher};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -238,11 +238,17 @@ mod interner {
     /// Slots must be a power of two.
     pub(super) struct Table<const SLOTS: usize> {
         slots: [AtomicPtr<Node>; SLOTS],
-        overflow: Mutex<Option<HashMap<u64, Vec<&'static Node>>>>,
+        overflow: [Mutex<Option<FastHashMap<u64, Vec<&'static Node>>>>; OVERFLOW_SHARDS],
     }
     const PROBES: usize = 32;
+    const OVERFLOW_SHARDS: usize = 64;
     pub(super) static NODES: AtomicUsize = AtomicUsize::new(0);
     static TABLE: Table<{ 1 << 24 }> = Table::new();
+    const VARIABLE_BITS: usize = 12;
+    const VARIABLE_CHUNKS: usize = 1 << 16;
+    struct VariableChunk([AtomicPtr<Node>; 1 << VARIABLE_BITS]);
+    static VARIABLES: [AtomicPtr<VariableChunk>; VARIABLE_CHUNKS] =
+        [const { AtomicPtr::new(std::ptr::null_mut()) }; VARIABLE_CHUNKS];
 
     pub(super) fn hash(repr: &Repr) -> u64 {
         let mut h = crate::fast_hash::FxHasher::default();
@@ -252,11 +258,54 @@ mod interner {
         x ^ (x >> 29) ^ (x >> 47)
     }
     pub(super) fn intern(repr: Repr) -> &'static Node {
+        if let Repr::Var(VariableId::Integer(id)) = &repr
+            && let Some(id) = id.small().and_then(|n| usize::try_from(n).ok())
+            && id >> VARIABLE_BITS < VARIABLE_CHUNKS
+        {
+            return intern_variable(id, repr);
+        }
         TABLE.intern(repr)
+    }
+    fn intern_variable(id: usize, repr: Repr) -> &'static Node {
+        let slot = &VARIABLES[id >> VARIABLE_BITS];
+        let mut chunk = slot.load(Ordering::Acquire);
+        if chunk.is_null() {
+            let fresh = Box::into_raw(Box::new(VariableChunk(
+                [const { AtomicPtr::new(std::ptr::null_mut()) }; 1 << VARIABLE_BITS],
+            )));
+            chunk = match slot.compare_exchange(std::ptr::null_mut(), fresh, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => fresh,
+                Err(winner) => {
+                    // This chunk was never published.
+                    drop(unsafe { Box::from_raw(fresh) });
+                    winner
+                }
+            };
+        }
+        // Published chunks and nodes are never freed, like TABLE's entries.
+        let slot = unsafe { &(*chunk).0[id & ((1 << VARIABLE_BITS) - 1)] };
+        let mut node = slot.load(Ordering::Acquire);
+        if node.is_null() {
+            let fresh = Box::into_raw(Box::new(Node { hash: hash(&repr), info: Info::of(&repr), repr }));
+            node = match slot.compare_exchange(std::ptr::null_mut(), fresh, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => {
+                    NODES.fetch_add(1, Ordering::Relaxed);
+                    fresh
+                }
+                Err(winner) => {
+                    drop(unsafe { Box::from_raw(fresh) });
+                    winner
+                }
+            };
+        }
+        unsafe { &*node }
     }
     impl<const SLOTS: usize> Table<SLOTS> {
         pub(super) const fn new() -> Self {
-            Table { slots: [const { AtomicPtr::new(std::ptr::null_mut()) }; SLOTS], overflow: Mutex::new(None) }
+            Table {
+                slots: [const { AtomicPtr::new(std::ptr::null_mut()) }; SLOTS],
+                overflow: [const { Mutex::new(None) }; OVERFLOW_SHARDS],
+            }
         }
         pub(super) fn intern(&self, repr: Repr) -> &'static Node {
             let hash = hash(&repr);
@@ -297,6 +346,19 @@ mod interner {
                     }
                 }
             }
+            let repr = candidate.as_ref().unwrap_or_else(|| {
+                // A failed CAS leaves this call owning the unpublished node.
+                unsafe { &(*fresh.expect("unpublished type candidate")).repr }
+            });
+            let shard = (hash >> 32) as usize & (OVERFLOW_SHARDS - 1);
+            let mut overflow = self.overflow[shard].lock().expect("type overflow table");
+            let chain = overflow.get_or_insert_with(FastHashMap::default).entry(hash).or_default();
+            if let Some(existing) = chain.iter().find(|n| n.repr == *repr) {
+                if let Some(entry) = fresh {
+                    drop(unsafe { Box::from_raw(entry) });
+                }
+                return existing;
+            }
             let node = match fresh {
                 Some(entry) => unsafe { *Box::from_raw(entry) },
                 None => {
@@ -304,11 +366,6 @@ mod interner {
                     Node { hash, info: Info::of(&repr), repr }
                 }
             };
-            let mut overflow = self.overflow.lock().expect("type overflow table");
-            let chain = overflow.get_or_insert_with(HashMap::new).entry(hash).or_default();
-            if let Some(existing) = chain.iter().find(|n| n.repr == node.repr) {
-                return existing;
-            }
             let leaked: &'static Node = Box::leak(Box::new(node));
             NODES.fetch_add(1, Ordering::Relaxed);
             chain.push(leaked);
@@ -336,12 +393,18 @@ mod memo {
         static JOIN_ENTRIES: Box<[Entry]> = entries();
         static SUBTRACT_ENTRIES: Box<[Entry]> = entries();
         static LIMIT_ENTRIES: Box<[Entry]> = entries();
+        static ATOM_ENTRIES: Box<[Entry]> = entries();
+        static INTEGER_ENTRIES: Box<[Entry]> = entries();
+        static FUNCTION_ENTRIES: Box<[Entry]> = entries();
     }
     pub(super) static MEET: Table = Table(MEET_ENTRIES);
     pub(super) static JOIN: Table = Table(JOIN_ENTRIES);
     pub(super) static SUBTRACT: Table = Table(SUBTRACT_ENTRIES);
     /// Keyed by the operand and the depth.
     pub(super) static LIMIT: Table = Table(LIMIT_ENTRIES);
+    pub(super) static ATOM: Table = Table(ATOM_ENTRIES);
+    pub(super) static INTEGER: Table = Table(INTEGER_ENTRIES);
+    pub(super) static FUNCTION: Table = Table(FUNCTION_ENTRIES);
 
     pub(super) fn pure(a: &Type, b: &Type) -> bool {
         (a.info.flags | b.info.flags) & NOMINAL == 0
@@ -349,20 +412,29 @@ mod memo {
     }
     pub(super) fn key(a: &Type, b: usize) -> (usize, usize, usize) {
         let x = a.0 as *const Node as usize;
+        key_word(x, b)
+    }
+    pub(super) fn key_word(x: usize, b: usize) -> (usize, usize, usize) {
         let h = (x ^ b.rotate_left(29)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         (x, b, h >> (usize::BITS - BITS))
     }
     pub(super) fn get(table: &'static Table, (x, y, i): (usize, usize, usize)) -> Option<Type> {
         let (ka, kb, r) = table.0.with(|t| t[i].get());
         // Stored results are interned nodes, which are never freed.
-        (ka == x && kb == y).then(|| Type(unsafe { &*(r as *const Node) }))
+        if ka == x && kb == y && r != 0 { return Some(Type(unsafe { &*(r as *const Node) })); }
+        None
     }
     pub(super) fn put(table: &'static Table, (x, y, i): (usize, usize, usize), result: Type) {
         table.0.with(|t| t[i].set((x, y, result.0 as *const Node as usize)));
     }
+
+
 }
 
 impl Type {
+    pub(crate) fn interned_node_count() -> usize {
+        interner::NODES.load(std::sync::atomic::Ordering::Relaxed)
+    }
     fn new(repr: Repr) -> Self {
         static ANY: Node = Node { hash: 1, info: Info { flags: 0, limited_from: i32::MIN }, repr: Repr::Any };
         static NONE: Node = Node { hash: 2, info: Info { flags: 0, limited_from: 1 }, repr: Repr::None };
@@ -1498,8 +1570,12 @@ impl Tuples {
                 _ => None,
             })
             .unwrap_or_else(|| vec![None]);
+        let arity = elements.len();
         let split = tags.len() > 1;
-        let variants = tags
+        let variants = if tags.len() == 1 {
+            vec![TupleVariant { elements, tag: tags[0] }]
+        } else {
+            tags
             .into_iter()
             .map(|tag| {
                 let mut elements = elements.clone();
@@ -1508,9 +1584,10 @@ impl Tuples {
                 }
                 TupleVariant { elements, tag }
             })
-            .collect();
+            .collect()
+        };
         Ok(Some(Self::Set(BTreeMap::from([(
-            elements.len(),
+            arity,
             variants,
         )]))))
     }
@@ -3017,19 +3094,36 @@ impl Type {
             "infinity" => return Self::canonical(CanonicalType::Infinity),
             _ => {}
         }
-        Self::scalar(Some(Atoms::Set(BTreeSet::from([name]))), None)
+        let key = memo::key_word(name.as_str().as_ptr() as usize, 0);
+        if let Some(typ) = memo::get(&memo::ATOM, key) {
+            return typ;
+        }
+        let typ = Self::scalar(Some(Atoms::Set(BTreeSet::from([name]))), None);
+        memo::put(&memo::ATOM, key, typ);
+        typ
     }
     pub fn integer(value: BigInt) -> Self {
-        match num_traits::ToPrimitive::to_i64(&value) {
+        let small = num_traits::ToPrimitive::to_i64(&value);
+        match small {
             Some(0) => return Self::canonical(CanonicalType::Zero),
             Some(1) => return Self::canonical(CanonicalType::One),
             Some(-1) => return Self::canonical(CanonicalType::MinusOne),
             _ => {}
         }
-        Self::scalar(
+        let key = small.map(|n| memo::key_word(n as usize, 0));
+        if let Some(key) = key
+            && let Some(typ) = memo::get(&memo::INTEGER, key)
+        {
+            return typ;
+        }
+        let typ = Self::scalar(
             None,
             Some(Numeric::Integer(Integers::Set(BTreeSet::from([value])))),
-        )
+        );
+        if let Some(key) = key {
+            memo::put(&memo::INTEGER, key, typ);
+        }
+        typ
     }
 
     pub fn nil() -> Self {
@@ -3215,16 +3309,39 @@ impl Type {
         let domain = domain
             .map(|es| Self::raw_product(es))
             .unwrap_or_else(Self::any);
-        Self::families(Slots {
+        let key = memo::key(&domain, range.0 as *const Node as usize);
+        if let Some(typ) = memo::get(&memo::FUNCTION, key) {
+            return typ;
+        }
+        let typ = Self::families(Slots {
             functions: Some(Arc::new(Functions {
                 domain: domain,
                 range: range,
             })),
             ..Slots::default()
-        })
+        });
+        memo::put(&memo::FUNCTION, key, typ);
+        typ
     }
     fn raw_product(elements: Vec<Self>) -> Self {
-        Self::new(Repr::Product(Arc::new(elements)))
+        use std::hash::{Hash, Hasher};
+        const BITS: u32 = 12;
+        thread_local! {
+            static PRODUCTS: std::cell::RefCell<Box<[Option<Type>]>> =
+                std::cell::RefCell::new(vec![None; 1 << BITS].into_boxed_slice());
+        }
+        let mut hash = crate::fast_hash::FxHasher::default();
+        elements.hash(&mut hash);
+        let slot = (hash.finish() >> (u64::BITS - BITS)) as usize;
+        let cached = PRODUCTS.with(|products| products.borrow()[slot]);
+        if let Some(typ) = cached
+            && matches!(&typ.repr, Repr::Product(previous) if **previous == elements)
+        {
+            return typ;
+        }
+        let typ = Self::new(Repr::Product(Arc::new(elements)));
+        PRODUCTS.with(|products| products.borrow_mut()[slot] = Some(typ));
+        typ
     }
     /// `raw_product(elements)`, reusing `a` or `b` when it is a product of
     /// exactly these elements.
@@ -5051,6 +5168,38 @@ pub use native_order::{NativeOrderKey, NativeValue};
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn constructor_memos_preserve_uncached_types() {
+        for name in ["", "ok", "error", "true", "false", "infinity", "a\0b", "λ"] {
+            let expected = Type::scalar(Some(Atoms::Set(BTreeSet::from([name.into()]))), None);
+            for _ in 0..3 {
+                assert_eq!(Type::atom(name), expected);
+            }
+        }
+        for value in [i64::MIN, -10, -1, 0, 1, 2, 255, i64::MAX] {
+            let expected = Type::scalar(None, Some(Numeric::Integer(Integers::Set(BTreeSet::from([value.into()])))));
+            for _ in 0..3 {
+                assert_eq!(Type::integer(value.into()), expected);
+            }
+        }
+        let large = BigInt::from(2).pow(100);
+        assert_eq!(Type::integer(large.clone()), Type::integers([large]));
+        let domains = [None, Some(vec![]), Some(vec![Type::none()]),
+            Some(vec![Type::atom("ok"), Type::any()])];
+        for domain in domains {
+            for range in [Type::any(), Type::none(), Type::atom("ok")] {
+                let expected_domain = domain.clone().map(|es| Type::new(Repr::Product(Arc::new(es))))
+                    .unwrap_or_else(Type::any);
+                let expected = Type::families(Slots {
+                    functions: Some(Arc::new(Functions { domain: expected_domain, range })),
+                    ..Slots::default()
+                });
+                for _ in 0..3 {
+                    assert_eq!(Type::function(domain.clone(), range), expected);
+                }
+            }
+        }
+    }
 
     /// A type built from `i` by several interning steps, so racing threads
     /// that build the same `i` create the same nodes at the same time.
@@ -5124,6 +5273,19 @@ mod tests {
         assert_canonical(&runs);
         for (i, node) in runs[0].iter().enumerate() {
             assert!(std::ptr::eq(stress_type(i).0, *node));
+        }
+    }
+    #[test]
+    fn concurrent_integer_variables_share_nodes_across_chunks_and_fallbacks() {
+        let ids = [0, 1, 4095, 4096, 8191, 8192, (1 << 28) - 1, 1 << 28, -1, i64::MAX];
+        let runs = race(12, ids.len(), |i| {
+            Type::variable_integer(ids[i].into()).0
+        });
+        assert_canonical(&runs);
+        for (id, node) in ids.into_iter().zip(&runs[0]) {
+            let from_id = Type::new(Repr::Var(VariableId::Integer(id.into())));
+            assert!(std::ptr::eq(from_id.0, *node));
+            assert_eq!(node.hash, interner::hash(&node.repr));
         }
     }
     #[test]

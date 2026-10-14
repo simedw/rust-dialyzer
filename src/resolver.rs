@@ -1845,6 +1845,13 @@ impl<'a> Resolver<'a> {
             let (key, left) = self.form(fields[0], s, d - 1, l)?;
             let (value, left) = self.form(fields[1], s, d - 1, left)?;
             l = left - 1;
+            // OTP's singleton_elements makes non-singleton required keys
+            // optional before splitting their alternatives.
+            let presence = if presence == Presence::Mandatory && MapKey::from_type(&key).is_err() {
+                Presence::Optional
+            } else {
+                presence
+            };
             for key in Self::separate_key(&key)? {
                 pairs.push((key, presence, value.clone()))
             }
@@ -2132,6 +2139,26 @@ mod map_budget_tests {
             }));
         }
         (forms, ids)
+    }
+
+    #[test]
+    fn required_union_map_key_does_not_require_every_alternative() {
+        let (mut forms, ids) = fields(&["a"]);
+        let a = FormId(forms.nodes.len());
+        forms.nodes.push(Form { module: ModuleId(0), raw: crate::core::TermId(a.0),
+            value: TypeForm::Atom("a".into()) });
+        let b = FormId(forms.nodes.len());
+        forms.nodes.push(Form { module: ModuleId(0), raw: crate::core::TermId(b.0),
+            value: TypeForm::Atom("b".into()) });
+        forms.nodes[0].value = TypeForm::Builtin { name: Builtin::Union, arguments: Some(vec![a, b]) };
+        let modules = vec!["union_map".into()];
+        let mut resolver = Resolver::new(&forms, &modules);
+        let (actual, _) = resolver.map(&ids, &State::default(), 16, 100).unwrap();
+        let expected = Type::map(["a", "b"].into_iter().map(|key| MapEntry {
+            key: MapKey::from_type(&Type::atom(key)).unwrap(), presence: Presence::Optional,
+            value: Type::atom("value_a"),
+        }).collect(), Type::none(), Type::none()).unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]

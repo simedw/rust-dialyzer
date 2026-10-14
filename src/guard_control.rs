@@ -367,13 +367,15 @@ impl GuardControl<'_, '_, '_> {
                     }
                 }
             }
-            CoreExpr::Try {
-                argument,
-                vars,
-                body,
-                exception_vars,
-                handler,
-            } => {
+            CoreExpr::Try(try_payload) => {
+                let crate::core::TryExpr {
+                    argument,
+                    vars,
+                    body,
+                    exception_vars,
+                    handler,
+                } = try_payload.as_ref();
+
                 let [var] = vars.as_slice() else {
                     return Err(GuardError::Unported {
                         node,

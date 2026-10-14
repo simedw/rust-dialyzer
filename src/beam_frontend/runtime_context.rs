@@ -97,9 +97,11 @@ pub fn module_atoms(modules: &[CoreModule]) -> BTreeSet<String> {
                 ErlangTerm::Atom(name) => {
                     atoms.insert(name.clone());
                 }
-                ErlangTerm::ExternalFun {
-                    module, function, ..
-                } => {
+                ErlangTerm::ExternalFun(external_fun_payload) => {
+                    let crate::core::ExternalFun {
+                        module, function, ..
+                    } = external_fun_payload.as_ref();
+
                     atoms.insert(module.clone());
                     atoms.insert(function.clone());
                 }

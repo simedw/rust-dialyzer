@@ -28,6 +28,7 @@ pub struct Iter<'a, T> {
 }
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let value = self.inner.next();
         if value.is_some() {
@@ -43,6 +44,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 impl<T> DoubleEndedIterator for Iter<'_, T> {
+    #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         let value = self.inner.next_back();
         if value.is_some() {
@@ -78,17 +80,27 @@ impl<T> SharedVec<T> {
             own: Vec::with_capacity(capacity),
         }
     }
+    #[inline]
     pub fn len(&self) -> usize {
         self.prefix_len() + self.own.len()
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// Backing slices and capacities retained by this view, for storage
+    /// audits. Count shared blocks only once when auditing multiple clones.
+    pub fn backing_blocks(&self) -> impl Iterator<Item = (&[T], usize)> {
+        std::iter::once((self.base.as_slice(), self.base.capacity()))
+            .chain(self.chunks.iter().map(|chunk| (chunk.items.as_slice(), chunk.items.capacity())))
+            .chain(std::iter::once((self.own.as_slice(), self.own.capacity())))
+    }
+    #[inline]
     fn prefix_len(&self) -> usize {
         self.chunks
             .last()
             .map_or(self.base.len(), |chunk| chunk.end)
     }
+    #[inline]
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.base.len() {
             return self.base.get(index);
@@ -158,7 +170,14 @@ impl<T> SharedVec<T> {
             return;
         }
         let end = self.len();
-        let own = std::mem::take(&mut self.own);
+        let mut own = std::mem::take(&mut self.own);
+        // Frozen blocks never grow. A fresh allocation releases spare space
+        // even when the allocator would keep shrink_to_fit in place.
+        if own.capacity() > own.len() && std::mem::size_of::<T>() != 0 {
+            let mut packed = Vec::with_capacity(own.len());
+            packed.extend(own);
+            own = packed;
+        }
         if self.base.is_empty() && self.chunks.is_empty() {
             self.base = Arc::new(own);
         } else {
@@ -306,6 +325,7 @@ impl<T> FromIterator<T> for SharedVec<T> {
 
 impl<T> Index<usize> for SharedVec<T> {
     type Output = T;
+    #[inline(always)]
     fn index(&self, index: usize) -> &T {
         self.get(index).expect("SharedVec index out of bounds")
     }

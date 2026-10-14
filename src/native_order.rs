@@ -101,6 +101,19 @@ impl NominalName {
     }
 }
 impl Type {
+    /// Native variable records have tag `var`, after every other type tag.
+    pub(crate) fn variable_order(&self, rhs: &Self) -> Option<Ordering> {
+        let order = match (self.variable_ref(), rhs.variable_ref()) {
+            (Some(a), Some(b)) => a.cmp(b),
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => return None,
+        };
+        if verify_fast_paths() {
+            assert_eq!(order, self.native_value().cmp(&rhs.native_value()), "variable record order");
+        }
+        Some(order)
+    }
     pub fn to_native_value(&self) -> NativeValue {
         self.native_value()
     }
@@ -109,10 +122,17 @@ impl Type {
         if self == rhs {
             return Ordering::Equal;
         }
+        if let Some(order) = self.variable_order(rhs) {
+            return order;
+        }
         if let (Some(a), Some(b)) = (self.singleton_key(), rhs.singleton_key()) {
             return a.cmp(&b);
         }
-        self.native_value().cmp(&rhs.native_value())
+        let order = self.native_order_key().cmp(&rhs.native_order_key());
+        if verify_fast_paths() {
+            assert_eq!(order, self.native_value().cmp(&rhs.native_value()), "record order key");
+        }
+        order
     }
     fn native_value(&self) -> NativeValue {
         use NativeValue as N;
@@ -526,7 +546,7 @@ impl Type {
     /// Keys are a pure function of the interned node, so each thread keeps
     /// the recent ones by node address.
     pub fn native_order_key(&self) -> NativeOrderKey {
-        const BITS: u32 = 12;
+        const BITS: u32 = 16;
         type Slot = Option<(usize, NativeOrderKey)>;
         thread_local! {
             static KEYS: std::cell::RefCell<Box<[Slot]>> =
@@ -796,10 +816,14 @@ mod order_key_tests {
         types.extend(tuples);
         types.push(Type::function(Some(vec![Type::atom("x")]), Type::nil()));
         let all: Vec<_> = types.iter().map(|t| (t.native_order_key(), t.native_value())).collect();
-        for (ka, a) in &all {
+        for (typ_a, (ka, a)) in types.iter().zip(&all) {
             assert_eq!(*ka, a.order_key());
-            for (kb, b) in &all {
+            for (typ_b, (kb, b)) in types.iter().zip(&all) {
                 assert_eq!(ka.cmp(kb), a.cmp(b));
+                assert_eq!(typ_a.native_record_order(typ_b), a.cmp(b));
+                if let Some(order) = typ_a.variable_order(typ_b) {
+                    assert_eq!(order, a.cmp(b));
+                }
             }
         }
     }

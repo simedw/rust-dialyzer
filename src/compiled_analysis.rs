@@ -314,9 +314,20 @@ fn analyze_phases(
         .iter()
         .map(|(_, warning)| warning.clone())
         .collect::<Vec<_>>();
+    // Like the analysis and unknown-function warnings, missing calls are
+    // reported only for the selected modules.
+    let missing_calls: Vec<_> = match &input.report_modules {
+        Some(report) => cleanup
+            .missing_calls
+            .iter()
+            .filter(|w| warning_publication::origin_module(w).is_none_or(|m| report.contains(&m)))
+            .cloned()
+            .collect(),
+        None => cleanup.missing_calls.clone(),
+    };
     let warnings = warning_publication::publish(
         &analysis.raw_warnings,
-        &cleanup.missing_calls,
+        &missing_calls,
         &unknown_flat,
         &definitions,
         &policy,

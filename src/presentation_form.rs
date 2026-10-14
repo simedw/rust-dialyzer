@@ -357,16 +357,19 @@ impl FormPrinter<'_> {
     }
     fn term_string(&self, id: TermId) -> Result<String, LatticeError> {
         Ok(match self.term(id)? {
-            ErlangTerm::ExternalFun {
-                module,
-                function,
-                arity,
-            } => format!(
-                "fun {}:{}/{}",
-                self.context.atom_latin1(module),
-                self.context.atom_latin1(function),
-                arity
-            ),
+            ErlangTerm::ExternalFun(external_fun_payload) => {
+                let crate::core::ExternalFun {
+                    module,
+                    function,
+                    arity,
+                } = external_fun_payload.as_ref();
+                format!(
+                    "fun {}:{}/{}",
+                    self.context.atom_latin1(module),
+                    self.context.atom_latin1(function),
+                    arity
+                )
+            }
             ErlangTerm::Atom(a) => self.context.atom_latin1(a),
             ErlangTerm::Integer(n) => n.clone(),
             ErlangTerm::Float(bits) => {

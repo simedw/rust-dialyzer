@@ -63,15 +63,18 @@ impl NativeHashKey {
         ) -> Result<NativeHashKey, RuntimeHashError> {
             use NativeHashKey as K;
             Ok(match &arena.terms[id.0] {
-                T::ExternalFun {
-                    module,
-                    function,
-                    arity,
-                } => K::ExternalFun {
-                    module: module.clone(),
-                    function: function.clone(),
-                    arity: *arity,
-                },
+                T::ExternalFun(external_fun_payload) => {
+                    let crate::core::ExternalFun {
+                        module,
+                        function,
+                        arity,
+                    } = external_fun_payload.as_ref();
+                    K::ExternalFun {
+                        module: module.clone(),
+                        function: function.clone(),
+                        arity: *arity,
+                    }
+                }
                 T::Atom(x) => K::Atom(x.clone()),
                 T::Integer(x) => K::Integer(
                     x.parse()
@@ -120,11 +123,11 @@ impl NativeHashKey {
                     module,
                     function,
                     arity,
-                } => T::ExternalFun {
+                } => T::ExternalFun(Box::new(crate::core::ExternalFun {
                     module: module.clone(),
                     function: function.clone(),
                     arity: *arity,
-                },
+                })),
                 K::Atom(x) => T::Atom(x.clone()),
                 K::Integer(x) => T::Integer(x.to_string()),
                 K::Float(x) => T::Float(*x),

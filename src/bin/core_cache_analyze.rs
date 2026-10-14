@@ -1,6 +1,6 @@
 //! Analyze BEAM files through native compilation, or compiler-produced cached Core.
 //!
-//! Usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json [--frontend native|compiler]
+//! Usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json [--frontend native|compiler] [--warnings-only]
 //!
 //! MANIFEST selects native `beam_files` with a runtime context, or cached
 //! `module_files` with the compiler context and closure profile.
@@ -162,7 +162,7 @@ fn load(manifest: &Value) -> Result<Loaded, String> {
 }
 
 // The result object, plus the serialized signature rows when analysis succeeded.
-fn run(library: &str, manifest: &Value, options: &Value) -> (Value, Option<Vec<Vec<u8>>>) {
+fn run(library: &str, manifest: &Value, options: &Value, warnings_only: bool) -> (Value, Option<Vec<Vec<u8>>>) {
     let started = Instant::now();
     let Loaded {
         core,
@@ -180,7 +180,12 @@ fn run(library: &str, manifest: &Value, options: &Value) -> (Value, Option<Vec<V
     rust_dialyzer_poc::teardown::skip_drops_at_exit();
     let started = Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| {
-        rust_dialyzer_poc::compiled_probe::analyze_projected(&core, options, library, &profile)
+        if warnings_only {
+            rust_dialyzer_poc::compiled_probe::analyze_warnings(&core, options, library, &profile)
+                .map(|result| rust_dialyzer_poc::compiled_probe::Projected { result, signatures: Vec::new() })
+        } else {
+            rust_dialyzer_poc::compiled_probe::analyze_projected(&core, options, library, &profile)
+        }
     }));
     let analysis_seconds = started.elapsed().as_secs_f64();
     rust_dialyzer_poc::teardown::release(core);
@@ -204,7 +209,7 @@ fn run(library: &str, manifest: &Value, options: &Value) -> (Value, Option<Vec<V
             for key in ["public_warning_count", "warnings"] {
                 outcome[key] = output.result[key].take();
             }
-            signatures = Some(output.signatures);
+            signatures = (!warnings_only).then_some(output.signatures);
             outcome
         }
         Ok(Err(error)) => json!({"status": "error", "stage": "analysis", "detail": error}),
@@ -259,7 +264,14 @@ fn write_result(
 fn main() {
     #[cfg(feature = "live_bytes")]
     rust_dialyzer_poc::live_bytes::start_sampler();
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    let projection_flag = args.iter().skip(3).position(|arg| arg == "--warnings-only");
+    let warnings_only = if let Some(position) = projection_flag {
+        args.remove(position + 3);
+        true
+    } else {
+        false
+    };
     let frontend = match args.as_slice() {
         [_, _, _] => None,
         [_, _, _, flag, value]
@@ -269,7 +281,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json [--frontend native|compiler]"
+                "usage: core_cache_analyze PRIOR_LIBRARY.json MANIFEST.json OPTIONS.json [--frontend native|compiler] [--warnings-only]"
             );
             std::process::exit(2);
         }
@@ -296,7 +308,7 @@ fn main() {
     // Guard analysis recurses up to MAX_GUARD_DEPTH; give it a stack to match.
     let (output, signatures) = std::thread::Builder::new()
         .stack_size(4 << 30)
-        .spawn(move || run(&library, &manifest, &options))
+        .spawn(move || run(&library, &manifest, &options, warnings_only))
         .expect("analysis thread")
         .join()
         .expect("analysis thread panicked outside catch_unwind");

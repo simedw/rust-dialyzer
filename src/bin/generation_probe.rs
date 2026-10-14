@@ -202,7 +202,10 @@ fn run(v: &Value) -> Result<Value, String> {
         .iter()
         .enumerate()
         .flat_map(|(module, m)| {
-            if let CoreExpr::Module { definitions, .. } = &m.nodes[m.core.0].expr {
+            if let CoreExpr::Module(module_payload) = &m.nodes[m.core.0].expr {
+                let rust_dialyzer_poc::core::ModuleExpr { definitions, .. } =
+                    module_payload.as_ref();
+
                 definitions
                     .iter()
                     .filter(|(node, _)| {

@@ -124,18 +124,41 @@ pub struct CoreAnalyzer<'a> {
     pub graph: &'a SourceCallGraph,
     pub bifs: &'a Registry,
     pub next_core_label: CoreLabel,
+    functions: std::sync::Mutex<crate::fast_hash::FastHashMap<(usize, usize), (u64, Vec<FunctionInfo>)>>,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FunctionInfo {
     label: CoreLabel,
     arity: usize,
 }
-impl CoreAnalyzer<'_> {
+impl<'a> CoreAnalyzer<'a> {
+    pub fn new(nodes: &'a DataflowNodes<'a>, program: &'a Program,
+        graph: &'a SourceCallGraph, bifs: &'a Registry, next_core_label: CoreLabel) -> Self {
+        Self { nodes, program, graph, bifs, next_core_label, functions: Default::default() }
+    }
     fn collect(&self, root: NodeRef) -> Result<Vec<FunctionInfo>, String> {
         self.collect_counted(root, &mut 0)
     }
-    /// `collect`, adding the number of nodes visited to `nodes`.
+    /// `collect`, adding the native tree size, including cached walks.
     fn collect_counted(&self, root: NodeRef, nodes: &mut u64) -> Result<Vec<FunctionInfo>, String> {
+        let key = (root.module.0, root.node);
+        let hit = self.functions.lock().unwrap().get(&key).cloned();
+        if let Some((count, functions)) = hit {
+            if crate::lattice::verify_fast_paths() {
+                let mut fresh_count = 0;
+                let fresh = self.collect_uncached(root, &mut fresh_count)?;
+                assert_eq!((count, &functions), (fresh_count, &fresh), "function metadata cache");
+            }
+            *nodes += count;
+            return Ok(functions);
+        }
+        let mut count = 0;
+        let functions = self.collect_uncached(root, &mut count)?;
+        self.functions.lock().unwrap().insert(key, (count, functions.clone()));
+        *nodes += count;
+        Ok(functions)
+    }
+    fn collect_uncached(&self, root: NodeRef, nodes: &mut u64) -> Result<Vec<FunctionInfo>, String> {
         let mut pending = vec![(root, false)];
         let mut functions = Vec::new();
         while let Some((node, finish)) = pending.pop() {

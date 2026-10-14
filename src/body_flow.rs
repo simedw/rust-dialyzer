@@ -1300,13 +1300,15 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
                             };
                             values.push(Value { map, typ });
                         }
-                        CoreExpr::Try {
-                            argument,
-                            vars,
-                            body,
-                            exception_vars,
-                            handler,
-                        } => {
+                        CoreExpr::Try(try_payload) => {
+                            let crate::core::TryExpr {
+                                argument,
+                                vars,
+                                body,
+                                exception_vars,
+                                handler,
+                            } = try_payload.as_ref();
+
                             todo.push(Frame::TryArgument {
                                 argument: reference(argument),
                                 vars: Self::refs(node, &vars),

@@ -43,6 +43,31 @@ pub fn analyze_projected(
     library: &str,
     profile: &ClosureCodeProfile,
 ) -> Result<Projected, String> {
+    project(core, row, library, profile, SignatureProjection::Include)
+}
+
+pub fn analyze_warnings(
+    core: &CoreProgram,
+    row: &Value,
+    library: &str,
+    profile: &ClosureCodeProfile,
+) -> Result<Value, String> {
+    project(core, row, library, profile, SignatureProjection::Omit).map(|output| output.result)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SignatureProjection {
+    Include,
+    Omit,
+}
+
+fn project(
+    core: &CoreProgram,
+    row: &Value,
+    library: &str,
+    profile: &ClosureCodeProfile,
+    signatures: SignatureProjection,
+) -> Result<Projected, String> {
     let mut timings = crate::phase_timings::PhaseTimings::new("probe_run");
     let tags: Vec<Tag> =
         serde_json::from_value(row["legal_warnings"].clone()).map_err(|error| error.to_string())?;
@@ -114,17 +139,15 @@ pub fn analyze_projected(
         row["report_modules"].as_array().map(|names| {
             names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect()
         });
-    let signature_rows = output
-        .analysis
-        .state
-        .signatures
-        .iter()
-        .filter_map(|(label, signature)| {
+    let signature_rows = if signatures == SignatureProjection::Include {
+        output.analysis.state.signatures.iter().filter_map(|(label, signature)| {
             output.graph.function_name(*label)
                 .filter(|name| report_modules.as_ref().is_none_or(|r| r.contains(name.module.as_str())))
                 .map(|name| (name, signature))
-        })
-        .collect::<Vec<_>>();
+        }).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let signatures = crate::ordered_parallel::setup_map(&signature_rows, |(name, signature)| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             serde_json::to_vec(&crate::jobj!({

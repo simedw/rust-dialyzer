@@ -30,11 +30,7 @@ use std::{
 fn view(arena: &ErlangTerms, id: rust_dialyzer_poc::core::TermId) -> Value {
     use rust_dialyzer_poc::core::ErlangTerm::*;
     match &arena.terms[id.0] {
-        ExternalFun {
-            module,
-            function,
-            arity,
-        } => json!({"external_fun":{"module":module,"function":function,"arity":arity}}),
+        ExternalFun(payload) => json!({"external_fun":{"module":payload.module,"function":payload.function,"arity":payload.arity}}),
         Atom(s) => json!({"atom":s}),
         Integer(s) => json!({"integer":s}),
         Float(s) => json!({"float":s}),

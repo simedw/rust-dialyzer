@@ -44,9 +44,11 @@ fn atom_names(compilations: &[Compilation]) -> Vec<String> {
                     ErlangTerm::Atom(name) => {
                         names.insert(name.as_str());
                     }
-                    ErlangTerm::ExternalFun {
-                        module, function, ..
-                    } => {
+                    ErlangTerm::ExternalFun(external_fun_payload) => {
+                        let crate::core::ExternalFun {
+                            module, function, ..
+                        } = external_fun_payload.as_ref();
+
                         names.insert(module.as_str());
                         names.insert(function.as_str());
                     }
@@ -233,9 +235,11 @@ fn fused_atom_names(
                     names.insert(name.clone());
                 }
             }
-            ErlangTerm::ExternalFun {
-                module, function, ..
-            } => {
+            ErlangTerm::ExternalFun(external_fun_payload) => {
+                let crate::core::ExternalFun {
+                    module, function, ..
+                } = external_fun_payload.as_ref();
+
                 names.insert(module.clone());
                 names.insert(function.clone());
             }

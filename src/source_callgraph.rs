@@ -162,6 +162,13 @@ impl SourceCallGraph {
             vertices.push(vertex);
         }
         let module_functions = module_function_index(program);
+        let mut escaping_functions = vec![Vec::new(); core.modules.len()];
+        for id in &deps.escaping.local {
+            let home = program.functions[id.0].module.0;
+            if let Some(functions) = escaping_functions.get_mut(home) {
+                functions.push(*id);
+            }
+        }
         // Each module's edges read only shared inputs; build them on all
         // cores. The graph is then built from them in module order, and the
         // first failing module in module order is reported.
@@ -189,17 +196,22 @@ impl SourceCallGraph {
                     None => DependencyCaller::Top,
                 });
             }
-            let escaping: BTreeSet<_> = deps
-                .escaping
-                .local
+            let escaping: BTreeSet<_> = escaping_functions[index]
                 .iter()
-                .filter(|id| program.functions[id.0].module == module)
                 .map(|id| {
                     labels
                         .label(site(module, program.functions[id.0].node))
                         .ok_or("escaping label")
                 })
                 .collect::<Result<_, _>>()?;
+            if crate::lattice::verify_fast_paths() {
+                let expected: BTreeSet<_> = deps.escaping.local.iter()
+                    .filter(|id| program.functions[id.0].module == module)
+                    .map(|id| labels.label(site(module, program.functions[id.0].node))
+                        .ok_or("escaping label"))
+                    .collect::<Result<_, _>>()?;
+                assert_eq!(escaping, expected, "module escaping-function index");
+            }
             if !escaping.is_empty() || deps.module_escaping[index].external {
                 order.store(DependencyCaller::External);
             }
@@ -256,9 +268,10 @@ impl SourceCallGraph {
                 .into_iter()
                 .filter(|(a, b)| *a != GraphVertex::Top && *b != GraphVertex::Top)
                 .collect::<Vec<_>>();
-            let CoreExpr::Module { definitions, .. } = &m.nodes[m.core.0].expr else {
+            let CoreExpr::Module(module_payload) = &m.nodes[m.core.0].expr else {
                 return Err("call graph expects module".into());
             };
+            let crate::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
             for (_, fun) in definitions.iter().rev() {
                 let id = program.function_nodes[index][&fun.0];
                 let caller = vertices[id.0].clone();
@@ -562,25 +575,45 @@ fn graph_from_modules(
     modules: &[ModuleEdges],
     layout: Option<crate::native_runtime_hash::NativeAtomLayout>,
 ) -> Result<crate::source_digraph::SourceDigraph<GraphVertex>, CallGraphError> {
-    use crate::source_digraph::RuntimeGraphKey;
-    let mut graph = crate::source_digraph::SourceDigraph::new(layout, false);
+    use crate::native_runtime_hash::NativeHashKey;
+    use crate::source_digraph::{RuntimeGraphKey, prehash_vertex};
     let fail = |e: crate::native_runtime_hash::RuntimeHashError| CallGraphError::RuntimeOrdering(e);
-    for module in modules {
-        for vertex in &module.confirmed {
-            graph.add_vertex(vertex.clone(), true).map_err(fail)?;
+    type Hashed = Option<(NativeHashKey, u64)>;
+    // Keys and hashes are pure; compute them on all cores. Only inserting,
+    // which fixes the physical table order, stays sequential.
+    let prepared = crate::ordered_parallel::setup_map(modules, |module| {
+        let layout = layout.as_ref();
+        let confirmed = module
+            .confirmed
+            .iter()
+            .map(|v| prehash_vertex(layout, v))
+            .collect::<Result<Vec<Hashed>, _>>()?;
+        let edges = module
+            .edges
+            .iter()
+            .map(|(from, to)| {
+                let (from_key, to_key) = (prehash_vertex(layout, from)?, prehash_vertex(layout, to)?);
+                let id = NativeHashKey::Tuple(vec![from.runtime_key()?, to.runtime_key()?]);
+                let hash = layout.map(|l| l.ets_hash(&id)).transpose()?;
+                Ok((from_key, to_key, id, hash))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok::<_, crate::native_runtime_hash::RuntimeHashError>((confirmed, edges))
+    });
+    let mut graph = crate::source_digraph::SourceDigraph::new(layout, false);
+    for (module, prepared) in modules.iter().zip(prepared) {
+        let (confirmed, edges) = prepared.map_err(fail)?;
+        for (vertex, key) in module.confirmed.iter().zip(confirmed) {
+            graph.add_vertex_hashed(vertex.clone(), key, true);
         }
-        for (from, to) in &module.edges {
+        for ((from, to), (from_key, to_key, id, hash)) in module.edges.iter().zip(edges) {
             if !graph.contains(from) {
-                graph.add_vertex(from.clone(), false).map_err(fail)?;
+                graph.add_vertex_hashed(from.clone(), from_key, false);
             }
             if !graph.contains(to) {
-                graph.add_vertex(to.clone(), false).map_err(fail)?;
+                graph.add_vertex_hashed(to.clone(), to_key, false);
             }
-            let id = crate::native_runtime_hash::NativeHashKey::Tuple(vec![
-                from.runtime_key().map_err(fail)?,
-                to.runtime_key().map_err(fail)?,
-            ]);
-            graph.add_edge(id, from.clone(), to.clone()).map_err(fail)?;
+            graph.add_edge_hashed(id, hash, from.clone(), to.clone()).map_err(fail)?;
         }
     }
     Ok(graph)

@@ -28,7 +28,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="default: inventory only")
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--path", type=Path, action="append", help="Restrict archiving to completed files or directories")
     args = parser.parse_args()
+    selected = [path.resolve() for path in args.path or []]
+    if any(not path.is_relative_to(ROOT) for path in selected):
+        raise ValueError("archive paths must be inside this checkout")
     tracked = set(subprocess.check_output(
         ["git", "ls-files", "-z"], cwd=ROOT
     ).decode().split("\0"))
@@ -40,6 +44,8 @@ def main():
                        and not Path(parent, name).is_symlink()]
             for name in sorted(files):
                 source = Path(parent, name)
+                if selected and not any(source.is_relative_to(path) for path in selected):
+                    continue
                 if (source.is_symlink() or source.suffix not in SUFFIXES
                         or source.is_relative_to(REFERENCE)
                         or str(source.relative_to(ROOT)) in tracked):

@@ -34,13 +34,15 @@ fn parse_term_table(raw: &Value, path: &str) -> Result<Vec<ErlangTerm>> {
         .collect()
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalFun {
+    pub module: String,
+    pub function: String,
+    pub arity: u8,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ErlangTerm {
     Atom(String),
-    ExternalFun {
-        module: String,
-        function: String,
-        arity: u8,
-    },
+    ExternalFun(Box<ExternalFun>),
     Integer(String),
     Float(u64),
     Binary(Vec<u8>),
@@ -61,6 +63,21 @@ pub struct CoreNode {
     pub id: NodeId,
     pub annotations: TermId,
     pub expr: CoreExpr,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TryExpr {
+    pub argument: NodeId,
+    pub vars: Vec<NodeId>,
+    pub body: NodeId,
+    pub exception_vars: Vec<NodeId>,
+    pub handler: NodeId,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleExpr {
+    pub name: NodeId,
+    pub exports: Vec<NodeId>,
+    pub attributes: Vec<(NodeId, NodeId)>,
+    pub definitions: Vec<(NodeId, NodeId)>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CoreExpr {
@@ -135,13 +152,7 @@ pub enum CoreExpr {
         timeout: NodeId,
         action: NodeId,
     },
-    Try {
-        argument: NodeId,
-        vars: Vec<NodeId>,
-        body: NodeId,
-        exception_vars: Vec<NodeId>,
-        handler: NodeId,
-    },
+    Try(Box<TryExpr>),
     Catch {
         body: NodeId,
     },
@@ -149,12 +160,7 @@ pub enum CoreExpr {
         definitions: Vec<(NodeId, NodeId)>,
         body: NodeId,
     },
-    Module {
-        name: NodeId,
-        exports: Vec<NodeId>,
-        attributes: Vec<(NodeId, NodeId)>,
-        definitions: Vec<(NodeId, NodeId)>,
-    },
+    Module(Box<ModuleExpr>),
 }
 
 impl CoreExpr {
@@ -180,10 +186,10 @@ impl CoreExpr {
             Self::Alias { .. } => "alias",
             Self::Fun { .. } => "fun",
             Self::Receive { .. } => "receive",
-            Self::Try { .. } => "try",
+            Self::Try(_) => "try",
             Self::Catch { .. } => "catch",
             Self::Letrec { .. } => "letrec",
-            Self::Module { .. } => "module",
+            Self::Module(_) => "module",
         }
     }
 }
@@ -246,34 +252,34 @@ impl CoreExpr {
                 timeout,
                 action,
             } => clauses.iter().copied().chain([*timeout, *action]).collect(),
-            CoreExpr::Try {
+            CoreExpr::Try(try_payload) => { let crate::core::TryExpr {
                 argument,
                 vars,
                 body,
                 exception_vars,
                 handler,
-            } => std::iter::once(*argument)
+            } = try_payload.as_ref(); std::iter::once(*argument)
                 .chain(vars.iter().copied())
                 .chain([*body])
                 .chain(exception_vars.iter().copied())
                 .chain([*handler])
-                .collect(),
+                .collect() },
             CoreExpr::Catch { body } => vec![*body],
             CoreExpr::Letrec { definitions, body } => definitions
                 .iter()
                 .flat_map(|(key, value)| [*key, *value])
                 .chain([*body])
                 .collect(),
-            CoreExpr::Module {
+            CoreExpr::Module(module_payload) => { let crate::core::ModuleExpr {
                 name,
                 exports,
                 attributes,
                 definitions,
-            } => std::iter::once(*name)
+            } = module_payload.as_ref(); std::iter::once(*name)
                 .chain(exports.iter().copied())
                 .chain(attributes.iter().flat_map(|(key, value)| [*key, *value]))
                 .chain(definitions.iter().flat_map(|(key, value)| [*key, *value]))
-                .collect(),
+                .collect() },
         }
     }
 }
@@ -511,10 +517,8 @@ impl CoreProgram {
                 format!("{path}.core"),
             )?);
             match &nodes[core.0].expr {
-                CoreExpr::Module {
-                    name: core_name, ..
-                } if literal_atom(*core_name, &nodes, &terms) == Some(name.as_str()) => {}
-                CoreExpr::Module { .. } => {
+                CoreExpr::Module(module_payload) if literal_atom(module_payload.name, &nodes, &terms) == Some(name.as_str()) => {}
+                CoreExpr::Module(_) => {
                     return Err(format!("{path}.core: Core module name differs from {name}"));
                 }
                 _ => return Err(format!("{path}.core: expected module node")),
@@ -652,15 +656,16 @@ impl CoreProgram {
             .modules
             .iter()
             .map(|module| {
-                let CoreExpr::Module {
+                let CoreExpr::Module(module_payload) = &module.nodes[module.core.0].expr
+                else {
+                    unreachable!()
+                };
+                let crate::core::ModuleExpr {
                     exports,
                     attributes,
                     definitions,
                     ..
-                } = &module.nodes[module.core.0].expr
-                else {
-                    unreachable!()
-                };
+                } = module_payload.as_ref();
                 let mut counts = BTreeMap::new();
                 for (key, _) in attributes {
                     if let Some(name) = literal_atom(*key, &module.nodes, &module.terms) {
@@ -953,13 +958,13 @@ pub(crate) fn build_node(
             let body = one(group());
             let exception_vars = group();
             require_kinds(nodes, &exception_vars, "var", &format_args!("{path}.groups[3]"))?;
-            CoreExpr::Try {
+            CoreExpr::Try(Box::new(crate::core::TryExpr {
                 argument,
                 vars,
                 body,
                 exception_vars,
                 handler: one(group()),
-            }
+            }))
         }
         "catch" => CoreExpr::Catch { body: one(group()) },
         "letrec" => CoreExpr::Letrec {
@@ -1012,12 +1017,12 @@ pub(crate) fn build_node(
                     ));
                 }
             }
-            CoreExpr::Module {
+            CoreExpr::Module(Box::new(crate::core::ModuleExpr {
                 name,
                 exports,
                 attributes,
                 definitions,
-            }
+            }))
         }
         _ => unreachable!(),
     };
@@ -1186,11 +1191,13 @@ fn parse_term(raw: &Value, path: impl std::fmt::Display + Copy, id: usize) -> Re
                 .as_u64()
                 .and_then(|n| u8::try_from(n).ok())
                 .ok_or_else(|| format!("{path}.arity: expected integer in 0..255"))?;
-            Ok(ErlangTerm::ExternalFun {
-                module,
-                function,
-                arity,
-            })
+            Ok(ErlangTerm::ExternalFun(Box::new(
+                crate::core::ExternalFun {
+                    module,
+                    function,
+                    arity,
+                },
+            )))
         }
         "integer" => {
             let n = text()?.to_owned();
@@ -1600,6 +1607,28 @@ mod tests {
         assert_eq!(
             CoreProgram::from_value(&wire).unwrap_err(),
             CoreProgram::parse(&wire.to_string()).unwrap_err()
+        );
+    }
+    #[test]
+    fn external_function_validation_keeps_unicode_limit_and_error_location() {
+        let mut probe = Probe::new();
+        let core = probe.module(json!([]));
+        let mut parsed = CoreProgram::parse(&probe.program(core)).unwrap();
+        let mut module = parsed.modules.remove(0);
+        let index = module.terms.len();
+        module.terms.push(ErlangTerm::ExternalFun(Box::new(ExternalFun {
+            module: "λ".repeat(255),
+            function: "f".into(),
+            arity: 2,
+        })));
+        module.validate("$.modules[0]", parsed.version).unwrap();
+        let ErlangTerm::ExternalFun(payload) = module.terms.make_mut(index) else {
+            unreachable!();
+        };
+        payload.module.push('λ');
+        assert_eq!(
+            module.validate("$.modules[0]", parsed.version).unwrap_err(),
+            format!("$.modules[0].terms[{index}]: external function atom exceeds 255 characters")
         );
     }
     #[test]

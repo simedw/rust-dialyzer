@@ -965,15 +965,18 @@ impl TermOrderArena {
                 }
                 Node::Float(n)
             }
-            ErlangTerm::ExternalFun {
-                module,
-                function,
-                arity,
-            } => Node::Function(Box::new(CapturedFunction::External {
-                module: module.clone(),
-                function: function.clone(),
-                arity: usize::from(*arity),
-            })),
+            ErlangTerm::ExternalFun(external_fun_payload) => {
+                let crate::core::ExternalFun {
+                    module,
+                    function,
+                    arity,
+                } = external_fun_payload.as_ref();
+                Node::Function(Box::new(CapturedFunction::External {
+                    module: module.clone(),
+                    function: function.clone(),
+                    arity: usize::from(*arity),
+                }))
+            }
             ErlangTerm::Atom(n) => Node::Atom(n.clone()),
             ErlangTerm::Tuple(xs) => Node::Tuple(xs.iter().map(at).collect::<Result<_, _>>()?),
             ErlangTerm::Map(xs) => Node::Map(
@@ -1856,18 +1859,46 @@ mod root_order_tests {
     use super::*;
     #[test]
     fn root_qualified_order_matches_original_compacted_arenas() {
-        let mut source=ErlangTerms {root:TermId(0),terms:vec![
-            ErlangTerm::Nil, ErlangTerm::Integer("1".into()), ErlangTerm::Float(1f64.to_bits()),
-            ErlangTerm::Atom("a".into()), ErlangTerm::Atom("b".into()), ErlangTerm::Integer("-123456789012345678901234567890".into()),
-            ErlangTerm::Binary(vec![1,2]), ErlangTerm::Bitstring{bytes:vec![128],bits:1},
-            ErlangTerm::Tuple(vec![TermId(1),TermId(3)]),
-            ErlangTerm::List{items:vec![TermId(8),TermId(5)],tail:TermId(0)},
-            ErlangTerm::List{items:vec![TermId(1)],tail:TermId(4)},
-            ErlangTerm::Map(vec![(TermId(1),TermId(3)),(TermId(2),TermId(4)),(TermId(1),TermId(5))]),
-            ErlangTerm::ExternalFun{module:"m".into(),function:"f".into(),arity:2},
-        ].into()};
-        let roots=source.terms.len();source.terms.push(ErlangTerm::Float(f64::NAN.to_bits()));
-        let mut old=Vec::new();let mut new=Vec::new();
+        let mut source = ErlangTerms {
+            root: TermId(0),
+            terms: vec![
+                ErlangTerm::Nil,
+                ErlangTerm::Integer("1".into()),
+                ErlangTerm::Float(1f64.to_bits()),
+                ErlangTerm::Atom("a".into()),
+                ErlangTerm::Atom("b".into()),
+                ErlangTerm::Integer("-123456789012345678901234567890".into()),
+                ErlangTerm::Binary(vec![1, 2]),
+                ErlangTerm::Bitstring {
+                    bytes: vec![128],
+                    bits: 1,
+                },
+                ErlangTerm::Tuple(vec![TermId(1), TermId(3)]),
+                ErlangTerm::List {
+                    items: vec![TermId(8), TermId(5)],
+                    tail: TermId(0),
+                },
+                ErlangTerm::List {
+                    items: vec![TermId(1)],
+                    tail: TermId(4),
+                },
+                ErlangTerm::Map(vec![
+                    (TermId(1), TermId(3)),
+                    (TermId(2), TermId(4)),
+                    (TermId(1), TermId(5)),
+                ]),
+                ErlangTerm::ExternalFun(Box::new(crate::core::ExternalFun {
+                    module: "m".into(),
+                    function: "f".into(),
+                    arity: 2,
+                })),
+            ]
+            .into(),
+        };
+        let roots = source.terms.len();
+        source.terms.push(ErlangTerm::Float(f64::NAN.to_bits()));
+        let mut old = Vec::new();
+        let mut new = Vec::new();
         for i in 0..roots {
             let mut terms=crate::shared_vec::SharedVec::new();let root=crate::form_cache_wire::copy_arena(&mut terms,&source.terms,TermId(i));
             old.push((TermOrderArena::new(&ErlangTerms{root,terms}).unwrap(),root));

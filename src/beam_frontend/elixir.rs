@@ -241,11 +241,13 @@ impl Lift {
                 self.node("map", ann, vec![fields])
             }
             ErlangTerm::Bitstring { .. } => return Err(self.error("non-byte literal bitstring")),
-            ErlangTerm::ExternalFun {
-                module,
-                function,
-                arity,
-            } => {
+            ErlangTerm::ExternalFun(external_fun_payload) => {
+                let crate::core::ExternalFun {
+                    module,
+                    function,
+                    arity,
+                } = *external_fun_payload;
+
                 let module = self.atom_node(ann, &module);
                 let function = self.atom_node(ann, &function);
                 let arity = self.a.integer(arity);

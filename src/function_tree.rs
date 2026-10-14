@@ -30,14 +30,37 @@ pub fn build_function_state(
     module: ModuleId,
     graph: &GraphInputs,
 ) -> Result<FunctionState, String> {
+    Ok(build_function_layout(nodes, module, graph)?.instantiate(&graph.raw_signatures))
+}
+
+pub(crate) struct FunctionLayout {
+    definitions: Vec<FunctionDefinition>,
+}
+impl FunctionLayout {
+    pub(crate) fn instantiate(&self, signatures: &BTreeMap<CoreLabel, Signature>) -> FunctionState {
+        FunctionState::new(self.definitions.iter().cloned().map(|mut definition| {
+            if let FunctionKey::Label(label) = definition.key {
+                definition.raw_signature = signatures.get(&label).cloned();
+            }
+            definition
+        }).collect())
+    }
+}
+
+pub(crate) fn build_function_layout(
+    nodes: &DataflowNodes<'_>,
+    module: ModuleId,
+    graph: &GraphInputs,
+) -> Result<FunctionLayout, String> {
     let m = nodes.module(module)?;
     let root = NodeRef {
         module,
         node: m.core.0,
     };
-    let CoreExpr::Module { definitions, .. } = nodes.expression(root)? else {
+    let CoreExpr::Module(module_payload) = nodes.expression(root)? else {
         return Err("function state requires Core module".into());
     };
+    let crate::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
     let mut names = BTreeMap::new();
     for (var, fun) in definitions {
         let CoreExpr::Var(term) = nodes.expression(NodeRef {
@@ -94,7 +117,7 @@ pub fn build_function_state(
                 arity: params.len(),
                 escaping: graph.escaping.contains(&label),
                 name: names.get(&label).cloned(),
-                raw_signature: graph.raw_signatures.get(&label).cloned(),
+                raw_signature: None,
                 callers: graph
                     .ordered_local_callers
                     .get(&label)
@@ -115,5 +138,34 @@ pub fn build_function_state(
         raw_signature: None,
         callers: vec![],
     });
-    Ok(FunctionState::new(found))
+    Ok(FunctionLayout { definitions: found })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lattice::Type;
+
+    #[test]
+    fn cached_layout_uses_current_signatures_and_fresh_mutable_state() {
+        let label = CoreLabel(17);
+        let key = FunctionKey::Label(label);
+        let layout = FunctionLayout { definitions: vec![FunctionDefinition {
+            key, node: None, arity: 1, escaping: true, name: None,
+            raw_signature: None, callers: vec![],
+        }] };
+        let failed = Signature { arguments: vec![Type::any()], result: Type::none() };
+        let returning = Signature { arguments: vec![Type::integer(3.into())], result: Type::atom("ok") };
+        let mut first = layout.instantiate(&BTreeMap::from([(label, failed.clone())]));
+        first.update_return(key, &[Type::any()], &Type::atom("changed")).unwrap();
+        first.set_warning_mode();
+        let second = layout.instantiate(&BTreeMap::from([(label, returning.clone())]));
+        assert_eq!(second.definitions()[&key].raw_signature.as_ref(), Some(&returning));
+        assert_eq!(second.entries()[&key].signature().result, Type::unit());
+        assert!(!second.warning_mode());
+        let third = layout.instantiate(&BTreeMap::from([(label, failed)]));
+        assert_eq!(third.entries()[&key].signature().result, Type::none());
+        assert!(third.reachable().is_empty());
+        assert!(layout.definitions[0].raw_signature.is_none());
+    }
 }

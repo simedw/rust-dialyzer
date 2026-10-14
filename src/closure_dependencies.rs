@@ -671,9 +671,10 @@ impl Analysis<'_> {
     }
     fn on_load(&mut self, module: ModuleId) -> Result<()> {
         let m = &self.core.modules[module.0];
-        let CoreExpr::Module { attributes, .. } = &m.nodes[m.core.0].expr else {
+        let CoreExpr::Module(module_payload) = &m.nodes[m.core.0].expr else {
             return Err("dependency root is not module".into());
         };
+        let crate::core::ModuleExpr { attributes, .. } = module_payload.as_ref();
         for (name, value) in attributes {
             if self.atom(module, *name).as_deref() != Some("on_load") {
                 continue;
@@ -845,7 +846,10 @@ impl Analysis<'_> {
                                 finish: Finish::Merged,
                             });
                         }
-                        CoreExpr::Module { definitions, .. } => {
+                        CoreExpr::Module(module_payload) => {
+                            let crate::core::ModuleExpr { definitions, .. } =
+                                module_payload.as_ref();
+
                             self.definitions(site, definitions, &mut env, None)?;
                             frames.push(Frame::Definitions {
                                 site,
@@ -901,13 +905,15 @@ impl Analysis<'_> {
                                 num_returns,
                             ));
                         }
-                        CoreExpr::Try {
-                            argument,
-                            vars,
-                            body,
-                            exception_vars,
-                            handler,
-                        } => {
+                        CoreExpr::Try(try_payload) => {
+                            let crate::core::TryExpr {
+                                argument,
+                                vars,
+                                body,
+                                exception_vars,
+                                handler,
+                            } = try_payload.as_ref();
+
                             frames.push(Frame::Try {
                                 site,
                                 vars: vars.clone(),

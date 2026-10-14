@@ -75,12 +75,12 @@ impl RawCore {
     fn finish(mut self) -> CoreProgram {
         let name = self.lit("probe");
         let exports = self.defs.iter().map(|(key, _)| *key).collect();
-        let core = self.node(CoreExpr::Module {
+        let core = self.node(CoreExpr::Module(Box::new(crate::core::ModuleExpr {
             name,
             exports,
             attributes: self.attrs.clone(),
             definitions: self.defs.clone(),
-        });
+        })));
         let node_count = self.nodes.len();
         let term_count = self.terms.len();
         CoreProgram {
@@ -203,13 +203,13 @@ fn try_results_and_exception_variables_have_separate_scopes() {
     let success = c.var("Value");
     let ex = c.var("Error");
     let handler = c.var("Error");
-    let node = c.node(CoreExpr::Try {
+    let node = c.node(CoreExpr::Try(Box::new(crate::core::TryExpr {
         argument,
         vars: vec![result],
         body: success,
         exception_vars: vec![ex],
         handler,
-    });
+    })));
     c.named("exception", vec![], node);
     let core = c.finish();
     let p = Program::build(&core).unwrap();
@@ -527,4 +527,49 @@ fn build_plan(
     let closures =
         crate::closure_dependencies::ClosureDependencies::analyze(core, program, &policy)?;
     crate::schedule::Plan::build(program, closures)
+}
+
+fn letrec_core() -> CoreProgram {
+    let mut c = RawCore::new();
+    let x = c.var("X");
+    let xuse = c.var("X");
+    let fkey = c.fvar("f", 0);
+    let gkey = c.fvar("g", 0);
+    let guse = c.fvar("g", 0);
+    let fcall = c.node(CoreExpr::Apply { operator: guse, args: vec![] });
+    let fbody = c.node(CoreExpr::Tuple(vec![xuse, fcall]));
+    let f = c.fun(vec![], fbody);
+    let fuse = c.fvar("f", 0);
+    let gbody = c.node(CoreExpr::Apply { operator: fuse, args: vec![] });
+    let g = c.fun(vec![], gbody);
+    let entry = c.fvar("f", 0);
+    let invoke = c.node(CoreExpr::Apply { operator: entry, args: vec![] });
+    let group = c.node(CoreExpr::Letrec { definitions: vec![(fkey, f), (gkey, g)], body: invoke });
+    let y = c.var("Y");
+    let remote_module = c.lit("other");
+    let remote_name = c.lit("h");
+    let call = c.node(CoreExpr::Call { module: remote_module, name: remote_name, args: vec![y] });
+    c.named("loop", vec![x], group);
+    c.named("call", vec![y], call);
+    c.finish()
+}
+
+#[test]
+fn parallel_build_numbers_every_module_as_the_sequential_build() {
+    let mut core = letrec_core();
+    let module = core.modules[0].clone();
+    core.modules = ["a", "b", "c"]
+        .iter()
+        .map(|name| CoreModule { name: (*name).into(), ..module.clone() })
+        .collect();
+    let parallel = Program::build(&core).unwrap();
+    let sequential = Program::build_sequential(&core, TargetContracts::Use).unwrap();
+    assert_eq!(parallel.functions.len(), 3 * 4);
+    assert_eq!(format!("{parallel:?}"), format!("{sequential:?}"));
+    // A duplicate module reports the sequential build's error.
+    core.modules[2].name = "a".into();
+    assert_eq!(
+        Program::build(&core).unwrap_err(),
+        Program::build_sequential(&core, TargetContracts::Use).unwrap_err()
+    );
 }

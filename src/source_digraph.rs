@@ -62,6 +62,15 @@ struct Vertex<V> {
     incoming: Direction<V>,
     outgoing: Direction<V>,
 }
+pub fn prehash_vertex<V: RuntimeGraphKey>(
+    layout: Option<&NativeAtomLayout>,
+    v: &V,
+) -> Result<Option<(NativeHashKey, u64)>, RuntimeHashError> {
+    let Some(layout) = layout else { return Ok(None) };
+    let key = v.runtime_key()?;
+    let hash = layout.ets_hash(&key)?;
+    Ok(Some((key, hash)))
+}
 #[derive(Clone, Debug)]
 struct Physical<V> {
     layout: NativeAtomLayout,
@@ -92,8 +101,19 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
         }
     }
     pub fn add_vertex(&mut self, v: V, confirmed: bool) -> Result<(), RuntimeHashError> {
-        if let Some(p) = &mut self.physical {
-            p.vertices.insert(v.runtime_key()?, v.clone(), &p.layout)?;
+        let key = self.prehash_vertex(&v)?;
+        self.add_vertex_hashed(v, key, confirmed);
+        Ok(())
+    }
+    /// The physical table key and hash of `v`, if the graph has a layout.
+    /// Pure, so callers may compute these ahead on other threads.
+    pub fn prehash_vertex(&self, v: &V) -> Result<Option<(NativeHashKey, u64)>, RuntimeHashError> {
+        prehash_vertex(self.physical.as_ref().map(|p| &p.layout), v)
+    }
+    /// `add_vertex` with `key` from `prehash_vertex`.
+    pub fn add_vertex_hashed(&mut self, v: V, key: Option<(NativeHashKey, u64)>, confirmed: bool) {
+        if let (Some(p), Some((key, hash))) = (&mut self.physical, key) {
+            p.vertices.insert_hashed(key, hash, v.clone());
         }
         self.vertices
             .entry(v)
@@ -109,7 +129,6 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
                     neighbours: Vec::new(),
                 },
             });
-        Ok(())
     }
     pub fn contains(&self, v: &V) -> bool {
         self.vertices.contains_key(v)
@@ -120,6 +139,20 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
     pub fn add_edge(
         &mut self,
         id: NativeHashKey,
+        from: V,
+        to: V,
+    ) -> Result<bool, RuntimeHashError> {
+        let hash = match &self.physical {
+            Some(p) => Some(p.layout.ets_hash(&id)?),
+            None => None,
+        };
+        self.add_edge_hashed(id, hash, from, to)
+    }
+    /// `add_edge` with the physical hash of `id` computed ahead.
+    pub fn add_edge_hashed(
+        &mut self,
+        id: NativeHashKey,
+        hash: Option<u64>,
         from: V,
         to: V,
     ) -> Result<bool, RuntimeHashError> {
@@ -137,8 +170,8 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
         if self.acyclic && (from == to || self.has_path(&to, &from)) {
             return Ok(false);
         }
-        if let Some(p) = &mut self.physical {
-            p.edges.insert(id.clone(), (), &p.layout)?;
+        if let (Some(p), Some(hash)) = (&mut self.physical, hash) {
+            p.edges.insert_hashed(id.clone(), hash, ());
         }
         if let Some(row) = self.vertices.get_mut(&from) {
             row.outgoing.edges.push(id.clone());
@@ -161,6 +194,31 @@ impl<V: RuntimeGraphKey> SourceDigraph<V> {
             .checked_add(1)
             .ok_or_else(|| RuntimeHashError::Boundary("digraph edge counter exhausted".into()))?;
         self.add_edge(id, from, to)
+    }
+    /// `auto_edge` for a graph that is only traversed: adjacency is recorded,
+    /// but the edge is not entered in the edge index or the physical edge
+    /// table, so `edge`, `ordered_edges` and `unordered_edges` omit it.
+    pub fn auto_edge_adjacency(&mut self, from: V, to: V) -> Result<(), RuntimeHashError> {
+        if !self.contains(&from) || !self.contains(&to) || self.acyclic {
+            return self.auto_edge(from, to).map(drop);
+        }
+        let id = NativeHashKey::Cons(
+            Box::new(NativeHashKey::Atom("$e".into())),
+            Box::new(NativeHashKey::Integer(self.next_edge.into())),
+        );
+        self.next_edge = self
+            .next_edge
+            .checked_add(1)
+            .ok_or_else(|| RuntimeHashError::Boundary("digraph edge counter exhausted".into()))?;
+        if let Some(row) = self.vertices.get_mut(&from) {
+            row.outgoing.edges.push(id.clone());
+            row.outgoing.neighbours.push(to.clone());
+        }
+        if let Some(row) = self.vertices.get_mut(&to) {
+            row.incoming.edges.push(id);
+            row.incoming.neighbours.push(from);
+        }
+        Ok(())
     }
     pub fn incoming(&self, v: &V) -> Option<Neighbours<'_, V>> {
         self.vertices

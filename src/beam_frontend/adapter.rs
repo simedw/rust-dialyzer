@@ -97,8 +97,11 @@ struct Builder<'a> {
     collisions: FastHashMap<u64, Vec<TermId>>,
     atoms: FastHashMap<String, TermId>,
     orders: BTreeMap<TermId, Vec<usize>>,
-    values: FastHashMap<(usize, TermId), TermId>,
+    /// Interned value of each input term, per input arena (keyed by its
+    /// address); `NO_VALUE` until computed.
+    values: FastHashMap<usize, Vec<u32>>,
 }
+const NO_VALUE: u32 = u32::MAX;
 impl<'a> Builder<'a> {
     fn intern(&mut self, term: T, order: Option<Vec<usize>>) -> TermId {
         let mut hasher = FxHasher::default();
@@ -160,6 +163,13 @@ impl<'a> Builder<'a> {
     }
     fn value(&mut self, input: &Arc<ErlangTerms>, root: TermId) -> Result<TermId, String> {
         let namespace = Arc::as_ptr(input) as usize;
+        let mut memo = self.values.remove(&namespace).unwrap_or_default();
+        memo.resize(input.terms.len(), NO_VALUE);
+        let result = self.value_in(input, root, &mut memo);
+        self.values.insert(namespace, memo);
+        result
+    }
+    fn value_in(&mut self, input: &Arc<ErlangTerms>, root: TermId, memo: &mut [u32]) -> Result<TermId, String> {
         enum Task {
             Enter(TermId),
             Finish(TermId, T, Option<Vec<usize>>),
@@ -168,13 +178,13 @@ impl<'a> Builder<'a> {
         while let Some(task) = pending.pop() {
             match task {
                 Task::Enter(id) => {
-                    if self.values.contains_key(&(namespace, id)) {
+                    if memo[id.0] != NO_VALUE {
                         continue;
                     }
                     let (term, order) = match &input.terms[id.0] {
                         T::Atom(name) => {
                             let mapped = self.atom(name);
-                            self.values.insert((namespace, id), mapped);
+                            memo[id.0] = mapped.0 as u32;
                             continue;
                         }
                         T::Tuple(items) => {
@@ -228,11 +238,9 @@ impl<'a> Builder<'a> {
                     pending.extend(children.into_iter().rev().map(Task::Enter));
                 }
                 Task::Finish(id, term, order) => {
-                    let mapped = |id: TermId| {
-                        self.values
-                            .get(&(namespace, id))
-                            .copied()
-                            .ok_or("native adapter: missing child value".to_owned())
+                    let mapped = |id: TermId| match memo[id.0] {
+                        NO_VALUE => Err("native adapter: missing child value".to_owned()),
+                        value => Ok(TermId(value as usize)),
                     };
                     let term = match term {
                         T::Tuple(items) => {
@@ -241,7 +249,7 @@ impl<'a> Builder<'a> {
                         T::List { items, tail } => {
                             let tail = mapped(tail)?;
                             if items.is_empty() {
-                                self.values.insert((namespace, id), tail);
+                                memo[id.0] = tail.0 as u32;
                                 continue;
                             }
                             T::List {
@@ -258,14 +266,14 @@ impl<'a> Builder<'a> {
                         term => term,
                     };
                     let mapped = self.intern(term, order);
-                    self.values.insert((namespace, id), mapped);
+                    memo[id.0] = mapped.0 as u32;
                 }
             }
         }
-        self.values
-            .get(&(namespace, root))
-            .copied()
-            .ok_or("native adapter: value root missing".into())
+        match memo[root.0] {
+            NO_VALUE => Err("native adapter: value root missing".into()),
+            value => Ok(TermId(value as usize)),
+        }
     }
     fn core(&mut self, input: &Arc<ErlangTerms>) -> Result<NodeId, String> {
         self.core_mode(input, false)
@@ -616,14 +624,8 @@ impl<'a> Builder<'a> {
                         });
                         let map = self.value(&generated, generated.root)?;
                         output.insert(form, map);
-                        let ns = Arc::as_ptr(&generated) as usize;
-                        if let T::Map(entries) = &generated.terms[generated.root.0] {
-                            for &(key, value) in entries {
-                                self.values.remove(&(ns, key));
-                                self.values.remove(&(ns, value));
-                            }
-                        }
-                        self.values.remove(&(ns, generated.root));
+                        // The arena is dropped next; a later one may reuse its address.
+                        self.values.remove(&(Arc::as_ptr(&generated) as usize));
                     }
                 }
                 pending.extend(f.iter().rev().copied());
@@ -755,13 +757,13 @@ fn direct_node(
             timeout: children.one(),
             action: children.one(),
         },
-        "try" => CoreExpr::Try {
+        "try" => CoreExpr::Try(Box::new(crate::core::TryExpr {
             argument: children.one(),
             vars: children.group(),
             body: children.one(),
             exception_vars: children.group(),
             handler: children.one(),
-        },
+        })),
         "catch" => CoreExpr::Catch {
             body: children.one(),
         },
@@ -769,12 +771,12 @@ fn direct_node(
             definitions: children.pairs(),
             body: children.one(),
         },
-        "module" => CoreExpr::Module {
+        "module" => CoreExpr::Module(Box::new(crate::core::ModuleExpr {
             name: children.one(),
             exports: children.group(),
             attributes: children.pairs(),
             definitions: children.pairs(),
-        },
+        })),
         _ => return Err(format!("native direct: unknown Core kind {kind}")),
     };
     debug_assert!(children.groups.next().is_none());

@@ -88,6 +88,7 @@ impl Drop for PhaseTimings {
             "label": active.label,
             "build_mode": if cfg!(debug_assertions) { "debug" } else { "release" },
             "total_ms": active.checkpoint.duration_since(active.started).as_secs_f64() * 1000.0,
+            "interned_nodes_at_end": crate::lattice::Type::interned_node_count(),
             "phases": active.phases.iter().map(|(name, ms, live)| serde_json::json!({"name": name, "ms": ms, "live_delta": live})).collect::<Vec<_>>(),
         });
         let _ = writeln!(std::io::stderr().lock(), "RUST_DIALYZER_TIMING {record}");

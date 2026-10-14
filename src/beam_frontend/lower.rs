@@ -776,7 +776,7 @@ impl Lower {
                 for child in &mut f {
                     *child = self.rename_wildcards(*child)?;
                 }
-                Ok(self.a.tuple(f))
+                Ok(self.a.rebuild_tuple(node, f))
             }
             ErlangTerm::List { items, tail } => {
                 let (items, tail) = (items.clone(), *tail);
@@ -785,7 +785,7 @@ impl Lower {
                     out.push(self.rename_wildcards(x)?);
                 }
                 let tail = self.rename_wildcards(tail)?;
-                Ok(self.a.push(ErlangTerm::List { items: out, tail }))
+                Ok(self.a.rebuild_list(node, out, tail))
             }
             _ => Ok(node),
         }
@@ -1509,11 +1509,14 @@ impl Lower {
                     .to_string(),
             ),
             ErlangTerm::Float(bits) => LiteralKey::Float(*bits),
-            ErlangTerm::ExternalFun {
-                module,
-                function,
-                arity,
-            } => LiteralKey::ExternalFun(module.clone(), function.clone(), *arity),
+            ErlangTerm::ExternalFun(external_fun_payload) => {
+                let crate::core::ExternalFun {
+                    module,
+                    function,
+                    arity,
+                } = external_fun_payload.as_ref();
+                LiteralKey::ExternalFun(module.clone(), function.clone(), *arity)
+            }
             ErlangTerm::Binary(bytes) => LiteralKey::Bits(bytes.clone(), (bytes.len() as u64) * 8),
             ErlangTerm::Bitstring { bytes, bits } => LiteralKey::Bits(bytes.clone(), *bits),
             ErlangTerm::Nil => LiteralKey::Nil,

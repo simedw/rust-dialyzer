@@ -41,8 +41,8 @@ impl<W> BinderState<W> {
         let mut state = Self::for_compiler_module(core, module, warning_mode)?;
         state.records = definitions
             .records
-            .iter()
-            .filter(|((owner, _, _), _)| *owner == module)
+            .range((module, String::new(), 0)..)
+            .take_while(|((owner, _, _), _)| *owner == module)
             .map(|((_, tag, arity), record)| {
                 (
                     (tag.clone(), *arity),
@@ -75,7 +75,11 @@ impl<W> BinderState<W> {
             .get(module.0)
             .ok_or(ModuleBinderError::ModuleOutsideCompilerInput(module))?;
         let mut translated_files = BTreeMap::new();
+        let mut seen = vec![false; source.terms.len()];
         for node in &source.nodes {
+            if std::mem::replace(&mut seen[node.annotations.0], true) {
+                continue;
+            }
             let ErlangTerm::List { items, .. } = &source.terms[node.annotations.0] else {
                 continue;
             };

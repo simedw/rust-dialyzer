@@ -6,7 +6,7 @@ use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub struct Mfa {
     pub module: crate::atom::Atom,
     pub function: crate::atom::Atom,

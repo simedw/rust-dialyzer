@@ -60,9 +60,10 @@ fn run(v: &Value, registry: &rust_dialyzer_poc::bifs::registry::Registry) -> Res
     let labels = Labels::build(&core, CoreLabel(0))?;
     let nodes = DataflowNodes::build(&core, &labels)?;
     let module = &core.modules[0];
-    let CoreExpr::Module { definitions, .. } = &module.nodes[module.core.0].expr else {
+    let CoreExpr::Module(module_payload) = &module.nodes[module.core.0].expr else {
         return Err("module".into());
     };
+    let rust_dialyzer_poc::core::ModuleExpr { definitions, .. } = module_payload.as_ref();
     let CoreExpr::Fun { body, .. } = module.nodes[definitions[0].1.0].expr else {
         return Err("fun".into());
     };

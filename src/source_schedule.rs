@@ -245,14 +245,20 @@ impl<A: RuntimeReferenceAllocator> SourceSchedule<A> {
             }
             assert_eq!(ordered, outgoing, "condensation edges");
         }
+        // Only topsort reads this graph: re-adding a present vertex changes
+        // nothing, and the edge tables are not traversed.
         let mut condensed = SourceDigraph::new(Some(graph.layout()?.clone()), false);
         for (from, tos) in &outgoing {
             let from = NativeHashKey::Integer((*from).into());
-            condensed.add_vertex(from.clone(), false)?;
+            if !condensed.contains(&from) {
+                condensed.add_vertex(from.clone(), false)?;
+            }
             for to in tos {
                 let to = NativeHashKey::Integer((*to).into());
-                condensed.add_vertex(to.clone(), false)?;
-                condensed.auto_edge(from.clone(), to)?;
+                if !condensed.contains(&to) {
+                    condensed.add_vertex(to.clone(), false)?;
+                }
+                condensed.auto_edge_adjacency(from.clone(), to)?;
             }
         }
         for id in 1..=components.len() {

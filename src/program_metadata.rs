@@ -2,9 +2,10 @@ use super::*;
 
 impl Program {
     pub(super) fn index_metadata(&mut self, mid: ModuleId, module: &CoreModule) -> Result<()> {
-        let CoreExpr::Module { attributes, .. } = &module.nodes[module.core.0].expr else {
+        let CoreExpr::Module(module_payload) = &module.nodes[module.core.0].expr else {
             unreachable!()
         };
+        let crate::core::ModuleExpr { attributes, .. } = module_payload.as_ref();
         let mut current_file = None;
         let mut behaviour_literals = None;
         for (key, value) in attributes {
@@ -284,11 +285,11 @@ pub(super) fn variable(module: &CoreModule, node: NodeId) -> Result<VariableName
         ));
     };
     match &module.terms[id.0] {
-        ErlangTerm::Atom(s) => Ok(VariableName::Atom(s.clone())),
-        ErlangTerm::Integer(s) => Ok(VariableName::Integer(s.clone())),
+        ErlangTerm::Atom(s) => Ok(VariableName::Atom(s.into())),
+        ErlangTerm::Integer(s) => Ok(VariableName::Integer(s.into())),
         ErlangTerm::Tuple(_) => {
             let f = function_term(module, id)?;
-            Ok(VariableName::Function(f.name, f.arity))
+            Ok(VariableName::Function(f.name.into(), f.arity))
         }
         _ => Err(format!(
             "module {} term{}: invalid variable name",
@@ -298,7 +299,7 @@ pub(super) fn variable(module: &CoreModule, node: NodeId) -> Result<VariableName
 }
 pub(super) fn function_variable(module: &CoreModule, node: NodeId) -> Result<(String, usize)> {
     match variable(module, node)? {
-        VariableName::Function(name, arity) => Ok((name, arity)),
+        VariableName::Function(name, arity) => Ok((name.to_string(), arity)),
         other => Err(format!(
             "module {} node{}: invalid function variable {other:?}",
             module.name, node.0
