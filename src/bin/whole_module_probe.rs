@@ -35,7 +35,7 @@ fn run(r: &Value, library_raw: &str, profile: &ClosureCodeProfile) -> Result<Val
     let labels = Labels::build(&core, CoreLabel(0))?;
     let nodes = DataflowNodes::build(&core, &labels)?;
     let program = Program::build(&core)?;
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let bifs = Registry::standard()?;
     let deps = ClosureDependencies::analyze(
         &core,
         &program,

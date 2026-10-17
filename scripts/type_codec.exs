@@ -5,6 +5,10 @@ defmodule TypeCodec do
   def integer(value) when is_integer(value), do: value
   def type(%{"kind" => kind} = value) do
     case kind do
+      "record" -> {:c, :record, {record_name(value["name"]), Map.new(value["fields"] || [], fn field ->
+        {String.to_atom(field["key"]), if(field["presence"] == "missing", do: :missing, else: {:present, type(field["value"])})}
+      end)}, :unknown}
+      "record_set" -> {:c, :record_set, Enum.map(value["values"], &type/1), :unknown}
       "unification_nominal_set" -> {:c,:nominal_set,{type(value["nominal"]),type(value["structural"])},:unknown}
       "union_raw" -> {:c,:union,Enum.map(value["values"],&type/1),:unknown}
       "product_raw" -> {:c,:product,Enum.map(value["values"],&type/1),:unknown}
@@ -54,6 +58,9 @@ defmodule TypeCodec do
       other -> raise("unsupported type family #{other}")
     end
   end
+  def record_name(value) when value in [nil, :null], do: nil
+  def record_name(value) when is_binary(value), do: String.to_atom(value)
+  def record_name(%{"module" => module, "name" => name}), do: {String.to_atom(module), String.to_atom(name)}
   def nominal_name(%{"symbol"=>name}), do: String.to_atom(name)
   def nominal_name(value), do: {String.to_atom(value["module"]),String.to_atom(value["name"]),value["arity"],String.to_atom(value["opacity"])}
 end

@@ -13,12 +13,16 @@ type Result<T> = std::result::Result<T, FormError>;
 pub enum Unfold {
     Named(TypeName),
     Record(String),
+    #[cfg(otp_domain = "29")]
+    NativeRecord { module: String, name: String },
 }
 #[derive(Clone, Debug)]
 pub enum Site {
     Spec,
     Type(TypeName),
     Record,
+    #[cfg(otp_domain = "29")]
+    NativeRecord,
     Check,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -314,6 +318,8 @@ pub struct Resolver<'a> {
     native_site: Option<crate::native_form_environment::NativeFormSite>,
     cache: FormCache,
     record_types: BTreeMap<(ModuleId, String), Vec<Type>>,
+    #[cfg(otp_domain = "29")]
+    native_record_types: BTreeMap<(String,String),BTreeMap<String,Type>>,
     source_tables: Option<BTreeMap<String, ModuleTableHandle>>,
     ordering_inputs: Option<(Vec<OrderingInput>, std::sync::OnceLock<Result<()>>)>,
     exported_types: Option<BTreeSet<TypeName>>,
@@ -330,6 +336,8 @@ impl<'a> Resolver<'a> {
             native_site: None,
             cache: FormCache::new(),
             record_types: BTreeMap::new(),
+            #[cfg(otp_domain = "29")]
+            native_record_types: forms.native_record_cached_types.clone(),
             source_tables: None,
             ordering_inputs: None,
             exported_types: None,
@@ -349,6 +357,8 @@ impl<'a> Resolver<'a> {
             native_site: self.native_site.clone(),
             cache: FormCache::new(),
             record_types: self.record_types.clone(),
+            #[cfg(otp_domain = "29")]
+            native_record_types: self.native_record_types.clone(),
             source_tables: self.source_tables.clone(),
             ordering_inputs: self.ordering_inputs.clone(),
             exported_types: self.exported_types.clone(),
@@ -539,6 +549,16 @@ impl<'a> Resolver<'a> {
     fn throw_message(&self, pieces: Vec<MessagePiece>) -> FormError {
         FormError::Throw(ReasonBuilder::new().message(pieces))
     }
+    fn record_field_error_at(&self, state: &State, record: &str, field: &str) -> FormError {
+        #[cfg(otp_domain = "29")]
+        if let Some(site) = &state.native_site
+            && matches!(site.kind, crate::native_form_environment::NativeSiteKind::NativeRecord) {
+            return self.native_record_message(&site.scope.named().module, record, Some(field));
+        }
+        #[cfg(not(otp_domain = "29"))]
+        let _ = state;
+        self.illegal_record_field(record, field)
+    }
     fn illegal_record_field(&self, record: &str, field: &str) -> FormError {
         let context = crate::lattice::PresentationContext::default();
         self.throw_message(vec![
@@ -596,6 +616,8 @@ impl<'a> Resolver<'a> {
     pub fn replace_cache(&mut self, cache: FormCache) -> FormCache {
         std::mem::replace(&mut self.cache, cache)
     }
+    #[cfg(otp_domain = "29")]
+    pub(crate) fn set_native_record_types(&mut self, types: BTreeMap<(String,String),BTreeMap<String,Type>>) { self.native_record_types=types; }
     pub fn record_prototype(&self, module: ModuleId, name: &str) -> Option<&[Type]> {
         self.record_types
             .get(&(module, name.into()))
@@ -665,6 +687,47 @@ impl<'a> Resolver<'a> {
         }
         Ok(())
     }
+    #[cfg(otp_domain = "29")]
+    fn check_native_record_fields(&mut self, current: ModuleId, module: &str, name: &str, ids: &[FormId], qualified: bool, variables: &BTreeMap<VariableId, Type>) -> Result<()> {
+        use crate::native_form_environment::{NativeFormSite,NativeSiteKind};
+        if qualified && self.modules[current.0] != module {
+            return Err(FormError::Native(NativeTransferError::BadMatchNative(Box::new(crate::lattice::NativeValue::Atom(self.modules[current.0].clone())))));
+        }
+        if self.missing_native_module(module) || (!self.modules.iter().any(|m|m == module) && self.compiled_environment(module).is_none()) {
+            return Err(self.native_record_message(module,name,None));
+        }
+        // The qualified branch caches its lookup; the import branch discards that cache.
+        if qualified { self.touch_module(module); }
+        let raw=self.compiled_environment(module).map(|e|e.native_record_fields(module,name)).transpose()?.flatten();
+        let compiled=self.forms.native_records.iter().find(|((_,m,n),_)|m == module && n == name).map(|(_,r)|r.clone());
+        if raw.is_none() && compiled.is_none() { return Err(FormError::Native(NativeTransferError::BadMatchNative(Box::new(crate::lattice::NativeValue::Atom("error".into()))))); }
+        let arity=if let Some(raw)=&raw {raw.record_arity()?} else {compiled.as_ref().unwrap().fields.len()};
+        for (index,id) in ids.iter().enumerate() {
+            self.materialize(*id)?;
+            let TypeForm::Builtin{name:Builtin::FieldType,arguments:Some(fields)}=self.forms.nodes[id.0].value.clone() else {return Err(FormError::Native(NativeTransferError::FunctionClause))};
+            if fields.len()!=2 {return Err(FormError::Native(NativeTransferError::FunctionClause))}
+            self.materialize(fields[0])?;
+            let TypeForm::Atom(field)=self.forms.nodes[fields[0].0].value.clone() else {return Err(FormError::Native(NativeTransferError::FunctionClause))};
+            let previous=self.native_site.clone();
+            if let Some(site)=&previous {
+                let native=!qualified && index == 0;
+                self.native_site=Some(NativeFormSite { kind:if native {NativeSiteKind::NativeRecord} else {NativeSiteKind::Record},
+                    scope:TypeName {module:if native {module.into()} else {self.modules[current.0].clone()},name:if qualified {"ok".into()} else {name.into()},arity:if native {0} else {arity}}.into(),file:site.file.clone()});
+            }
+            let value=self.resolve(fields[1],Site::Record,variables.clone());self.native_site=previous;
+            let value=value?.substitute(&BTreeMap::new())?;
+            let declared=self.native_record_types.get(&(module.into(),name.into())).and_then(|f|f.get(&field));
+            let impossible=if let Some(declared)=declared {value.meet(declared)?.is_impossible()} else if let Some(raw)=&raw {
+                let cached=raw.cached_field_type(&field)?;
+                crate::native_type_operand::NativeTypeOperand::Canonical(value).inf(&crate::native_type_operand::NativeTypeOperand::from_raw(cached))?.is_impossible()
+            } else {
+                if !compiled.as_ref().unwrap().fields.iter().any(|f|f.name == field) {return Err(FormError::Native(NativeTransferError::BadMatchBoolean(false)))}
+                value.is_impossible()
+            };
+            if impossible { return Err(if qualified {self.native_record_message(module,name,Some(&field))} else {self.illegal_record_field(name,&field)}); }
+        }
+        Ok(())
+    }
     pub fn check_record_fields(
         &mut self,
         id: FormId,
@@ -683,6 +746,8 @@ impl<'a> Resolver<'a> {
                 self.materialize(*first)?;
             }
             match &node.value {
+                #[cfg(otp_domain = "29")]
+                TypeForm::QualifiedRecordName { .. } => return Err(FormError::Native(NativeTransferError::FunctionClause)),
                 TypeForm::DeferredRaw => {
                     return Err("deferred form survived materialization".into());
                 }
@@ -712,6 +777,14 @@ impl<'a> Resolver<'a> {
                     name: Builtin::Record,
                     arguments: Some(ids),
                 } => {
+                    #[cfg(otp_domain = "29")]
+                    {
+                        if ids.is_empty() { continue; }
+                        if let Some(TypeForm::QualifiedRecordName { module, name }) = ids.first().map(|id| self.forms.nodes[id.0].value.clone()) {
+                            self.check_native_record_fields(node.module,&module,&name,&ids[1..],true,variables)?;
+                            continue;
+                        }
+                    }
                     let Some(TypeForm::Atom(name)) =
                         ids.first().map(|id| self.forms.nodes[id.0].value.clone())
                     else {
@@ -724,6 +797,12 @@ impl<'a> Resolver<'a> {
                         .map(|env| env.record_fields(&self.modules[node.module.0], &name))
                         .transpose()?
                         .flatten();
+                    #[cfg(otp_domain = "29")]
+                    if native_record.is_none() && !self.forms.records.contains_key(&(node.module,name.clone())) {
+                        let owner=self.native_record_module(node.module,&name)?;
+                        self.check_native_record_fields(node.module,&owner,&name,&ids[1..],false,variables)?;
+                        continue;
+                    }
                     let record = if native_environment.is_some() {
                         if native_record.is_none() {
                             return Err(FormError::Native(NativeTransferError::BadMatchNative(
@@ -953,6 +1032,8 @@ impl<'a> Resolver<'a> {
         Massage { module, below, eager }
     }
     fn massaged(&self, massage: &Option<Massage>, target: &TypeName) -> bool {
+        #[cfg(otp_domain = "29")]
+        if !crate::native_form_preprocessing::is_builtin_type(&target.name, target.arity) { return false; }
         let Some(m) = massage else {
             return false;
         };
@@ -1164,7 +1245,11 @@ impl<'a> Resolver<'a> {
             let _ = site;
         }
         let before_arguments = self.cache.clone();
+        #[cfg(otp_domain = "29")]
+        let definition_site = std::mem::replace(&mut state.native_site, s.native_site.clone());
         let (arguments, left) = self.list(args, &state, d, l)?;
+        #[cfg(otp_domain = "29")]
+        { state.native_site = definition_site; }
         let cache_name = if remote {
             name.clone()
         } else {
@@ -1405,6 +1490,8 @@ impl<'a> Resolver<'a> {
                 }
                 return Ok((Type::bitstring(unit, base)?, l));
             }
+            #[cfg(otp_domain = "29")]
+            Record if args.is_none() => return Err(FormError::Native(NativeTransferError::FunctionClause)),
             Record => return self.record(module, ids, s, d, l),
             Map if args.is_some() => return self.map(ids, s, d, l),
             _ => {}
@@ -1625,7 +1712,7 @@ impl<'a> Resolver<'a> {
                     _ => None,
                 });
                 let Some(header) = valid else {
-                    return Err(self.illegal_record_field(
+                    return Err(self.record_field_error_at(s,
                         &s.native_site
                             .as_ref()
                             .ok_or("native record site missing")?
@@ -1644,7 +1731,7 @@ impl<'a> Resolver<'a> {
                     acc.push(selected[di].clone());
                     di += 1;
                 } else {
-                    return Err(self.illegal_record_field(
+                    return Err(self.record_field_error_at(s,
                         &s.native_site
                             .as_ref()
                             .ok_or("native record site missing")?
@@ -1703,6 +1790,77 @@ impl<'a> Resolver<'a> {
         }
         Ok((values, left))
     }
+    #[cfg(otp_domain = "29")]
+    fn native_record_module(&self, module: ModuleId, name: &str) -> Result<String> {
+        if let Some(import) = self.forms.native_record_imports.get(&(module, name.into())) {
+            return Ok(import.clone());
+        }
+        Ok(self.compiled_environment(&self.modules[module.0])
+            .map(|env| env.native_record_import(&self.modules[module.0], name))
+            .transpose()?.flatten().unwrap_or_else(|| self.modules[module.0].clone()))
+    }
+    #[cfg(otp_domain = "29")]
+    fn native_record_message(&self, module: &str, name: &str, field: Option<&str>) -> FormError {
+        let context = crate::lattice::PresentationContext::default();
+        let mut pieces = vec![MessagePiece::Text(if field.is_some() { "Illegal declaration of #" } else { "Unknown record #" }.into()),
+            MessagePiece::Printed(context.atom_to_string(module)), MessagePiece::Text(":".into()),
+            MessagePiece::Printed(context.atom_to_string(name)), MessagePiece::Text("{".into())];
+        if let Some(field) = field { pieces.push(MessagePiece::Printed(context.atom_to_string(field))); }
+        pieces.push(MessagePiece::Text("}\n".into()));
+        self.throw_message(pieces)
+    }
+    #[cfg(otp_domain = "29")]
+    fn qualified_record(&mut self, module: &str, name: &str, overrides: &[FormId], s: &State, d: i64, l: i64) -> Result<(Type, i64)> {
+        use crate::lattice::{NativeRecordName, RecordField};
+        let identity = NativeRecordName::Named { module: module.into(), name: name.into() };
+        let unfold = Unfold::NativeRecord { module: module.into(), name: name.into() };
+        let generic = || Type::record(identity.clone(), BTreeMap::new());
+        if s.stack.iter().filter(|n| *n == &unfold).count() >= 2 { return Ok((generic(), l)); }
+        let known = self.source_tables.as_ref().map_or_else(|| self.modules.iter().any(|m|m == module), |tables| tables.contains_key(module));
+        if !known { return Ok((generic(), l)); }
+        self.touch_module(module);
+        let mid = match self.modules.iter().position(|m| m == module) {
+            Some(i) => ModuleId(i),
+            None => { let i = self.modules.len(); self.modules.to_mut().push(module.into()); ModuleId(i) }
+        };
+        let raw = self.compiled_environment(module).map(|env|env.native_record_fields(module,name)).transpose()?.flatten();
+        let compiled = self.forms.native_records.get(&(mid,module.into(),name.into())).cloned();
+        if raw.is_none() && compiled.is_none() { return Err(self.native_record_message(module,name,None)); }
+        let recursive = s.stack.contains(&unfold) && !(l <= 2 && d <= 10);
+        let mut state = s.clone();
+        state.stack = s.stack.push(unfold);
+        if let Some(site) = &s.native_site {
+            state.native_site = Some(crate::native_form_environment::NativeFormSite {
+                kind: crate::native_form_environment::NativeSiteKind::NativeRecord,
+                scope: TypeName {module:module.into(),name:name.into(),arity:0}.into(),file:site.file.clone()
+            });
+        }
+        let (depth,left) = if recursive {(2,10)} else {(d,l)};
+        let (names,values,left) = if let Some(raw) = raw {
+            let names = raw.record_fields()?.into_iter().map(|f|f.name).collect::<Vec<_>>();
+            let (values,left) = self.native_record_values(mid,&raw,overrides,&state,depth,left)?;
+            (names,values,left)
+        } else {
+            let record = compiled.expect("record definition");
+            let (overrides,mut left) = self.record_overrides(overrides,&state,depth,left)?;
+            for field in &overrides {
+                if !record.fields.iter().any(|f| f.name == field.name) { return Err(self.native_record_message(module,name,Some(&field.name))); }
+            }
+            state.variables.clear();
+            let mut names=Vec::new(); let mut values=Vec::new();
+            for field in record.fields {
+                let modified=overrides.iter().find(|e|e.name == field.name);
+                let mut field_state=state.clone(); if modified.is_none() { field_state.massage=None; }
+                let value=if let Some(id)=modified.map(|e|e.form).or(field.declared_type) {
+                    let (value,remaining)=self.form(id,&field_state,depth,left)?;left=remaining;value
+                } else { Type::any() };
+                names.push(field.name); values.push(value);
+            }
+            (names,values,left)
+        };
+        let fields=names.into_iter().zip(values).map(|(name,value)|(name.into(),RecordField::Present(value))).collect();
+        Ok((Type::record(identity,fields),if recursive {l-left} else {left}))
+    }
     fn record(
         &mut self,
         module: ModuleId,
@@ -1711,8 +1869,17 @@ impl<'a> Resolver<'a> {
         d: i64,
         l: i64,
     ) -> Result<(Type, i64)> {
+        #[cfg(otp_domain = "29")]
+        let module = s.native_site.as_ref().and_then(|site| site.scope.module().ok()).and_then(|name| self.modules.iter().position(|m|m == name)).map(ModuleId).unwrap_or(module);
         if let Some(id) = ids.first() {
             self.materialize(*id)?;
+        }
+        #[cfg(otp_domain = "29")]
+        {
+            if ids.is_empty() { return Ok((Type::record_any(), l)); }
+            if let Some(TypeForm::QualifiedRecordName { module, name }) = ids.first().map(|id| self.forms.nodes[id.0].value.clone()) {
+                return self.qualified_record(&module, &name, &ids[1..], s, d, l);
+            }
         }
         let Some(TypeForm::Atom(name)) = ids.first().map(|id| self.forms.nodes[id.0].value.clone())
         else {
@@ -1735,6 +1902,11 @@ impl<'a> Resolver<'a> {
             .transpose()?
             .flatten();
         let compiled = self.forms.records.get(&(module, name.clone())).cloned();
+        #[cfg(otp_domain = "29")]
+        if native.is_none() && compiled.is_none() {
+            let owner = self.native_record_module(module, &name)?;
+            return self.qualified_record(&owner, &name, &ids[1..], s, d, l);
+        }
         if native.is_none() && compiled.is_none() {
             let context = crate::lattice::PresentationContext::default();
             return Err(self.throw_message(vec![
@@ -2001,6 +2173,11 @@ impl FormCache {
                 let scope = tuple(terms, scope, 2)?;
                 enclosing.push(match atom(terms, scope[0])?.as_str() {
                     "record" => Unfold::Record(atom(terms, scope[1])?),
+                    #[cfg(otp_domain = "29")]
+                    "native_record" => {
+                        let pair = tuple(terms, scope[1], 2)?;
+                        Unfold::NativeRecord { module: atom(terms, pair[0])?, name: atom(terms, pair[1])? }
+                    }
                     "type" => {
                         let mfa = tuple(terms, scope[1], 3)?;
                         Unfold::Named(TypeName {
@@ -2235,5 +2412,133 @@ mod map_budget_tests {
             .collect();
         assert_eq!(keys, ["__struct__", "base", "binaries"]);
         eprintln!("actual Inspect.Opts recursive callback map retains OTP prefix: {keys:?}");
+    }
+}
+
+#[cfg(all(test, otp_domain = "29"))]
+mod native_record_form_tests {
+    use super::*;
+    use crate::{core::{ErlangTerm, TermId}, native_form_environment::{NativeFormSite,NativeSiteKind,RawFormTerm}};
+    fn ast_atom(b:&mut ReasonBuilder,name:&str)->TermId {let tag=b.atom("atom");let zero=b.integer(0);let name=b.atom(name);b.tuple(vec![tag,zero,name])}
+    fn builtin(b:&mut ReasonBuilder,name:&str,args:Vec<TermId>)->TermId {let tag=b.atom("type");let zero=b.integer(0);let name=b.atom(name);let args=b.list(args);b.tuple(vec![tag,zero,name,args])}
+    fn qualified(b:&mut ReasonBuilder,module:&str,name:&str)->TermId {let m=ast_atom(b,module);let n=ast_atom(b,name);let tag=b.atom("tuple");let zero=b.integer(0);let pair=b.list(vec![m,n]);b.tuple(vec![tag,zero,pair])}
+    fn fixture(qualified_name:bool, recursive:bool)->(RawFormTerm,BTreeMap<String,ModuleTableHandle>,NativeFormSite) {
+        let mut b=ReasonBuilder::new();
+        let field_form=if recursive {let name=qualified(&mut b,"m","r");builtin(&mut b,"record",vec![name])} else {builtin(&mut b,"integer",vec![])};
+        let x=b.atom("x");let cached=b.native(&Type::all_integers().to_native_value());let field=b.tuple(vec![x,field_form,cached]);let fields=b.list(vec![field]);
+        let file=b.string("test.erl");let zero=b.integer(0);let location=b.tuple(vec![file,zero]);let value=b.tuple(vec![location,fields]);
+        let tag=b.atom("native_record");let m=b.atom("m");let r=b.atom("r");let pair=b.tuple(vec![m,r]);let key=b.tuple(vec![tag,pair]);let table=b.push(ErlangTerm::Map(vec![(key,value)]));
+        let tag=b.atom("import_record");let import=b.tuple(vec![tag,r]);let caller=b.push(ErlangTerm::Map(vec![(import,m)]));
+        let name=if qualified_name {qualified(&mut b,"m","r")} else {ast_atom(&mut b,"r")};let form=builtin(&mut b,"record",vec![name]);
+        let raw=b.finish(form);let a=raw.arena().clone();
+        let tables=BTreeMap::from([("m".into(),ModuleTableHandle::at(a.clone(),table).unwrap()),("caller".into(),ModuleTableHandle::at(a.clone(),caller).unwrap())]);
+        let site=NativeFormSite{kind:NativeSiteKind::Spec,scope:TypeName{module:"caller".into(),name:"f".into(),arity:0}.into(),file:RawFormTerm::new(a,file).unwrap()};
+        (raw,tables,site)
+    }
+    fn run(raw:&RawFormTerm,tables:BTreeMap<String,ModuleTableHandle>,site:NativeFormSite,check:bool)->Result<Type> {
+        let names=vec!["caller".into(),"m".into()];let mut forms=Forms::default();let id=forms.defer_raw(ModuleId(0),raw);
+        let mut resolver=Resolver::new(&forms,&names);resolver.set_source_tables(tables);resolver.set_native_site(site);
+        if check {resolver.check_record_fields(id,&BTreeMap::new())?;Ok(Type::any())} else {resolver.resolve(id,Site::Spec,BTreeMap::new())}
+    }
+    #[test]
+    fn qualified_and_imported_forms_resolve_the_same_prototype() {
+        let (a,tables,site)=fixture(true,false);let qualified=run(&a,tables,site,false).unwrap();
+        let (a,tables,site)=fixture(false,false);let imported=run(&a,tables,site,false).unwrap();
+        assert_eq!(qualified,imported);assert_eq!(qualified.record_get("x").unwrap(),Type::all_integers());
+        assert_eq!(crate::lattice::PresentationContext::default().type_to_string(&qualified).unwrap(),"#m:r{x=integer()}");
+    }
+    #[test]
+    fn unknown_remote_module_keeps_a_named_generic_record() {
+        let (a,mut tables,site)=fixture(true,false);tables.remove("m");let value=run(&a,tables,site,false).unwrap();
+        assert_eq!(crate::lattice::PresentationContext::default().type_to_string(&value).unwrap(),"#m:r{}");
+    }
+    #[test]
+    fn native_record_recursion_unfolds_twice_then_keeps_identity() {
+        let (a,tables,site)=fixture(true,true);let value=run(&a,tables,site,false).unwrap();
+        assert_eq!(crate::lattice::PresentationContext::default().type_to_string(&value).unwrap(),"#m:r{x=#m:r{x=#m:r{}}}");
+    }
+    #[test]
+    fn qualified_check_retains_upstream_module_badmatch() {
+        let (a,tables,site)=fixture(true,false);
+        assert!(matches!(run(&a,tables,site,true),Err(FormError::Native(NativeTransferError::BadMatchNative(_)))));
+        let (a,tables,site)=fixture(false,false);run(&a,tables,site,true).unwrap();
+    }
+    #[test]
+    fn builtin_record_has_ninth_family() {
+        let mut b=ReasonBuilder::new();let root=builtin(&mut b,"record",vec![]);let raw=b.finish(root);
+        let (_,tables,site)=fixture(false,false);assert_eq!(run(&raw,tables,site,false).unwrap(),Type::record_any());
+        let mut b=ReasonBuilder::new();let tag=b.atom("type");let zero=b.integer(0);let record=b.atom("record");let any=b.atom("any");
+        let root=b.tuple(vec![tag,zero,record,any]);let raw=b.finish(root);
+        let (_,tables,site)=fixture(false,false);
+        assert!(matches!(run(&raw,tables,site,false),Err(FormError::Native(NativeTransferError::FunctionClause))));
+    }
+    #[test]
+    fn alias_arguments_resolve_records_in_the_callers_module() {
+        for remote in [false, true] {
+            for native in [false, true] {
+                let (record, mut tables, site) = fixture(false, false);
+                let mut b = ReasonBuilder::new();
+                let argument = b.copy(&record);
+                let owner = if remote { "generic" } else { "caller" };
+                let module = b.atom(owner);
+                let file = b.string("generic.erl");
+                let zero = b.integer(0);
+                let location = b.tuple(vec![file, zero]);
+                let var = b.atom("var");
+                let parameter = b.atom("T");
+                let body = b.tuple(vec![var, zero, parameter]);
+                let parameters = b.list(vec![parameter]);
+                let definition = b.tuple(vec![module, location, body, parameters]);
+                let any = b.atom("any");
+                let definition = b.tuple(vec![definition, any]);
+                let type_tag = b.atom("type");
+                let identity = b.atom("identity");
+                let one = b.integer(1);
+                let key = b.tuple(vec![type_tag, identity, one]);
+                let mut entries = Vec::new();
+                if !remote {
+                    let original = tables["caller"].raw();
+                    let ErlangTerm::Map(rows) = original.term() else { unreachable!() };
+                    for (key, value) in rows {
+                        entries.push((b.copy(&RawFormTerm::new(original.arena().clone(), *key).unwrap()),
+                            b.copy(&RawFormTerm::new(original.arena().clone(), *value).unwrap())));
+                    }
+                }
+                entries.push((key, definition));
+                let table = b.push(ErlangTerm::Map(entries));
+                let arguments = b.list(vec![argument]);
+                let call = if remote {
+                    let tag = b.atom("remote_type");
+                    let module = ast_atom(&mut b, owner);
+                    let name = ast_atom(&mut b, "identity");
+                    let parts = b.list(vec![module, name, arguments]);
+                    b.tuple(vec![tag, zero, parts])
+                } else {
+                    let tag = b.atom("user_type");
+                    b.tuple(vec![tag, zero, identity, arguments])
+                };
+                let raw = b.finish(call);
+                tables.insert(owner.into(), ModuleTableHandle::at(raw.arena().clone(), table).unwrap());
+                let names = vec!["caller".into(), "m".into(), "generic".into()];
+                let mut forms = Forms::default();
+                let id = forms.defer_raw(ModuleId(0), &raw);
+                if !native {
+                    forms.records.insert((ModuleId(0), "r".into()), crate::forms::Record {
+                        module: ModuleId(0), name: "r".into(), fields: Vec::new(), metadata: usize::MAX,
+                    });
+                }
+                let mut resolver = Resolver::new(&forms, &names);
+                resolver.set_source_tables(tables);
+                resolver.set_exported_types(BTreeSet::from([TypeName {module:owner.into(),name:"identity".into(),arity:1}]));
+                resolver.set_native_site(site);
+                let actual = resolver.resolve(id, Site::Spec, BTreeMap::new())
+                    .unwrap_or_else(|error| panic!("remote={remote}, native={native}: {error}"));
+                let expected = if native {
+                    let (raw, tables, site) = fixture(false, false);
+                    run(&raw, tables, site, false).unwrap()
+                } else { Type::tuple(vec![Type::atom("r")]).unwrap() };
+                assert_eq!(actual, expected, "remote={remote}, native={native}");
+            }
+        }
     }
 }

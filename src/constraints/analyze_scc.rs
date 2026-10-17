@@ -147,7 +147,7 @@ impl SccAnalyzer<'_> {
             solvers: &solver_atoms,
         });
         timings.mark("resolve_entries");
-        let generated = Generator::new(
+        let mut generated = Generator::new(
             self.nodes,
             self.profile,
             self.provider,
@@ -171,6 +171,10 @@ impl SccAnalyzer<'_> {
         let refold_allocations = generated.refold_allocations;
         let source_state = generated.source_state.clone();
         let parameters = generated.parameters.clone();
+        #[cfg(otp_domain = "29")]
+        {
+            generated.arena.semantics.record_layout = self.nodes.core().atom_layout.clone().map(std::sync::Arc::new);
+        }
         let tree = generated.prepare().map_err(AnalyzeSccError::Generation)?;
         timings.mark("prepare_constraints");
         let bindings = if reached_functions.len() > 1 {

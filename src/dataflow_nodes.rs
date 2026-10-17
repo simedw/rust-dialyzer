@@ -144,6 +144,8 @@ impl<'a> DataflowNodes<'a> {
             for term in &module.terms {
                 let value = match term {
                     ErlangTerm::Map(_) => true,
+                    #[cfg(otp_domain = "29")]
+                    ErlangTerm::Record(record) => record.fields.iter().any(|(_, value)| maps[value.0]),
                     ErlangTerm::Tuple(items) => items.iter().any(|id| maps[id.0]),
                     ErlangTerm::List { items, tail } => {
                         maps[tail.0] || items.iter().any(|id| maps[id.0])
@@ -399,6 +401,10 @@ fn fresh_children(expr: &CoreExpr) -> Vec<NodeId> {
         } => vec![*operation, *value],
         CoreExpr::Cons { head, tail } => vec![*head, *tail],
         CoreExpr::Map { pairs, .. } => pairs.clone(),
+        #[cfg(otp_domain = "29")]
+        CoreExpr::Record { pairs, .. } => pairs.clone(),
+        #[cfg(otp_domain = "29")]
+        CoreExpr::RecordPair { key, value } => vec![*key, *value],
         CoreExpr::Alias { variable, pattern } => vec![*variable, *pattern],
         CoreExpr::Let {
             vars,

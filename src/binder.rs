@@ -12,6 +12,9 @@ use crate::{
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::{collections::BTreeMap, sync::Arc};
+#[cfg(otp_domain = "29")]
+#[path = "binder/native29.rs"]
+mod native29;
 /// `given.opacity_conflict(required, module)`, memoized per thread.
 ///
 /// The result is a function of the two (interned) types and the module name.
@@ -142,9 +145,30 @@ pub struct BinderState<W = OpaqueMatch> {
     pub translated_files: Arc<BTreeMap<(crate::program::ModuleId, crate::core::TermId), String>>,
     pub letrec: crate::letrec_types::LetrecTypes,
     pub records: Arc<BTreeMap<(String, usize), BinderRecord>>,
+    #[cfg(otp_domain = "29")]
+    pub native_records: Arc<BTreeMap<(String, String), BinderRecord>>,
+    #[cfg(otp_domain = "29")]
+    pub native_record_imports: Arc<BTreeMap<String, String>>,
     pub warnings: WarningState<W>,
 }
 impl<W> BinderState<W> {
+    #[cfg(otp_domain = "29")]
+    pub fn native_record_module<'a>(&'a self, name: &str) -> &'a str {
+        self.native_record_imports.get(name).map(String::as_str).unwrap_or(&self.module)
+    }
+    #[cfg(otp_domain = "29")]
+    pub fn resolve_native_record_identity(&self, identity: &crate::patterns::NativeRecordIdentity) -> crate::lattice::NativeRecordName {
+        use crate::{lattice::NativeRecordName, patterns::NativeRecordIdentity};
+        match identity {
+            NativeRecordIdentity::Any => NativeRecordName::Any,
+            NativeRecordIdentity::Local(name) => NativeRecordName::Named { module: self.native_record_module(name).into(), name: name.as_str().into() },
+            NativeRecordIdentity::Qualified { module, name } => NativeRecordName::Named { module: module.as_str().into(), name: name.as_str().into() },
+        }
+    }
+    #[cfg(otp_domain = "29")]
+    pub fn resolve_native_record_id(&self, terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: crate::core::TermId) -> Result<crate::lattice::NativeRecordName, String> {
+        Ok(self.resolve_native_record_identity(&crate::patterns::NativeRecordIdentity::parse(terms, id)?))
+    }
     pub fn presentation_context(&self) -> crate::lattice::PresentationContext {
         let mut context = crate::lattice::PresentationContext::default();
         for ((tag, _), record) in self.records.iter() {
@@ -253,6 +277,8 @@ impl Binder<'_, '_, '_> {
             compiler_generated: false,
         };
         let Some(node) = self.patterns.annotation(pat) else {
+            #[cfg(otp_domain = "29")]
+            if matches!(self.patterns.shape(pat)?, Shape::Record { .. }) { out.compiler_generated = true; }
             return Ok(out);
         };
         let ann = self.patterns.nodes.module(node.module)?.nodes[node.node].annotations;
@@ -555,6 +581,8 @@ impl Binder<'_, '_, '_> {
                     typ.meet(&Type::map_pairs(&constraints)?)?
                 }
             }
+            #[cfg(otp_domain = "29")]
+            Shape::Record { identity, pairs } => return self.native_record(pat, identity, pairs, actual, map, state, dir, depth),
             Shape::Tuple(xs) => {
                 let mut typed_record = false;
                 let prototype = if xs.is_empty() {
@@ -827,6 +855,10 @@ mod snapshot_ownership_tests {
                 prototype: Type::tuple(vec![Type::atom("record"), Type::any()]).unwrap(),
                 fields: vec![crate::lattice::PresentationRecordField { name: "field".into(), declared_type: Type::any() }],
             })]).into(),
+            #[cfg(otp_domain = "29")]
+            native_records: BTreeMap::new().into(),
+            #[cfg(otp_domain = "29")]
+            native_record_imports: BTreeMap::new().into(),
             warnings: WarningState { warning_mode: true, warnings: vec![1] },
         }
     }

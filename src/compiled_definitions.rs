@@ -175,6 +175,10 @@ pub struct PreparedDefinitions {
     pub module_names: Arc<[String]>,
     pub sources: Arc<BTreeMap<ModuleId, FormSourceArena>>,
     pub records: BTreeMap<(ModuleId, String, usize), PreparedRecord>,
+    #[cfg(otp_domain = "29")]
+    pub native_records: BTreeMap<(ModuleId, String, String), PreparedRecord>,
+    #[cfg(otp_domain = "29")]
+    pub native_record_imports: BTreeMap<(ModuleId, String), String>,
     pub contracts: PreparedContractTable,
     pub callbacks: PreparedContractTable,
     pub external_types: Vec<ExternalTypeEvent>,
@@ -294,6 +298,10 @@ impl PreparedDefinitions {
                 module_names: names.into(),
                 sources: Arc::new(sources),
                 records: BTreeMap::new(),
+                #[cfg(otp_domain = "29")]
+                native_records: BTreeMap::new(),
+                #[cfg(otp_domain = "29")]
+                native_record_imports: BTreeMap::new(),
                 contracts: PreparedContractTable::default(),
                 callbacks: PreparedContractTable::default(),
                 external_types: Vec::new(),
@@ -485,6 +493,29 @@ impl PreparedDefinitions {
                     let name = b.atom(&record.name);
                     let key = b.tuple(vec![tag, name]);
                     own.push((key, value));
+                }
+                #[cfg(otp_domain = "29")]
+                {
+                    for ((owner, defining, name), record) in &forms.native_records {
+                        if *owner != mid { continue; }
+                        let meta = &program.metadata[record.metadata];
+                        let file=b.string(meta.origin.file.as_deref().unwrap_or("nofile"));
+                        let loc=source_location(&mut b,&meta.origin); let fl=b.tuple(vec![file,loc]);
+                        let mut fields=Vec::new();
+                        for field in &record.fields {
+                            let key=b.atom(&field.name);
+                            let form=match field.declared_type { Some(id)=>forms.nodes[id.0].raw, None=>generated_variable(&mut b) };
+                            let any=b.atom("any"); fields.push(b.tuple(vec![key,form,any]));
+                        }
+                        let fields=b.list(fields); let value=b.tuple(vec![fl,fields]);
+                        let tag=b.atom("native_record");let m=b.atom(defining);let n=b.atom(name);let pair=b.tuple(vec![m,n]);let key=b.tuple(vec![tag,pair]);
+                        own.push((key,value));
+                    }
+                    for ((owner,name),defining) in &forms.native_record_imports {
+                        if *owner != mid { continue; }
+                        let tag=b.atom("import_record");let name=b.atom(name);let key=b.tuple(vec![tag,name]);let value=b.atom(defining);
+                        own.push((key,value));
+                    }
                 }
                 let table = b.push(ErlangTerm::Map(own));
                 let raw = b.finish(table);
@@ -750,6 +781,30 @@ impl PreparedDefinitions {
         resolver
             .set_record_types(all_types)
             .map_err(import_failure)?;
+        #[cfg(otp_domain = "29")]
+        let mut native_records = BTreeMap::new();
+        #[cfg(otp_domain = "29")]
+        for ((mid, defining, name), record) in &forms.native_records {
+            let mut site=sites[&record.metadata].clone();
+            site.kind=NativeSiteKind::NativeRecord;
+            site.scope=TypeName{module:defining.clone(),name:name.clone(),arity:0}.into();
+            resolver.replace_cache(FormCache::new());
+            let mut values=Vec::new();
+            for field in &record.fields {
+                let value=if let Some(id)=field.declared_type {
+                    let mut check=site.clone();check.kind=NativeSiteKind::Check;resolver.set_native_site(check.clone());
+                    resolver.check_remote_at(id,Site::Check).map_err(|e|failure(PreparationStage::Records,check,e,&resolver))?;
+                    resolver.set_native_site(site.clone());
+                    resolver.resolve(id,Site::NativeRecord,BTreeMap::new()).map_err(|e|failure(PreparationStage::Records,site.clone(),e,&resolver))?
+                } else {Type::any()};
+                values.push(value);
+            }
+            let fields=record.fields.iter().zip(&values).map(|(f,v)|(f.name.as_str().into(),crate::lattice::RecordField::Present(v.clone()))).collect();
+            let prototype=Type::record(crate::lattice::NativeRecordName::Named{module:defining.as_str().into(),name:name.as_str().into()},fields);
+            native_records.insert((*mid,defining.clone(),name.clone()),PreparedRecord{module:*mid,tag:name.clone(),field_names:record.fields.iter().map(|f|f.name.clone()).collect(),field_types:values,prototype,origin:program.metadata[record.metadata].origin.clone()});
+        }
+        #[cfg(otp_domain = "29")]
+        resolver.set_native_record_types(native_records.iter().map(|((_,m,n),r)|((m.clone(),n.clone()),r.field_names.iter().cloned().zip(r.field_types.iter().cloned()).collect())).collect());
         timings.mark("records");
         let alias_index = AliasIndex::new(&resolver.forms);
         for (index, module) in core.modules.iter().enumerate() {
@@ -779,6 +834,16 @@ impl PreparedDefinitions {
                             })?;
                     }
                 }
+            }
+            #[cfg(otp_domain = "29")]
+            for ((owner, defining, name), r) in &forms.native_records {
+                if *owner != mid { continue; }
+                let mut site=sites[&r.metadata].clone();site.kind=NativeSiteKind::NativeRecord;
+                site.scope=TypeName{module:defining.clone(),name:name.clone(),arity:0}.into();
+                resolver.set_native_site(site.clone());
+                for field in &r.fields { if let Some(id)=field.declared_type {
+                    resolver.check_record_fields(id,&BTreeMap::new()).map_err(|e|failure(PreparationStage::RecordChecks,site.clone(),e.at_position(&program.metadata[r.metadata].origin),&resolver))?;
+                }}
             }
             for d in ordered_declarations(&forms, &module.name) {
                 let mut site = sites[&d.metadata].clone();
@@ -946,12 +1011,20 @@ impl PreparedDefinitions {
         let external_type_occurrences = resolver.external_types.clone();
         let external_types = reported_events(&external_type_occurrences)?;
         let forms = resolver.forms.into_owned();
-        finalize_tables(core, &records, &opaque_values, &mut tables).map_err(import_failure)?;
+        finalize_tables(core, &records, #[cfg(otp_domain = "29")] &native_records, &opaque_values, &mut tables).map_err(import_failure)?;
+        #[cfg(otp_domain = "29")]
+        expose_native_record_prototypes(core, &tables, &mut native_records).map_err(import_failure)?;
+        #[cfg(otp_domain = "29")]
+        let native_record_imports = forms.native_record_imports.clone();
         Ok(Self {
             forms: Arc::new(forms),
             module_names: names.into(),
             sources: Arc::new(sources),
             records,
+            #[cfg(otp_domain = "29")]
+            native_records,
+            #[cfg(otp_domain = "29")]
+            native_record_imports,
             contracts,
             callbacks,
             external_types,
@@ -960,6 +1033,34 @@ impl PreparedDefinitions {
             exported_types: exports,
         })
     }
+}
+#[cfg(otp_domain = "29")]
+fn expose_native_record_prototypes(core: &CoreProgram, tables: &BTreeMap<String,ModuleTableHandle>, records: &mut BTreeMap<(ModuleId,String,String),PreparedRecord>) -> Result<(),FormError> {
+    let mut definitions=records.iter().map(|((_,m,n),r)|((m.clone(),n.clone()),r.clone())).collect::<BTreeMap<_,_>>();
+    for (module,table) in tables {
+        let a=table.arena();let ErlangTerm::Map(entries)=&a.terms[table.root().0] else {continue};
+        for (key,value) in entries {
+            let ErlangTerm::Tuple(k)=&a.terms[key.0] else {continue};
+            if k.len()!=2 || !matches!(&a.terms[k[0].0],ErlangTerm::Atom(tag) if tag == "native_record") {continue}
+            let ErlangTerm::Tuple(pair)=&a.terms[k[1].0] else {continue};if pair.len()!=2 {continue}
+            let (ErlangTerm::Atom(owner),ErlangTerm::Atom(name))=(&a.terms[pair[0].0],&a.terms[pair[1].0]) else {continue};
+            if owner != module || definitions.contains_key(&(owner.clone(),name.clone())) {continue}
+            let env=LazyFormEnvironment{arena:table.raw().arena().clone(),tables:BTreeMap::from([(module.clone(),table.root())])};
+            let Some(raw)=env.native_record_fields(module,name)? else {continue};
+            let fields=raw.record_fields()?;
+            let field_names=fields.iter().map(|f|f.name.clone()).collect::<Vec<_>>();
+            let field_types=fields.iter().map(|f|crate::type_exports::type_from_arena(f.cached_type.arena(),f.cached_type.id())).collect::<Result<Vec<_>,_>>()?;
+            let prototype=Type::record(crate::lattice::NativeRecordName::Named{module:module.as_str().into(),name:name.as_str().into()},field_names.iter().zip(&field_types).map(|(f,t)|(f.as_str().into(),crate::lattice::RecordField::Present(t.clone()))).collect());
+            definitions.insert((owner.clone(),name.clone()),PreparedRecord{module:ModuleId(0),tag:name.clone(),field_names,field_types,prototype,origin:SourceOrigin{raw:*value,file:None,line:None,column:None,generated:false}});
+        }
+    }
+    for owner in 0..core.modules.len() {
+        for ((m,n),record) in &definitions {
+            let mut record=record.clone();record.module=ModuleId(owner);
+            records.entry((ModuleId(owner),m.clone(),n.clone())).or_insert(record);
+        }
+    }
+    Ok(())
 }
 /// Runs `run` for every module on all cores, each worker with a resolver that
 /// borrows `base`'s forms. Modules start in `order`, a permutation of the
@@ -1241,6 +1342,7 @@ fn reported_events(
 fn finalize_tables(
     core: &CoreProgram,
     records: &BTreeMap<(ModuleId, String, usize), PreparedRecord>,
+    #[cfg(otp_domain = "29")] native_records: &BTreeMap<(ModuleId,String,String),PreparedRecord>,
     opaques: &BTreeMap<TypeName, Type>,
     tables: &mut BTreeMap<String, ModuleTableHandle>,
 ) -> Result<(), FormError> {
@@ -1276,8 +1378,17 @@ fn finalize_tables(
         let mut final_pairs = Vec::with_capacity(pairs.len());
         for &(key, value) in pairs {
             let k = tuple(a, key);
+            #[cfg(otp_domain = "29")]
+            if atom(a,k[0]) == "import_record" { final_pairs.push((key,value)); continue; }
             let v = tuple(a, value);
             let value = match atom(a, k[0]) {
+                #[cfg(otp_domain = "29")]
+                "native_record" => {
+                    let name=tuple(a,k[1]);let r=&native_records[&(ModuleId(index),atom(a,name[0]).into(),atom(a,name[1]).into())];
+                    let mut fields=Vec::new();
+                    for (&field,ty) in list(a,v[1]).iter().zip(&r.field_types) { let f=tuple(a,field);let ty=b.native(&ty.to_native_value());fields.push(b.tuple(vec![f[0],f[1],ty])); }
+                    let fields=b.list(fields); b.tuple(vec![v[0],fields])
+                }
                 "opaque" => {
                     let ErlangTerm::Integer(arity) = &a.terms[k[2].0] else {
                         unreachable!("constructed arity")

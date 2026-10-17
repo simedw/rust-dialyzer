@@ -100,6 +100,17 @@ impl Lower {
                 f[3] = self.a.list(pairs);
                 Ok(self.a.tuple(f))
             }
+            #[cfg(otp_domain = "29")]
+            Some("c_record") => {
+                let mut pairs = Vec::new();
+                for pair in self.a.list_items(f[4])? {
+                    let mut p = self.a.tuple_fields(pair)?.to_vec();
+                    p[3] = self.shadow_pattern(p[3], known, substitutions, sets)?;
+                    pairs.push(self.a.tuple(p));
+                }
+                f[4] = self.a.list(pairs);
+                Ok(self.a.tuple(f))
+            }
             Some("c_binary") => {
                 let mut segments = Vec::new();
                 let mut locals = std::collections::BTreeMap::new();

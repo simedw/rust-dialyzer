@@ -11,6 +11,8 @@ fn truth(value: bool) -> Type {
 }
 pub fn atom_values(value: &Type) -> Result<Option<Vec<String>>, NativeTransferError> {
     let value = value.shallow_structural()?;
+    #[cfg(otp_domain = "29")]
+    if matches!(value.view(), TypeView::Families(s) if s.records.is_some()) { return Ok(None); }
     Ok(match value.view() {
         TypeView::Families(s) => match s.atoms {
             Some(AtomsView::Set(x))

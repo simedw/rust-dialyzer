@@ -219,6 +219,11 @@ fn print_type(t: &Type, ctx: &PresentationContext) -> Result<String, LatticeErro
                     ctx,
                 );
             }
+            #[cfg(otp_domain = "29")]
+            if let Some(records) = s.records() {
+                return records.rows().iter().map(|r| r.type_to_string(ctx))
+                    .collect::<Result<Vec<_>, _>>().map(|rows| rows.join(" | "));
+            }
             if let Some(atoms) = s.atoms() {
                 match atoms {
                     Atoms::All => "atom()".into(),
@@ -492,9 +497,15 @@ impl Type {
                 family!(number, number_owner);
                 family!(tuple, tuple_owner);
                 family!(maps, maps_owner);
+                #[cfg(otp_domain = "29")]
+                family!(records, records_owner);
                 Self::supremum(&components)
             }
             Repr::Families(s) => {
+                #[cfg(otp_domain = "29")]
+                if let Some(records) = s.records() {
+                    return Ok(Self::from_records(records.transform(&|t| t.abstract_records(ctx))?));
+                }
                 if let Some(Lists::List {
                     elements,
                     tail,

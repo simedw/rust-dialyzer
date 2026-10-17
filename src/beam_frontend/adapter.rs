@@ -156,6 +156,12 @@ impl<'a> Builder<'a> {
                         pending.extend([value, key]);
                     }
                 }
+                #[cfg(otp_domain = "29")]
+                T::Record(record) => {
+                    self.atom(&record.module);
+                    self.atom(&record.name);
+                    for (name, value) in record.fields.iter().rev() { self.atom(name); pending.push(*value); }
+                }
                 _ => (),
             }
         }
@@ -232,6 +238,8 @@ impl<'a> Builder<'a> {
                             children
                         }
                         T::Map(entries) => entries.iter().flat_map(|&(k, v)| [k, v]).collect(),
+                        #[cfg(otp_domain = "29")]
+                        T::Record(record) => record.fields.iter().map(|(_, value)| *value).collect(),
                         _ => vec![],
                     };
                     pending.push(Task::Finish(id, term, order));
@@ -263,6 +271,13 @@ impl<'a> Builder<'a> {
                                 .map(|(k, v)| Ok((mapped(k)?, mapped(v)?)))
                                 .collect::<Result<_, String>>()?,
                         ),
+                        #[cfg(otp_domain = "29")]
+                        T::Record(mut record) => {
+                            self.atom(&record.module);
+                            self.atom(&record.name);
+                            for (name, value) in &mut record.fields { self.atom(name); *value = mapped(*value)?; }
+                            T::Record(record)
+                        }
                         term => term,
                     };
                     let mapped = self.intern(term, order);
@@ -285,6 +300,8 @@ impl<'a> Builder<'a> {
             value: Option<TermId>,
             groups: Vec<Vec<TermId>>,
             map_arg: Option<TermId>,
+            #[cfg(otp_domain = "29")]
+            record_id: Option<TermId>,
             pattern: Option<bool>,
             source_children: Vec<TermId>,
             at: usize,
@@ -318,6 +335,10 @@ impl<'a> Builder<'a> {
                 "alias" | "apply" | "case" | "cons" | "fun" | "letrec" | "primop" | "seq" => 4,
                 "call" | "clause" | "let" | "map" | "map_pair" | "receive" => 5,
                 "module" => 6,
+                #[cfg(otp_domain = "29")]
+                "record" => 5,
+                #[cfg(otp_domain = "29")]
+                "record_pair" => 4,
                 "bitstr" | "try" => 7,
                 _ => return Err(format!("native adapter: unknown record {tag}")),
             };
@@ -355,6 +376,13 @@ impl<'a> Builder<'a> {
                     pairs(input, f[5])?,
                 ],
                 "map_pair" => vec![vec![f[2]], vec![f[3]], vec![f[4]]],
+                #[cfg(otp_domain = "29")]
+                "record_pair" => vec![vec![f[2]], vec![f[3]]],
+                #[cfg(otp_domain = "29")]
+                "record" => {
+                    map_arg = Some(f[2]);
+                    vec![list(input, f[4])?]
+                }
                 "map" => {
                     map_arg = Some(f[2]);
                     pattern = Some(match atom(input, f[4]) {
@@ -370,17 +398,23 @@ impl<'a> Builder<'a> {
         }
         let make = |this: &mut Self, id| -> Result<Frame, String> {
             let (kind, ann, value, groups, map_arg, pattern) = shape(input, id)?;
+            #[cfg(otp_domain = "29")]
+            let record_id = if kind == "record" { Some(tuple(input, id)?[3]) } else { None };
             let source_children = groups
                 .iter()
                 .flat_map(|g| g.iter().copied())
                 .chain(map_arg)
                 .collect();
+            #[cfg(otp_domain = "29")]
+            let source_children = { let mut children: Vec<TermId> = source_children; children.extend(record_id); children };
             Ok(Frame {
                 kind,
                 annotations: this.value(input, ann)?,
                 value: value.map(|v| this.value(input, v)).transpose()?,
                 groups,
                 map_arg,
+                #[cfg(otp_domain = "29")]
+                record_id,
                 pattern,
                 source_children,
                 at: 0,
@@ -424,7 +458,11 @@ impl<'a> Builder<'a> {
                     annotations: frame.annotations.0 as u64,
                     groups,
                     value: frame.value.map(|v| v.0 as u64),
-                    map_arg: frame.map_arg.map(|_| children.next().unwrap().0 as u64),
+                    map_arg: if frame.kind == "map" { frame.map_arg.map(|_| children.next().unwrap().0 as u64) } else { None },
+                    #[cfg(otp_domain = "29")]
+                    record_arg: if frame.kind == "record" { frame.map_arg.map(|_| children.next().unwrap().0 as u64) } else { None },
+                    #[cfg(otp_domain = "29")]
+                    record_id: frame.record_id.map(|_| children.next().unwrap().0 as u64),
                     map_pattern: frame.pattern,
                 };
                 build_node(
@@ -468,7 +506,11 @@ impl<'a> Builder<'a> {
                     self.group_at += 1;
                 }
                 // Match compiler transport: map pairs are numbered before base.
-                Ok(self.shape.map_arg.take())
+                if let Some(argument) = self.shape.map_arg.take() { return Ok(Some(argument)); }
+                #[cfg(otp_domain = "29")]
+                { return Ok(self.shape.record_id.take()); }
+                #[cfg(not(otp_domain = "29"))]
+                Ok(None)
             }
         }
         let input = view.arena();
@@ -713,6 +755,15 @@ fn direct_node(
             key: children.one(),
             value: children.one(),
         },
+        #[cfg(otp_domain = "29")]
+        "record" => {
+            let pairs = children.group();
+            let argument = children.nodes.next().ok_or("native direct: missing record argument")?;
+            let id = children.nodes.next().ok_or("native direct: missing record id")?;
+            CoreExpr::Record { argument, id, pairs }
+        }
+        #[cfg(otp_domain = "29")]
+        "record_pair" => CoreExpr::RecordPair { key: children.one(), value: children.one() },
         "let" => CoreExpr::Let {
             vars: children.group(),
             argument: children.one(),

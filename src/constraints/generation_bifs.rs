@@ -397,6 +397,14 @@ impl Generator<'_> {
                 "-get_bif_constr/4-fun-14-",
                 vec![native_list()],
             )?;
+            #[cfg(otp_domain = "29")]
+            if !args[2].predicate(TypePredicate::Integer)? {
+                if args[2].predicate(TypePredicate::Atom)? {
+                    constraints.push(self.make_atom(args[0].clone(), NativeOperand::Type(Type::record_any()))?);
+                    constraints.push(self.make_atom(args[1].clone(), NativeOperand::Type(Type::all_atoms()))?);
+                }
+                return Ok(Some(self.arena.group(GroupKind::Conjunction, constraints)?));
+            }
             constraints.push(self.make_atom(dst.clone(), returns)?);
             constraints.push(self.make_atom(
                 args[2].clone(),
@@ -411,7 +419,12 @@ impl Generator<'_> {
             let av = self.derived(
                 DerivedOp::PredicateArgument {
                     destination: dst.clone(),
-                    test: Type::builtin(BuiltinType::Tuple)?,
+                    test: {
+                        let tuple = Type::builtin(BuiltinType::Tuple)?;
+                        #[cfg(otp_domain = "29")]
+                        let tuple = tuple.join(&Type::record_any())?;
+                        tuple
+                    },
                 },
                 "-get_bif_constr/4-fun-11-",
                 vec![destination()],

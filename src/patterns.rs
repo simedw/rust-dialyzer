@@ -26,6 +26,27 @@ pub enum PairOperation {
     Node(PatternRef),
     Exact,
 }
+#[cfg(otp_domain = "29")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeRecordIdentity {
+    Any,
+    Local(String),
+    Qualified { module: String, name: String },
+}
+#[cfg(otp_domain = "29")]
+impl NativeRecordIdentity {
+    pub fn parse(terms: &crate::shared_vec::SharedVec<ErlangTerm>, id: TermId) -> Result<Self, String> {
+        Ok(match terms.get(id.0) {
+            Some(ErlangTerm::Nil) => Self::Any,
+            Some(ErlangTerm::Atom(name)) => Self::Local(name.clone()),
+            Some(ErlangTerm::Tuple(pair)) if pair.len() == 2 => match (&terms[pair[0].0], &terms[pair[1].0]) {
+                (ErlangTerm::Atom(module), ErlangTerm::Atom(name)) => Self::Qualified { module: module.clone(), name: name.clone() },
+                _ => return Err("native record qualified id must contain atoms".into()),
+            },
+            _ => return Err("native record id must be [], an atom or module/name".into()),
+        })
+    }
+}
 #[derive(Clone, Debug)]
 pub enum Shape {
     Alias {
@@ -58,6 +79,10 @@ pub enum Shape {
         original: NodeRef,
     },
     Other,
+    #[cfg(otp_domain = "29")]
+    Record { identity: NativeRecordIdentity, pairs: Vec<PatternRef> },
+    #[cfg(otp_domain = "29")]
+    RecordPair { key: PatternRef, value: PatternRef },
 }
 #[derive(Clone, Debug)]
 pub struct RefoldNode {
@@ -178,6 +203,13 @@ impl<'a, 'b> Patterns<'a, 'b> {
                     CoreExpr::Map { pairs, .. } => {
                         Shape::Map(pairs.iter().map(|&x| p(x)).collect())
                     }
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::Record { id, pairs, .. } => {
+                        let CoreExpr::Literal(term) = self.nodes.expression(NodeRef { module: node.module, node: id.0 })? else { return Err("native record identity is not literal".into()); };
+                        Shape::Record { identity: NativeRecordIdentity::parse(&self.nodes.module(node.module)?.terms, *term)?, pairs: pairs.iter().copied().map(p).collect() }
+                    }
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::RecordPair { key, value } => Shape::RecordPair { key: p(*key), value: p(*value) },
                     CoreExpr::MapPair {
                         operation,
                         key,
@@ -204,6 +236,16 @@ impl<'a, 'b> Patterns<'a, 'b> {
             PatternRef::Refold(id) => self.refolded[id].annotation,
         }
     }
+    #[cfg(otp_domain = "29")]
+    pub fn qualified_native_record(&mut self, source: PatternRef, identity: NativeRecordIdentity, pairs: Vec<PatternRef>) -> Result<PatternRef, String> {
+        let origin = match source {
+            PatternRef::Core(node) => LiteralRef::Term { module: node.module, term: self.nodes.module(node.module)?.source_forms },
+            PatternRef::Refold(index) => self.refolded.get(index).ok_or("native record source outside patterns")?.origin,
+        };
+        // cerl:c_record/2 has no annotations or label. It is compiler-generated
+        // and must not allocate a synthetic variable identity.
+        self.push(Shape::Record { identity, pairs }, origin, false)
+    }
     pub fn term(&self, module: ModuleId, id: TermId) -> Result<&ErlangTerm, String> {
         self.nodes
             .module(module)?
@@ -224,6 +266,10 @@ impl<'a, 'b> Patterns<'a, 'b> {
             Shape::Alias { variable, pattern } => vec![variable, pattern],
             Shape::Binary(xs) | Shape::Map(xs) | Shape::Tuple(xs) | Shape::Values(xs) => xs,
             Shape::Cons { head, tail } => vec![head, tail],
+            #[cfg(otp_domain = "29")]
+            Shape::Record { pairs, .. } => pairs,
+            #[cfg(otp_domain = "29")]
+            Shape::RecordPair { key, value } => vec![key, value],
             Shape::Segment {
                 value,
                 size,

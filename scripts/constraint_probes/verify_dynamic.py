@@ -1,6 +1,7 @@
 import json,random,os,subprocess
 from pathlib import Path
-root=Path(__file__).resolve().parents[2];h=root/'.cache/constraints';h.mkdir(parents=True,exist_ok=True);rng=random.Random(137)
+from config import configure
+config=configure();root=Path(__file__).resolve().parents[2];h=config.out;h.mkdir(parents=True,exist_ok=True);rng=random.Random(137)
 a=lambda k:{'kind':k};atom=lambda *v:{'kind':'atoms','values':list(v)};integer=lambda *v:{'kind':'integers','values':[str(x)for x in v]};key=lambda n:{'integer':str(n)};var=lambda n:{'kind':'var','id':key(n)}
 pool=[a('any'),a('none'),a('unit'),a('atom'),a('integer'),a('number'),a('float'),atom('a'),atom('true'),atom('false'),atom('true','false'),integer(-1),integer(0),integer(1),integer(2),{'kind':'range','from':'0','to':'pos_inf'},{'kind':'range','from':'neg_inf','to':'-1'},{'kind':'range','from':'-2','to':'3'}]
 commands=[]
@@ -32,8 +33,8 @@ for source in ['+','-','*','<','=<','>','>=','and','or','=:=','==','is_atom','is
 # Equality against a raw fun_var fails native unification for an ordinary computed type.
 commands.append({'derived_nodes':[{'operation':'predicate_argument','destination':var(100),'test':a('integer'),'native_mfa':{'module':'erlang','function':'is_integer','arity':1},'native_lhs':1}],'tree':[{'kind':'atomic','left':var(1),'right':{'derived':0},'relation':'eq'}],'root':0,'bindings':[]})
 input_=h/'dynamic.jsonl';input_.write_text(''.join(json.dumps(c)+'\n'for c in commands))
-with input_.open('rb')as inp:rs=subprocess.check_output([str(root/'target/release/constraints_probe')],stdin=inp)
+with input_.open('rb')as inp:rs=subprocess.check_output([str(config.binary)],stdin=inp)
 (h/'dynamic.rust.jsonl').write_bytes(rs);rust=[json.loads(x)for x in rs.splitlines()]
-env=os.environ.copy();env.update(ASDF_ERLANG_VERSION='28.3',ASDF_ELIXIR_VERSION='1.19.4-otp-28');subprocess.run(['elixir',str(root/'scripts/constraint_probes/native_tree.exs'),str(root),str(input_),str(h/'dynamic.native.json')],env=env,check=True)
+env=config.env;subprocess.run(['elixir',str(root/'scripts/constraint_probes/native_tree.exs'),str(root),str(input_),str(h/'dynamic.native.json')],env=env,check=True)
 native=json.loads((h/'dynamic.native.json').read_text());assert len(rust)==len(native)==len(commands),'incomplete oracle or Rust output'
 failures=[{'index':i,'command':commands[i],'rust':r,'native':n}for i,(r,n)in enumerate(zip(rust,native))if {k:v for k,v in r.items()if k!='detail'}!={k:v for k,v in n.items()if k!='detail'}];(h/'dynamic-verification.json').write_text(json.dumps({'commands':len(commands),'passed':len(commands)-len(failures),'failures':failures},indent=2));print(len(commands),len(failures),flush=True)

@@ -1,9 +1,67 @@
 use rust_dialyzer_poc::lattice::Type;
 use serde_json::{Value, json};
 use std::io::{self, BufRead};
+#[cfg(otp_domain = "29")]
+fn native_value(value: &Value) -> Result<rust_dialyzer_poc::lattice::NativeValue, String> {
+    use rust_dialyzer_poc::lattice::NativeValue as N;
+    let list = || value["values"].as_array().ok_or("native values missing")?.iter()
+        .map(native_value).collect::<Result<Vec<_>, String>>();
+    Ok(match value["term"].as_str() {
+        Some("atom") => N::Atom(value["value"].as_str().ok_or("native atom missing")?.into()),
+        Some("integer") => N::Integer(value["value"].as_str().ok_or("native integer missing")?
+            .parse::<num_bigint::BigInt>().map_err(|e| e.to_string())?),
+        Some("nil") => N::Nil,
+        Some("tuple") => N::Tuple(list()?),
+        Some("list") => { let values = list()?; if values.is_empty() { N::Nil } else { N::List(values) } },
+        Some("map") => N::Map(value["pairs"].as_array().ok_or("native pairs missing")?.iter()
+            .map(|pair| Ok((native_value(&pair[0])?, native_value(&pair[1])?)))
+            .collect::<Result<_, String>>()?),
+        _ => return Err("unsupported native value".into()),
+    })
+}
 fn run(v: &Value) -> Result<Value, String> {
     let a = Type::from_value(&v["a"])?;
     let op = v["op"].as_str().ok_or("missing op")?;
+    #[cfg(otp_domain = "29")]
+    match op {
+        "record_constructor" => {
+            use rust_dialyzer_poc::lattice::NativeTypeOutcome;
+            let fields = v["fields"].as_array().ok_or("record fields missing")?.iter()
+                .map(|field| Ok((native_value(&field["key"])?, Type::from_value(&field["value"])?)))
+                .collect::<Result<_, String>>()?;
+            return Ok(match Type::native_record(native_value(&v["name"])?, fields) {
+                NativeTypeOutcome::Canonical(t) => t.to_value(),
+                NativeTypeOutcome::Raw(t) => json!({"native":t.to_native_value().to_value()}),
+            });
+        }
+        "record_get" => return Ok(a.record_get(v["key"].as_str().ok_or("record field name missing")?)?.to_value()),
+        "record_replace" => {
+            use rust_dialyzer_poc::lattice::NativeRecordName;
+            let selector = if v["selector"].is_null() { None }
+                else { Some(NativeRecordName::from_value(&v["selector"])?) };
+            let updates = v["updates"].as_array().ok_or("record updates missing")?.iter().map(|field| {
+                Ok((v_str(field, "key")?.into(), Type::from_value(&field["value"])?))
+            }).collect::<Result<Vec<_>, String>>()?;
+            return Ok(a.record_replace(selector.as_ref(), &updates)?.to_value());
+        }
+        "record_test" => {
+            use rust_dialyzer_poc::lattice::RecordTest;
+            let args = v["args"].as_array().ok_or("record test arguments missing")?.iter()
+                .map(native_value).collect::<Result<Vec<_>, _>>()?;
+            let result = match args.as_slice() {
+                [] => return Ok(json!(a.is_native_record())),
+                [name] => a.is_native_record_named(name),
+                [module, name] => a.is_native_record_qualified(module, name),
+                _ => return Err("record test expects zero to two name arguments".into()),
+            };
+            return Ok(match result { RecordTest::True => json!(true), RecordTest::False => json!(false), RecordTest::Unknown => json!("unknown") });
+        }
+        "native_record_field_diffs" => return Ok(json!(a.native_record_field_diffs(
+            &Type::from_value(&v["b"])?, &rust_dialyzer_poc::lattice::PresentationContext::default(),
+        )?)),
+        "abstract_records" => return Ok(a.abstract_records(&rust_dialyzer_poc::lattice::PresentationContext::default())?.to_value()),
+        _ => {}
+    }
     if op == "property" {
         let name = v["property"].as_str().ok_or("missing property")?;
         let result = match name {
@@ -323,6 +381,10 @@ fn run(v: &Value) -> Result<Value, String> {
         "subtype" => json!(a.is_subtype(&b)?),
         _ => return Err(format!("unsupported operation {op}")),
     })
+}
+#[cfg(otp_domain = "29")]
+fn v_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
+    value[key].as_str().ok_or_else(|| format!("{key}: string missing"))
 }
 fn main() {
     for line in io::stdin().lock().lines() {

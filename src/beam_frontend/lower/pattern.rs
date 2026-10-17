@@ -1,6 +1,71 @@
 //! Separate OTP pattern construction from upattern variable normalization.
 use super::*;
 impl Lower {
+    pub(super) fn generated_location(&mut self, location: TermId) -> Result<TermId> {
+        let mut annotations = if matches!(self.a.get(location), ErlangTerm::List { .. }) {
+            self.a.list_items(location)?
+        } else {
+            let key = self.a.atom("location");
+            vec![self.a.tuple(vec![key, location])]
+        };
+        annotations.retain(|&annotation| self.a.tag(annotation) != Some("generated"));
+        let key = self.a.atom("generated");
+        let truth = self.a.atom("true");
+        annotations.insert(0, self.a.tuple(vec![key, truth]));
+        Ok(self.a.list(annotations))
+    }
+
+    pub(super) fn sanitize_pattern(&mut self, pattern: TermId) -> Result<TermId> {
+        let mut fields = self.a.tuple_fields(pattern)?.to_vec();
+        match self.a.tag(pattern) {
+            Some("match") => {
+                let left = self.sanitize_pattern(fields[2])?;
+                let right = self.sanitize_pattern(fields[3])?;
+                let patterns = self.a.list(vec![left, right]);
+                Ok(self.a.tagged("tuple", vec![fields[1], patterns]))
+            }
+            Some("cons") => {
+                fields[2] = self.sanitize_pattern(fields[2])?;
+                fields[3] = self.sanitize_pattern(fields[3])?;
+                Ok(self.a.tuple(fields))
+            }
+            Some("tuple" | "map" | "bin") => {
+                let tag = self.a.tag(pattern).unwrap().to_owned();
+                let mut patterns = Vec::new();
+                for child in self.a.list_items(fields[2])? {
+                    let child_fields = self.a.tuple_fields(child)?;
+                    if tag == "bin" {
+                        if self.a.tag(child_fields[2]) == Some("var") {
+                            patterns.push(child_fields[2]);
+                        }
+                    } else {
+                        let child = if tag == "map" { child_fields[3] } else { child };
+                        patterns.push(self.sanitize_pattern(child)?);
+                    }
+                }
+                let patterns = self.a.list(patterns);
+                Ok(self.a.tagged("tuple", vec![fields[1], patterns]))
+            }
+            Some("op") if fields.len() == 5 => {
+                let left = self.sanitize_pattern(fields[3])?;
+                let right = self.sanitize_pattern(fields[4])?;
+                let patterns = self.a.list(vec![left, right]);
+                Ok(self.a.tagged("tuple", vec![fields[1], patterns]))
+            }
+            #[cfg(otp_domain = "29")]
+            Some("record") => {
+                let mut patterns = Vec::new();
+                for pair in self.a.list_items(fields[3])? {
+                    let value = self.a.tuple_fields(pair)?[3];
+                    patterns.push(self.sanitize_pattern(value)?);
+                }
+                let patterns = self.a.list(patterns);
+                Ok(self.a.tagged("tuple", vec![fields[1], patterns]))
+            }
+            _ => Ok(pattern),
+        }
+    }
+
     pub(super) fn normalize_pattern(
         &mut self,
         node: TermId,
@@ -55,6 +120,17 @@ impl Lower {
                     pairs.push(self.a.tuple(pf));
                 }
                 f[3] = self.a.list(pairs);
+                Ok(self.a.tuple(f))
+            }
+            #[cfg(otp_domain = "29")]
+            Some("c_record") => {
+                let mut pairs = Vec::new();
+                for pair in self.a.list_items(f[4])? {
+                    let mut p = self.a.tuple_fields(pair)?.to_vec();
+                    p[3] = self.normalize_pattern(p[3], bound)?;
+                    pairs.push(self.a.tuple(p));
+                }
+                f[4] = self.a.list(pairs);
                 Ok(self.a.tuple(f))
             }
             Some("c_binary") => {
@@ -117,6 +193,10 @@ impl Lower {
                 }
             }
             Some("c_bitstr") => self.collect_raw_pattern_names(f[2], out)?,
+            #[cfg(otp_domain = "29")]
+            Some("c_record") => {
+                for pair in self.a.list_items(f[4])? { self.collect_raw_pattern_names(self.a.tuple_fields(pair)?[3], out)?; }
+            }
             _ => {}
         }
         Ok(())
@@ -273,7 +353,7 @@ impl Lower {
                     first[1] = self.a.list(ann);
                     left_segments[0] = self.a.tuple(first);
                 } else {
-                    return Err(self.err("impossible aliased binary pattern"));
+                    return Err(Error::NoMatch);
                 }
                 let mut f = lf;
                 f[2] = self.a.list(left_segments);
@@ -291,7 +371,7 @@ impl Lower {
                 let ls = self.a.list_items(lf[2])?;
                 let rs = self.a.list_items(rf[2])?;
                 if ls.len() != rs.len() {
-                    return Err(self.err("impossible aliased tuple pattern"));
+                    return Err(Error::NoMatch);
                 }
                 let mut es = Vec::new();
                 for (l, r) in ls.into_iter().zip(rs) {
@@ -300,7 +380,7 @@ impl Lower {
                 if es.iter().all(|v| self.a.tag(*v) == Some("c_literal")) {
                     let values = es
                         .iter()
-                        .map(|e| self.a.tuple_fields(*e).map(|f| f[2]))
+                        .map(|e| Ok(self.a.tuple_fields(*e)?[2]))
                         .collect::<Result<Vec<_>>>()?;
                     let value = self.a.tuple(values);
                     Ok(self.literal(empty, value))
@@ -326,11 +406,11 @@ impl Lower {
             }
             (Some("c_literal"), Some("c_literal")) => {
                 if self.literal_key(lf[2], 0)? != self.literal_key(rf[2], 0)? {
-                    return Err(self.err("impossible aliased literal pattern"));
+                    return Err(Error::NoMatch);
                 }
                 Ok(self.literal(empty, lf[2]))
             }
-            _ => Err(self.err("structural pattern alias requires data compatibility")),
+            _ => Err(Error::NoMatch),
         }
     }
 }

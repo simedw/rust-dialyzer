@@ -41,6 +41,8 @@ pub struct NodeShape<'a> {
     pub annotations: TermId,
     pub value: Option<TermId>,
     pub map_arg: Option<ViewRef>,
+    #[cfg(otp_domain = "29")]
+    pub record_id: Option<ViewRef>,
     pub pattern: Option<bool>,
     terms: &'a SharedVec<T>,
     groups: [Group; 5],
@@ -62,6 +64,8 @@ impl<'a> NodeShape<'a> {
             next: 0,
             current: GroupChildren::new(self.terms, Group::Empty),
             map_arg: self.map_arg,
+            #[cfg(otp_domain = "29")]
+            record_id: self.record_id,
         }
     }
 }
@@ -182,6 +186,8 @@ pub struct Children<'a> {
     next: usize,
     current: GroupChildren<'a>,
     map_arg: Option<ViewRef>,
+    #[cfg(otp_domain = "29")]
+    record_id: Option<ViewRef>,
 }
 impl Iterator for Children<'_> {
     type Item = Result<ViewRef>;
@@ -194,7 +200,11 @@ impl Iterator for Children<'_> {
                 self.current = GroupChildren::new(self.terms, self.groups[self.next]);
                 self.next += 1;
             } else {
-                return self.map_arg.take().map(Ok);
+                if let Some(argument) = self.map_arg.take() { return Some(Ok(argument)); }
+                #[cfg(otp_domain = "29")]
+                { return self.record_id.take().map(Ok); }
+                #[cfg(not(otp_domain = "29"))]
+                return None;
             }
         }
     }
@@ -289,6 +299,10 @@ fn shape<'a>(
         Some("c_let") => ("let", 5),
         Some("c_map") => ("map", 5),
         Some("c_map_pair") => ("map_pair", 5),
+        #[cfg(otp_domain = "29")]
+        Some("c_record") => ("record", 5),
+        #[cfg(otp_domain = "29")]
+        Some("c_record_pair") => ("record_pair", 4),
         Some("c_receive") => ("receive", 5),
         Some("c_module") => ("module", 6),
         Some("c_bitstr") => ("bitstr", 7),
@@ -323,6 +337,8 @@ fn shape<'a>(
         annotations: f[1],
         value: None,
         map_arg: None,
+        #[cfg(otp_domain = "29")]
+        record_id: None,
         pattern: None,
         terms,
         groups: [Group::Empty; 5],
@@ -373,6 +389,14 @@ fn shape<'a>(
             pairs(5, true),
         ]),
         "map_pair" => set(&[one(2, false), one(3, true), one(4, true)]),
+        #[cfg(otp_domain = "29")]
+        "record_pair" => set(&[one(2, true), one(3, true)]),
+        #[cfg(otp_domain = "29")]
+        "record" => {
+            set(&[many(4, true)]);
+            s.map_arg = Some(ViewRef { id: f[2], clean: reference.clean });
+            s.record_id = Some(ViewRef { id: f[3], clean: reference.clean });
+        }
         "map" => {
             set(&[many(3, true)]);
             s.map_arg = Some(ViewRef {
@@ -565,6 +589,10 @@ impl CleanView {
                 "let" => "c_let",
                 "map" => "c_map",
                 "map_pair" => "c_map_pair",
+                #[cfg(otp_domain = "29")]
+                "record" => "c_record",
+                #[cfg(otp_domain = "29")]
+                "record_pair" => "c_record_pair",
                 "receive" => "c_receive",
                 "module" => "c_module",
                 "bitstr" => "c_bitstr",
@@ -613,6 +641,12 @@ impl CleanView {
                     for &(key, value) in entries {
                         values.extend([key, value]);
                     }
+                }
+                #[cfg(otp_domain = "29")]
+                T::Record(record) => {
+                    names.insert(record.module.clone());
+                    names.insert(record.name.clone());
+                    for (name, value) in &record.fields { names.insert(name.clone()); values.push(*value); }
                 }
                 _ => {}
             }

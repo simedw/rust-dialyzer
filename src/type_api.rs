@@ -33,6 +33,8 @@ pub enum TypePredicate {
     Variable,
     Singleton,
     Opaque,
+    #[cfg(otp_domain = "29")]
+    Record,
 }
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +81,8 @@ pub enum BuiltinType {
     Iodata,
     BitstringList,
     Timeout,
+    #[cfg(otp_domain = "29")]
+    Record,
 }
 impl Type {
     pub fn builtin(kind: BuiltinType) -> Result<Self, LatticeError> {
@@ -131,6 +135,8 @@ impl Type {
             MaybeImproperList => Self::list(Self::any(), Self::any(), false),
             Map => Self::map_any(),
             Tuple => Self::tuple_any(),
+            #[cfg(otp_domain = "29")]
+            Record => Self::record_any(),
             Mfa => Self::tuple(vec![
                 Self::all_atoms(),
                 Self::all_atoms(),
@@ -170,6 +176,8 @@ impl Type {
                 | Variable
                 | Opaque
         );
+        #[cfg(otp_domain = "29")]
+        let direct = direct || matches!(predicate, Record);
         let structural = if direct {
             std::option::Option::None
         } else {
@@ -234,6 +242,8 @@ impl Type {
             }
             Map => s.is_some_and(|s| s.maps().is_some()),
             Tuple => s.is_some_and(|s| s.tuple().is_some()),
+            #[cfg(otp_domain = "29")]
+            Record => t.is_native_record(),
             NonNegativeInteger => {
                 matches!(number, Some(Numeric::Integer(_)))
                     && t.is_subtype(&Self::builtin(BuiltinType::NonNegativeInteger)?)?
@@ -739,6 +749,10 @@ impl Type {
                         m.default_value.widen_to_number()?,
                     )?
                     .map(Arc::new);
+                }
+                #[cfg(otp_domain = "29")]
+                if let Some(records) = slots.records_owner() {
+                    s.records = Some(reuse_left(records.transform(&Type::widen_to_number)?, records));
                 }
                 if slots.union_record() {
                     Self::new(Repr::Families(FamilyStore::raw(s)))

@@ -24,7 +24,7 @@ use std::{
 fn main() -> Result<(), String> {
     let library = std::fs::read_to_string(std::env::args().nth(1).ok_or("library")?)
         .map_err(|e| e.to_string())?;
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let bifs = Registry::standard()?;
     let warnings =
         rust_dialyzer_poc::warnings::Registry::load(include_str!("../../corpus/warnings.json"))?;
     let dependencies =

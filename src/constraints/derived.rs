@@ -231,6 +231,8 @@ impl BifResultProvider for Registry {
 pub struct DerivedArena {
     nodes: Vec<DerivedOp>,
     dependencies: Vec<BTreeSet<VariableId>>,
+    #[cfg(otp_domain = "29")]
+    pub(crate) record_layout: Option<Arc<crate::native_runtime_hash::NativeAtomLayout>>,
 }
 impl DerivedArena {
     /// Appends `other`'s nodes after this arena's; returns the id offset.
@@ -378,7 +380,10 @@ impl DerivedOp {
                 } else {
                     let arity = lookup(arity)?;
                     if !arity.predicate(TypePredicate::Integer)? {
-                        Type::tuple_any()
+                        let tuple = Type::tuple_any();
+                        #[cfg(otp_domain = "29")]
+                        let tuple = tuple.join(&Type::record_any())?;
+                        tuple
                     } else {
                         let TypeValue::Integers(values) = arity.get(TypeGetter::NumberValues)?
                         else {

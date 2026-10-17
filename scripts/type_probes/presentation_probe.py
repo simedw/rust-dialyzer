@@ -1,9 +1,10 @@
 import json,random,itertools,subprocess
 from pathlib import Path
-WORKSPACE=Path(__file__).resolve().parents[2];root=WORKSPACE/".cache/types";r=random.Random(28314)
+from probe_config import configuration, read_commands
+WORKSPACE=Path(__file__).resolve().parents[2];CONFIG=configuration(WORKSPACE);root=CONFIG.out;r=random.Random(28314)
 values={}
 for file in ['commands.jsonl','family_commands.jsonl','callable_commands.jsonl','map_commands.jsonl','nominal_commands.jsonl','raw_commands.jsonl','subst_commands.jsonl']:
- for line in (root/file).open():
+ for line in read_commands(root/file, CONFIG):
   a=json.loads(line)['a'];values[json.dumps(a,sort_keys=True)]=a
 pool=list(values.values());k=lambda kind,**kw:dict(kind=kind,**kw);atom=lambda a:k('atoms',values=[a]);none=k('none');anyt=k('any');unit=k('unit')
 atoms=['','a','A','with space','a@B_1','after','maybe','else','true','false','undefined','α','雪','é','É','ß','÷','ÿ','a\\b',"a'b",'💡']+[chr(n)for n in range(160)]+[chr(n)for n in range(160,256)]+['a'+chr(n)for n in [0,127,160,255,256,65535,128161]]
@@ -21,5 +22,5 @@ for _ in range(4000):
  a=k('tuple',elements=[atom(tag)]+[r.choice(fields)for _ in range(n)])
  commands += [dict(op=op,a=a,records=rs)for op in ['type_to_string','record_field_diffs']]
 p=root/'presentation_commands.jsonl';out=root/'presentation_results.jsonl';p.write_text(''.join(json.dumps(c)+'\n'for c in commands))
-with p.open('rb')as src,out.open('wb')as dest:subprocess.run([str(WORKSPACE/'target/release/type_probe')],stdin=src,stdout=dest,check=True)
+with p.open('rb')as src,out.open('wb')as dest:subprocess.run([str(CONFIG.binary)],stdin=src,stdout=dest,check=True)
 subprocess.run(['elixir',str(WORKSPACE/'scripts/type_oracle.exs'),str(p),str(out)],check=True)

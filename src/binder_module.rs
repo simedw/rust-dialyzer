@@ -62,6 +62,17 @@ impl<W> BinderState<W> {
             })
             .collect::<BTreeMap<_, _>>()
             .into();
+        #[cfg(otp_domain = "29")]
+        {
+            // PreparedDefinitions exposes known external prototypes under the
+            // target owner, matching OTP's codeserver lookup for that module.
+            state.native_records = definitions.native_records.iter().filter(|((owner, _, _), _)| *owner == module).map(|((_, defining_module, name), record)| {
+                ((defining_module.clone(), name.clone()), BinderRecord { prototype: record.prototype,
+                    fields: record.field_names.iter().zip(&record.field_types).map(|(name, declared_type)| PresentationRecordField { name: name.clone(), declared_type: *declared_type }).collect() })
+            }).collect::<BTreeMap<_, _>>().into();
+            state.native_record_imports = definitions.native_record_imports.iter().filter(|((owner, _), _)| *owner == module)
+                .map(|((_, name), defining_module)| (name.clone(), defining_module.clone())).collect::<BTreeMap<_, _>>().into();
+        }
         Ok(state)
     }
 
@@ -111,6 +122,10 @@ impl<W> BinderState<W> {
             translated_files: translated_files.into(),
             letrec: BTreeMap::new().into(),
             records: BTreeMap::new().into(),
+            #[cfg(otp_domain = "29")]
+            native_records: BTreeMap::new().into(),
+            #[cfg(otp_domain = "29")]
+            native_record_imports: BTreeMap::new().into(),
             warnings: WarningState {
                 warning_mode,
                 warnings: Vec::new(),

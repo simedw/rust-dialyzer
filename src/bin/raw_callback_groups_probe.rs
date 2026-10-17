@@ -17,7 +17,7 @@ use std::io::{self, BufRead};
 fn main() -> Result<(), String> {
     let library = std::fs::read_to_string(std::env::args().nth(1).ok_or("library")?)
         .map_err(|e| e.to_string())?;
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let bifs = Registry::standard()?;
     let dependencies =
         DependencyPolicy::parse(include_str!("../../corpus/dependency_policy.json"))?;
     for line in io::stdin().lock().lines() {

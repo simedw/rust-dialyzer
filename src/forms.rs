@@ -46,6 +46,8 @@ pub enum TypeForm {
     },
     Variable(VariableId),
     Atom(String),
+    #[cfg(otp_domain = "29")]
+    QualifiedRecordName { module: String, name: String },
     Integer(BigInt),
     Operator {
         name: String,
@@ -299,6 +301,12 @@ pub struct Forms {
     pub declarations: BTreeMap<TypeName, Declaration>,
     pub contracts: Vec<Contract>,
     pub records: BTreeMap<(ModuleId, String), Record>,
+    #[cfg(otp_domain = "29")]
+    pub native_records: BTreeMap<(ModuleId, String, String), Record>,
+    #[cfg(otp_domain = "29")]
+    pub native_record_imports: BTreeMap<(ModuleId, String), String>,
+    #[cfg(otp_domain = "29")]
+    pub(crate) native_record_cached_types: BTreeMap<(String,String),BTreeMap<String,crate::lattice::Type>>,
     parsed: BTreeMap<(ModuleId, TermId), FormId>,
     eager_parsed: BTreeSet<(ModuleId, TermId)>,
     native_sources: Vec<Arc<crate::core::ErlangTerms>>,
@@ -478,7 +486,20 @@ impl Forms {
                         });
                     }
                 }
-                MetadataKind::Record => {
+                #[cfg(otp_domain = "29")]
+                MetadataKind::ImportRecord => {
+                    for raw in list(module, meta.raw)? {
+                        let [owner, names] = exact_tuple::<2>(module, raw)?;
+                        let owner = atom(module, owner)?.to_owned();
+                        for name in list(module, names)? {
+                            result.native_record_imports.insert((meta.module, atom(module, name)?.into()), owner.clone());
+                        }
+                    }
+                }
+                ref kind if matches!(kind, MetadataKind::Record) || {
+                    #[cfg(otp_domain = "29")] { matches!(kind, MetadataKind::NativeRecord) }
+                    #[cfg(not(otp_domain = "29"))] { false }
+                } => {
                     for raw in list(module, meta.raw)? {
                         let [name, fields] = exact_tuple::<2>(module, raw)?;
                         let name = atom(module, name)?.to_owned();
@@ -540,6 +561,11 @@ impl Forms {
                             fields,
                             metadata,
                         };
+                        #[cfg(otp_domain = "29")]
+                        if matches!(meta.kind, MetadataKind::NativeRecord) {
+                            result.native_records.insert((meta.module, module.name().into(), name), record);
+                            continue;
+                        }
                         if result
                             .records
                             .insert((meta.module, name.clone()), record)
@@ -723,6 +749,8 @@ impl Forms {
 enum ShapeKind {
     Variable(VariableId),
     Atom(String),
+    #[cfg(otp_domain = "29")]
+    QualifiedRecordName(String, String),
     Integer(BigInt),
     Operator(String),
     Annotated,
@@ -742,6 +770,8 @@ impl Shape {
         match self.kind {
             ShapeKind::Variable(name) => TypeForm::Variable(name),
             ShapeKind::Atom(name) => TypeForm::Atom(name),
+            #[cfg(otp_domain = "29")]
+            ShapeKind::QualifiedRecordName(module, name) => TypeForm::QualifiedRecordName { module, name },
             ShapeKind::Integer(n) => TypeForm::Integer(n),
             ShapeKind::Operator(name) => TypeForm::Operator {
                 name,
@@ -798,6 +828,12 @@ impl Shape {
                 }),
                 vec![],
             ),
+            #[cfg(otp_domain = "29")]
+            ("tuple", [_, _, args]) => {
+                let args = list(module, *args)?;
+                let [m, n] = args.as_slice() else { return Err(invalid()); };
+                (ShapeKind::QualifiedRecordName(literal_atom(module, *m)?, literal_atom(module, *n)?), vec![])
+            }
             ("atom", [_, _, name]) => (ShapeKind::Atom(atom(module, *name)?.into()), vec![]),
             ("integer" | "char", [_, _, value]) => {
                 let ErlangTerm::Integer(n) = &module.terms()[value.0] else {

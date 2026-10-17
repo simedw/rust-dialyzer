@@ -16,6 +16,9 @@ use crate::{
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
+#[cfg(otp_domain = "29")]
+#[path = "guard_shapes/native29.rs"]
+mod native29;
 fn duplicate_count(value: &BigInt) -> Result<usize, GuardError> {
     if value < &BigInt::from(0) {
         return Err(GuardError::Native(NativeTransferError::FunctionClause));
@@ -106,6 +109,10 @@ impl GuardControl<'_, '_, '_> {
         state: &BinderState<W>,
         depth: usize,
     ) -> Result<GuardBound<W>, GuardError> {
+        #[cfg(otp_domain = "29")]
+        if !matches!(self.nodes.expression(args[2])?, CoreExpr::Literal(id) if matches!(self.nodes.module(args[2].module)?.terms[id.0], ErlangTerm::Integer(_))) {
+            return self.native_record_guard(guard, function, args, map, env, eval, state, depth);
+        }
         let tag = self.atom(args[1])?;
         let CoreExpr::Literal(id) = self.nodes.expression(args[2])? else {
             return Err(GuardError::Unported {

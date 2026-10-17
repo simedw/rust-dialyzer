@@ -241,6 +241,8 @@ impl Lift {
                 self.node("map", ann, vec![fields])
             }
             ErlangTerm::Bitstring { .. } => return Err(self.error("non-byte literal bitstring")),
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(_) => return Err(self.error("native record literal source conversion is unsupported by OTP29 erl_parse:abstract/3")),
             ErlangTerm::ExternalFun(external_fun_payload) => {
                 let crate::core::ExternalFun {
                     module,
@@ -2142,6 +2144,16 @@ pub fn lift(debug: &ErlangTerms) -> Result<ErlangTerms> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(otp_domain = "29")]
+    #[test]
+    fn native_record_literal_has_no_erl_parse_source_form() {
+        let mut lift = Lift { a: Arena::default(), module: "M".into(), function: "f/0".into(), depth: 0 };
+        let anno = lift.a.integer(1);
+        let record = lift.a.push(ErlangTerm::Record(Box::new(crate::core::NativeRecord {
+            module: "m".into(), name: "r".into(), exported: true, fields: vec![],
+        })));
+        assert!(lift.literal(record, anno).unwrap_err().contains("unsupported by OTP29 erl_parse:abstract/3"));
+    }
     #[test]
     fn hygienic_versions_are_stable_and_distinct() {
         let mut l = Lift {

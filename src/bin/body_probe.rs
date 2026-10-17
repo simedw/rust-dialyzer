@@ -48,7 +48,7 @@ fn run(row: &Value) -> Result<Value, String> {
     let labels = Labels::build(&core, CoreLabel(0))?;
     let nodes = DataflowNodes::build(&core, &labels)?;
     let program = Program::build(&core)?;
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let bifs = Registry::standard()?;
     if row["fixture_escaping"] != "all" {
         return Err("explicit fixture escaping profile required".into());
     }

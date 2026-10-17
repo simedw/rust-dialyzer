@@ -45,6 +45,8 @@ pub enum CaptureTerm {
     Atom(String),
     Tuple(Vec<CaptureId>),
     Map(Vec<(CaptureId, CaptureId)>),
+    #[cfg(otp_domain = "29")]
+    Record { module: String, name: String, exported: bool, fields: Vec<(String, CaptureId)> },
     Nil,
     List {
         items: Vec<CaptureId>,
@@ -180,6 +182,8 @@ impl CaptureEnvironment {
             Visit(&'a NativeValue),
             Tuple(usize),
             List(usize),
+            #[cfg(otp_domain = "29")]
+            Map(usize),
         }
         let mut arena = TermOrderArena {
             nodes: Vec::new(),
@@ -207,6 +211,12 @@ impl CaptureEnvironment {
                         todo.extend(items.iter().rev().map(Frame::Visit));
                         continue;
                     }
+                    #[cfg(otp_domain = "29")]
+                    Frame::Visit(NativeValue::Map(entries)) => {
+                        todo.push(Frame::Map(entries.len()));
+                        todo.extend(entries.iter().rev().flat_map(|(k,v)| [Frame::Visit(v),Frame::Visit(k)]));
+                        continue;
+                    }
                     Frame::Visit(NativeValue::Integer(value)) => {
                         if let Some(id) = integers.get(value) {
                             *id
@@ -229,6 +239,11 @@ impl CaptureEnvironment {
                     Frame::Tuple(count) => {
                         let items = built.split_off(built.len() - count);
                         arena.append_capture(Node::Tuple(items))
+                    }
+                    #[cfg(otp_domain = "29")]
+                    Frame::Map(count) => {
+                        let children = built.split_off(built.len() - count * 2);
+                        arena.append_capture(Node::Map(children.chunks_exact(2).map(|p| (p[0],p[1])).collect()))
                     }
                     Frame::List(count) => {
                         let items = built.split_off(built.len() - count);
@@ -263,6 +278,9 @@ impl CaptureEnvironment {
                 Node::Map(pairs) | Node::DeferredMap(pairs) => {
                     CaptureTerm::Map(pairs.iter().map(|(k, v)| (id(*k), id(*v))).collect())
                 }
+                #[cfg(otp_domain = "29")]
+                Node::Record(r) => CaptureTerm::Record { module:r.module.clone(),name:r.name.clone(),exported:r.exported,
+                    fields:r.fields.iter().map(|(k,v)| (k.clone(),id(*v))).collect() },
                 Node::Cons(head, tail) => CaptureTerm::List {
                     items: vec![id(*head)],
                     tail: id(*tail),
@@ -332,6 +350,9 @@ impl CaptureEnvironment {
             CaptureTerm::Tuple(xs) => json!({"kind":"tuple","items":ids(xs)}),
             CaptureTerm::List{items,tail} => json!({"kind":"list","items":ids(items),"tail":tail.0}),
             CaptureTerm::Map(xs) => json!({"kind":"map","entries":xs.iter().map(|(k,v)|[k.0,v.0]).collect::<Vec<_>>()}),
+            #[cfg(otp_domain = "29")]
+            CaptureTerm::Record { module,name,exported,fields } => json!({"kind":"record","module":module,"name":name,"exported":exported,
+                "fields":fields.iter().map(|(k,v)|json!([k,v.0])).collect::<Vec<_>>()}),
             CaptureTerm::Binary(v) => json!({"kind":"binary","value":crate::type_exports::encode_base64(v)}),
             CaptureTerm::Bitstring{bytes,bits} => json!({"kind":"bitstring","bytes":crate::type_exports::encode_base64(bytes),"bits":bits}),
             CaptureTerm::Function(CapturedFunction::Local{module,new_index,old_uniq,arity,name,environment}) => json!({"kind":"function","flavor":"local","module":module,"new_index":new_index,"uniq":old_uniq,"arity":arity,"name":name,"environment":ids(environment)}),
@@ -479,6 +500,13 @@ pub fn parse_captures(value: &serde_json::Value) -> Result<(TermOrderArena, Capt
         };
         terms.push(match v["kind"].as_str().ok_or("capture kind expected")? {
             "tuple" => CaptureTerm::Tuple(ids("items")?),
+            #[cfg(otp_domain = "29")]
+            "record" => CaptureTerm::Record { module:text("module")?,name:text("name")?,
+                exported:v["exported"].as_bool().ok_or("capture record exported flag expected")?,
+                fields:v["fields"].as_array().ok_or("capture record fields expected")?.iter().map(|p| {
+                    let p=p.as_array().filter(|p|p.len()==2).ok_or("capture record field pair expected")?;
+                    Ok((p[0].as_str().ok_or("capture record field atom expected")?.to_owned(),id(&p[1])?))
+                }).collect::<Result<_,String>>()? },
             "map" => CaptureTerm::Map(
                 v["entries"]
                     .as_array()
@@ -567,9 +595,25 @@ enum Node {
     Tuple(Vec<Id>),
     Map(Vec<(Id, Id)>),
     DeferredMap(Vec<(Id, Id)>),
+    #[cfg(otp_domain = "29")]
+    Record(Box<RecordNode>),
     Nil,
     Cons(Id, Id),
     Bits(Vec<u8>, u64),
+}
+#[cfg(otp_domain = "29")]
+#[derive(Clone, Debug)]
+struct RecordNode {
+    module: String,
+    name: String,
+    exported: bool,
+    fields: Vec<(String, Id)>,
+}
+#[cfg(otp_domain = "29")]
+fn record_node(module: &str, name: &str, exported: bool, fields: Vec<(String, Id)>) -> Result<Node, String> {
+    let mut names = std::collections::BTreeSet::new();
+    if fields.iter().any(|(name,_)| !names.insert(name)) { return Err("duplicate native record field".into()); }
+    Ok(Node::Record(Box::new(RecordNode { module: module.into(), name: name.into(), exported, fields })))
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum CanonicalKey {
@@ -578,6 +622,8 @@ enum CanonicalKey {
     Atom(String),
     Tuple(Vec<Id>),
     Map(Vec<(Id, Id)>),
+    #[cfg(otp_domain = "29")]
+    Record(String, String, bool, Vec<(String, Id)>),
     Nil,
     Cons(Id, Id),
     Bits(Vec<u8>, u64),
@@ -630,6 +676,8 @@ impl TermOrderArena {
                 ErlangTerm::Map(pairs) => {
                     work.extend(pairs.iter().flat_map(|(k, v)| [k.0, v.0]))
                 }
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(r) => work.extend(r.fields.iter().map(|(_, v)| v.0)),
                 _ => {}
             }
         }
@@ -674,6 +722,9 @@ impl TermOrderArena {
                 pairs.sort_unstable();
                 CanonicalKey::Map(pairs)
             }
+            #[cfg(otp_domain = "29")]
+            Node::Record(r) => CanonicalKey::Record(r.module.clone(),r.name.clone(),r.exported,
+                r.fields.iter().map(|(k,v)| (k.clone(),self.canonical_ids[*v])).collect()),
             Node::Nil => CanonicalKey::Nil,
             Node::Cons(a, b) => CanonicalKey::Cons(self.canonical_ids[*a], self.canonical_ids[*b]),
             Node::Bits(bytes, bits) => {
@@ -757,6 +808,9 @@ impl TermOrderArena {
                 }
                 CaptureTerm::Atom(n) => Node::Atom(n.clone()),
                 CaptureTerm::Tuple(xs) => Node::Tuple(xs.iter().map(at).collect::<Result<_, _>>()?),
+                #[cfg(otp_domain = "29")]
+                CaptureTerm::Record { module,name,exported,fields } => record_node(module,name,*exported,
+                    fields.iter().map(|(k,v)| Ok((k.clone(),at(v)?))).collect::<Result<_,String>>()?)?,
                 CaptureTerm::Map(xs) => {
                     let mut unique: Vec<(Id, Id)> = Vec::new();
                     let mut seen = HashMap::default();
@@ -870,6 +924,8 @@ impl TermOrderArena {
                 CaptureTerm::Atom(_) | CaptureTerm::Nil | CaptureTerm::Binary(_) => None,
                 CaptureTerm::Tuple(xs) => late(index, xs.iter()),
                 CaptureTerm::Map(xs) => late(index, xs.iter().flat_map(|(k, v)| [k, v])),
+                #[cfg(otp_domain = "29")]
+                CaptureTerm::Record { fields,.. } => late(index, fields.iter().map(|(_,v)|v)),
                 CaptureTerm::List { items, tail } => {
                     late(index, std::iter::once(tail).chain(items))
                 }
@@ -978,6 +1034,9 @@ impl TermOrderArena {
                 }))
             }
             ErlangTerm::Atom(n) => Node::Atom(n.clone()),
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(r) => record_node(&r.module,&r.name,r.exported,
+                r.fields.iter().map(|(k,v)| Ok((k.clone(),at(v)?))).collect::<Result<_,String>>()?)?,
             ErlangTerm::Tuple(xs) => Node::Tuple(xs.iter().map(at).collect::<Result<_, _>>()?),
             ErlangTerm::Map(xs) => Node::Map(
                 self.canonical_map_pairs(xs)?
@@ -1076,6 +1135,8 @@ impl RootTermOrder {
             }
             match source.terms.get(id.0).ok_or("term ID outside arena")? {
                 ErlangTerm::Tuple(items) => work.extend(items),
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(r) => work.extend(r.fields.iter().map(|(_,v)| *v)),
                 ErlangTerm::List { items, tail } => {
                     work.extend(items);
                     work.push(*tail);
@@ -1104,6 +1165,11 @@ impl RootTermOrder {
                     .ok_or("term children must precede their parents".to_owned())
             };
             let term = match &source.terms[id.0] {
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(r) => ErlangTerm::Record(Box::new(crate::core::NativeRecord {
+                    module:r.module.clone(),name:r.name.clone(),exported:r.exported,
+                    fields:r.fields.iter().map(|(k,v)| Ok((k.clone(),at(v)?))).collect::<Result<_,String>>()?,
+                })),
                 ErlangTerm::Tuple(items) => {
                     ErlangTerm::Tuple(items.iter().map(at).collect::<Result<_, _>>()?)
                 }
@@ -1180,14 +1246,20 @@ fn compare_native(a: &crate::lattice::NativeValue, b: &crate::lattice::NativeVal
         N::Integer(_) => 0,
         N::Atom(_) => 2,
         N::Tuple(_) => 7,
-        N::Nil => 9,
-        N::List(xs) if xs.is_empty() => 9,
-        N::List(_) => 10,
+        #[cfg(otp_domain = "29")]
+        N::Map(_) => 9,
+        N::Nil => 10,
+        N::List(xs) if xs.is_empty() => 10,
+        N::List(_) => 11,
     };
     rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
         (N::Integer(a), N::Integer(b)) => a.cmp(b),
         (N::Atom(a), N::Atom(b)) => a.cmp(b),
         (N::Tuple(a), N::Tuple(b)) => a.len().cmp(&b.len()).then_with(|| compare_native_lists(a, b)),
+        #[cfg(otp_domain = "29")]
+        (N::Map(a), N::Map(b)) => a.len().cmp(&b.len())
+            .then_with(|| a.keys().zip(b.keys()).map(|(a,b)| compare_native(a,b)).find(|c| !c.is_eq()).unwrap_or(Ordering::Equal))
+            .then_with(|| a.values().zip(b.values()).map(|(a,b)| compare_native(a,b)).find(|c| !c.is_eq()).unwrap_or(Ordering::Equal)),
         (N::List(a), N::List(b)) => compare_native_lists(a, b),
         _ => Ordering::Equal,
     })
@@ -1202,10 +1274,12 @@ fn rank(n: &Node, exact: bool) -> u8 {
         Node::Runtime(RuntimeKind::Port, _) => 5,
         Node::Runtime(RuntimeKind::Pid, _) => 6,
         Node::Tuple(_) => 7,
-        Node::Map(_) | Node::DeferredMap(_) => 8,
-        Node::Nil => 9,
-        Node::Cons(..) => 10,
-        Node::Bits(..) => 11,
+        #[cfg(otp_domain = "29")]
+        Node::Record(_) => 8,
+        Node::Map(_) | Node::DeferredMap(_) => 9,
+        Node::Nil => 10,
+        Node::Cons(..) => 11,
+        Node::Bits(..) => 12,
     }
 }
 fn integer_float(n: &BigInt, f: f64) -> Ordering {
@@ -1321,6 +1395,16 @@ fn compare(
                     (Node::Integer(a), Node::Float(b)) => c = integer_float(a, *b),
                     (Node::Float(a), Node::Integer(b)) => c = integer_float(b, *a).reverse(),
                     (Node::Atom(a), Node::Atom(b)) => c = a.cmp(b),
+                    #[cfg(otp_domain = "29")]
+                    (Node::Record(a), Node::Record(b)) => {
+                        c = a.module.cmp(&b.module).then(a.name.cmp(&b.name))
+                            .then(a.exported.cmp(&b.exported)).then(a.fields.len().cmp(&b.fields.len()))
+                            .then_with(|| a.fields.iter().map(|(k,_)| k).cmp(b.fields.iter().map(|(k,_)| k)));
+                        if c == Ordering::Equal {
+                            pairs.extend(a.fields.iter().zip(&b.fields).map(|((_,a),(_,b))|
+                                (child(al.side,*a),child(bl.side,*b),exact)));
+                        }
+                    }
                     (Node::Runtime(ak, a), Node::Runtime(bk, b)) => {
                         if ak != bk || a != b {
                             return Err("comparison reached distinct opaque runtime handles".into());

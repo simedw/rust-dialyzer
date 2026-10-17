@@ -24,6 +24,7 @@ defmodule RustTypeBridge do
     op=case {name,args} do
       {:t_to_string,[t]}->%{op: "type_to_string",a: type(t)}
       {:t_to_string,[t,table]}->%{op: "type_to_string",a: type(t),records: records(table)}
+      {:t_nominal,[name,inner]}->%{op: "canonical",a: %{kind: "nominal",name: RustBridgeTypeWire.name(name),inner: type(inner)}}
       {:record_field_diffs_to_string,[t,table]}->%{op: "record_field_diffs",a: type(t),records: records(table)}
       {:atom_to_string,[a]}->%{op: "atom_to_string",name: to_string(a)}
       {:t_from_term,[t]}->%{op: "from_runtime_term",term: runtime(t)}
@@ -62,6 +63,7 @@ defmodule RustTypeBridge do
   def decode(%{"term"=>"tuple","values"=>v}),do: List.to_tuple(Enum.map(v,&decode/1))
   def decode(%{"term"=>"nil"}),do: []
   def decode(%{"term"=>"list","values"=>v}),do: Enum.map(v,&decode/1)
+  def decode(%{"term"=>"map","entries"=>v}),do: Map.new(v,fn [k,v]->{decode(k),decode(v)}end)
   def call(name,args) do
     key="#{name}/#{length(args)}";Process.put(:bridge_counts,Map.update(Process.get(:bridge_counts,%{}),key,1,&(&1+1)))
     command=request(name,args);port=Process.get(:rust_port)
@@ -107,7 +109,7 @@ defmodule SuiteBridge do
       %{case: name,native: inspect(native),rust: inspect(rust),passed: match?({:ok,_},rust)&&native==rust,calls: counts}
     end)
     Port.close(port)
-    report=%{otp_sha: "ab489c0b260c637a9487f8753909ea94dacbbec2",cases: cases,passed: Enum.count(cases,&(&1.passed)),requested: length(cases),original_suite: suite,native_algebra_fallback: false,bridge_unsupported: Enum.flat_map(cases,fn c->if String.contains?(c.rust,"unsupported"),do: [c.rust],else: [] end),runtime: %{otp: to_string(:erlang.system_info(:otp_release)),erts: to_string(:erlang.system_info(:version))}}
+    report=%{suite_sha256: Base.encode16(:crypto.hash(:sha256,File.read!(suite)),case: :lower),cases: cases,passed: Enum.count(cases,&(&1.passed)),requested: length(cases),original_suite: suite,native_algebra_fallback: false,bridge_unsupported: Enum.flat_map(cases,fn c->if String.contains?(c.rust,"unsupported"),do: [c.rust],else: [] end),runtime: %{otp: to_string(:erlang.system_info(:otp_release)),erts: to_string(:erlang.system_info(:version))}}
     File.write!(Path.join(out,"report.json"),:json.encode(report));if report.passed != report.requested,do: System.halt(1)
   end
 end

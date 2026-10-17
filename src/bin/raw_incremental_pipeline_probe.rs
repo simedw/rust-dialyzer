@@ -22,7 +22,7 @@ fn main() -> Result<(), String> {
         &serde_json::from_str(&std::fs::read_to_string(&args[0]).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?,
     )?;
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let bifs = Registry::standard()?;
     let policy = DependencyPolicy::parse(include_str!("../../corpus/dependency_policy.json"))?;
     let warnings = WarningRegistry::load(include_str!("../../corpus/warnings.json"))?;
     let imported = if args.len() > 2 {

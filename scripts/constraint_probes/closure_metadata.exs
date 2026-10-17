@@ -1,4 +1,5 @@
 [root,out]=System.argv()
+expected_otp=System.get_env("RUST_DIALYZER_CONSTRAINTS_OTP") || "28"; ^expected_otp=List.to_string(:erlang.system_info(:otp_release))
 Code.require_file(Path.join(root,"scripts/type_codec.exs"))
 Code.require_file(Path.join(root,"scripts/core_export.exs"))
 path=:code.which(:dialyzer_typesig)
@@ -20,10 +21,10 @@ true=Enum.all?(chunks,fn {name,data}->name==~c"ExpT" or List.keyfind(patched_chu
 :code.purge(:dialyzer_typesig)
 {:module,:dialyzer_typesig}=:code.load_binary(:dialyzer_typesig,path,patched)
 # Build only the default record value from the pinned source layout in a disjoint helper.
-source=Path.join(root,".cache/upstream/otp/lib/dialyzer/src/dialyzer_typesig.erl")
-helper_path=Path.join(__DIR__,"native_typesig_metadata_probe.erl")
-helper_source=File.read!(source)|>String.replace("-module(dialyzer_typesig).","-module(native_typesig_metadata_probe).\n-export([default_state/0]).")
-File.write!(helper_path,helper_source<>"\ndefault_state()->#state{}.\n")
+source=System.get_env("RUST_DIALYZER_CONSTRAINTS_SOURCE_FILE") || Path.join(root,".cache/upstream/otp/lib/dialyzer/src/dialyzer_typesig.erl")
+helper_path=Path.join(Path.dirname(out),"native_typesig_metadata_probe.erl")
+helper_source=File.read!(source)|>String.replace("-module(dialyzer_typesig).","-module(native_typesig_metadata_probe).\n-export([default_state/0,default_match_state/0]).")
+File.write!(helper_path,helper_source<>"\ndefault_state()->#state{}.\ndefault_match_state()->#state{in_match=true}.\n")
 {:ok,:native_typesig_metadata_probe,helper}=:compile.file(String.to_charlist(helper_path),[:binary,{:i,String.to_charlist(Path.dirname(source))}])
 {:module,:native_typesig_metadata_probe}=:code.load_binary(:native_typesig_metadata_probe,String.to_charlist(helper_path),helper)
 state=:native_typesig_metadata_probe.default_state()
@@ -42,14 +43,16 @@ collect=fn recur,term,acc->case term do
  l when is_list(l)->Enum.reduce(l,acc,fn child,a->recur.(recur,child,a)end)
  _->acc
  end end
-terms=Enum.map(mf,fn {f,arity}->args=Enum.map(1..arity,&:erl_types.t_var/1);{{f,arity},:dialyzer_typesig.get_bif_constr({:erlang,f,arity},:erl_types.t_var(100),args,state)}end)
+# OTP29 selects the tuple-record path from a literal integer arity operand;
+# a variable operand now returns an unconstrained constraint without closures.
+terms=Enum.map(mf,fn {f,arity}->args=Enum.map(1..arity,&:erl_types.t_var/1);args=if expected_otp == "29" and {f,arity} == {:is_record,3}, do: List.replace_at(args,2,:erl_types.t_integer(3)), else: args;{{f,arity},:dialyzer_typesig.get_bif_constr({:erlang,f,arity},:erl_types.t_var(100),args,state)}end)
 v=fn label->{:c_var,[{:label,label}],String.to_atom("v#{label}")}end
 lit=fn x->{:c_literal,[],x}end
 cons={:c_cons,[{:label,100}],v.(1),v.(2)}
 segment={:c_bitstr,[{:label,101}],v.(1),v.(2),lit.(8),lit.(:integer),lit.([:unsigned,:big])}
 binary={:c_binary,[{:label,100}],[segment]}
 map={:c_map,[{:label,100}],v.(1),[{:c_map_pair,[],lit.(:assoc),v.(2),v.(3)},{:c_map_pair,[],lit.(:exact),v.(4),v.(5)}],false}
-structural=Enum.map([{:cons,cons,state},{:binary,binary,state},{:binary_match_integer,binary,put_elem(state,7,true)},{:binary_construct_binary,{:c_binary,[{:label,100}],[put_elem(segment,5,lit.(:binary))]},state},{:binary_match_binary,{:c_binary,[{:label,100}],[put_elem(segment,5,lit.(:binary))]},put_elem(state,7,true)},{:map,map,state}],fn {kind,tree,context}->defined=:sets.from_list([1,2,3,4,5]);{new_state,_}=:dialyzer_typesig.traverse(tree,defined,context);{{kind,0},elem(new_state,3)}end)
+structural=Enum.map([{:cons,cons,state},{:binary,binary,state},{:binary_match_integer,binary,:native_typesig_metadata_probe.default_match_state()},{:binary_construct_binary,{:c_binary,[{:label,100}],[put_elem(segment,5,lit.(:binary))]},state},{:binary_match_binary,{:c_binary,[{:label,100}],[put_elem(segment,5,lit.(:binary))]},:native_typesig_metadata_probe.default_match_state()},{:map,map,state}],fn {kind,tree,context}->defined=:sets.from_list([1,2,3,4,5]);{new_state,_}=:dialyzer_typesig.traverse(tree,defined,context);{{kind,0},elem(new_state,3)}end)
 terms=terms++structural
 result=Enum.map(terms,fn {{f,arity},cs}->%{function: Atom.to_string(f),arity: arity,closures: Enum.reverse(walk.(walk,cs,[]))}end)
 functions=Enum.flat_map(terms,fn {_,cs}->Enum.reverse(collect.(collect,cs,[]))end)++[&:erlang.length/1,&:lists.map/2]
@@ -62,4 +65,4 @@ metadata=fn fun->info=Map.new(:erlang.fun_info(fun));if info.type==:external do
  %{kind: "local",module: Atom.to_string(info.module),name: Atom.to_string(info.name),new_index: info.new_index,index: info.index,uniq: info.uniq,arity: info.arity,env_terms: CoreExport.export_terms(info.env),env_count: length(info.env)}
  end end
 pairs=for a<-functions,b<-functions,do: %{a: metadata.(a),b: metadata.(b),native_order: cond do a<b->-1;a>b->1;true->0 end}
-File.write!(out,:json.encode(%{module: "dialyzer_typesig",beam: List.to_string(path),exp_t_only_patch: true,original_sha256: Base.encode16(:crypto.hash(:sha256,File.read!(List.to_string(path)))),fun_table: fun_table,roles: result,pairs: pairs}))
+File.write!(out,:json.encode(%{module: "dialyzer_typesig",otp: List.to_string(:erlang.system_info(:otp_release)),fun_count: fun_count,source: source,beam: List.to_string(path),exp_t_only_patch: true,original_sha256: Base.encode16(:crypto.hash(:sha256,File.read!(List.to_string(path)))),fun_table: fun_table,roles: result,pairs: pairs}))

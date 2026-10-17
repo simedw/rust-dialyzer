@@ -225,6 +225,22 @@ impl Lower {
         match self.a.tag(node) {
             Some("c_binary") => self.split_binary(node),
             Some("c_map") => self.split_map(node),
+            #[cfg(otp_domain = "29")]
+            Some("c_record") => {
+                let mut pairs = self.a.list_items(f[4])?;
+                for (index, pair) in pairs.clone().into_iter().enumerate() {
+                    let mut p = self.a.tuple_fields(pair)?.to_vec();
+                    if let Some((pattern, nested)) = self.split_pattern(p[3])? {
+                        let variable = self.fresh(empty);
+                        p[3] = variable;
+                        pairs[index] = self.a.tuple(p);
+                        let mut record = f;
+                        record[4] = self.a.list(pairs);
+                        return Ok(Some((self.a.tuple(record), Split { args: vec![variable], pattern, nested: Some(Box::new(nested)), wrap: SplitWrap::Identity })));
+                    }
+                }
+                Ok(None)
+            }
             Some("c_var" | "c_literal") => Ok(None),
             Some("c_alias") => {
                 if let Some((pat, nested)) = self.split_pattern(f[3])? {

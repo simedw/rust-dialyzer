@@ -34,7 +34,17 @@ fn block(bytes: &[u8], initial: u32) -> u32 {
     }
     mix(a, b, c).2
 }
-pub fn hash(key: &K) -> u32 {
+use crate::native_runtime_hash::{NativeAtomLayout, RuntimeHashError};
+
+pub fn hash(key: &K) -> Result<u32, RuntimeHashError> {
+    hash_in(key, None)
+}
+
+pub fn hash_with_layout(key: &K, layout: &NativeAtomLayout) -> Result<u32, RuntimeHashError> {
+    hash_in(key, Some(layout))
+}
+
+fn hash_in(key: &K, layout: Option<&NativeAtomLayout>) -> Result<u32, RuntimeHashError> {
     enum Work<'a> {
         Key(&'a K),
         Pair,
@@ -54,6 +64,15 @@ pub fn hash(key: &K) -> u32 {
                 xor = outer;
             }
             Work::Key(key) => match key {
+                #[cfg(otp_domain = "29")]
+                K::Record { module,name,exported,fields } => {
+                    h = hash2(fields.len() as u32, record_definition_hash(module,name,*exported,fields), 0x36fbef9f, h);
+                    let layout = layout.ok_or(RuntimeHashError::UnavailableAtomLayout)?;
+                    let mut fields = fields.iter().map(|(key,value)| Ok((layout.atom_identity(key)?,value)))
+                        .collect::<Result<Vec<_>,RuntimeHashError>>()?;
+                    fields.sort_by_key(|(identity,_)| *identity);
+                    work.extend(fields.into_iter().rev().map(|(_,value)| Work::Key(value)));
+                }
                 K::ExternalFun {
                     module,
                     function,
@@ -168,5 +187,12 @@ pub fn hash(key: &K) -> u32 {
             },
         }
     }
-    h
+    Ok(h)
+}
+
+#[cfg(otp_domain = "29")]
+pub(crate) fn record_definition_hash(module: &str, name: &str, exported: bool, fields: &[(String,K)]) -> u32 {
+    let mut parts = vec![K::Atom(module.into()),K::Atom(name.into()),K::Atom(exported.to_string())];
+    parts.extend(fields.iter().map(|(k,_)| K::Atom(k.clone())));
+    hash(&K::Tuple(parts)).expect("record definition hash contains only atoms")
 }

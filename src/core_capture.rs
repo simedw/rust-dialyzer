@@ -91,6 +91,8 @@ impl CoreCaptures {
                         todo.extend([*k, *v]);
                     }
                 }
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(record) => todo.extend(record.fields.iter().map(|(_, value)| *value)),
                 _ => {}
             }
         }
@@ -187,6 +189,8 @@ impl CoreCaptures {
                         todo.extend([*k, *v]);
                     }
                 }
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(record) => todo.extend(record.fields.iter().map(|(_, value)| *value)),
                 _ => {}
             }
         }
@@ -237,6 +241,8 @@ impl CoreCaptures {
                         todo.extend([*k, *v]);
                     }
                 }
+                #[cfg(otp_domain = "29")]
+                CaptureTerm::Record { fields, .. } => todo.extend(fields.iter().map(|(_, value)| *value)),
                 _ => {}
             }
         }
@@ -254,6 +260,11 @@ impl CoreCaptures {
                 CaptureTerm::Map(ps) => {
                     CaptureTerm::Map(ps.iter().map(|(k, v)| (id(*k), id(*v))).collect())
                 }
+                #[cfg(otp_domain = "29")]
+                CaptureTerm::Record { module, name, exported, fields } => CaptureTerm::Record {
+                    module: module.clone(), name: name.clone(), exported: *exported,
+                    fields: fields.iter().map(|(name, value)| (name.clone(), id(*value))).collect(),
+                },
                 value => value.clone(),
             };
             let id = CaptureId(target.len());
@@ -282,6 +293,10 @@ impl CoreCaptures {
                     CaptureTerm::Map(ps) => {
                         ErlangTerm::Map(ps.into_iter().map(|(k, v)| (id(k), id(v))).collect())
                     }
+                    #[cfg(otp_domain = "29")]
+                    CaptureTerm::Record { module, name, exported, fields } => ErlangTerm::Record(Box::new(crate::core::NativeRecord {
+                        module, name, exported, fields: fields.into_iter().map(|(name, value)| (name, id(value))).collect(),
+                    })),
                     CaptureTerm::Nil => ErlangTerm::Nil,
                     CaptureTerm::List { items, tail } => ErlangTerm::List {
                         items: items.into_iter().map(id).collect(),
@@ -347,6 +362,11 @@ fn source_term(term: &ErlangTerm, id: impl Fn(TermId) -> CaptureId) -> CaptureTe
             tail: id(*tail),
         },
         ErlangTerm::Map(ps) => CaptureTerm::Map(ps.iter().map(|(k, v)| (id(*k), id(*v))).collect()),
+        #[cfg(otp_domain = "29")]
+        ErlangTerm::Record(record) => CaptureTerm::Record {
+            module: record.module.clone(), name: record.name.clone(), exported: record.exported,
+            fields: record.fields.iter().map(|(name, value)| (name.clone(), id(*value))).collect(),
+        },
     }
 }
 /// The nodes whose records a node's record refers to.
@@ -486,6 +506,13 @@ impl<'t> RecordWriter<'t> {
                 child(*flags),
             ],
             CoreExpr::Cons { head, tail } => vec![child(*head), child(*tail)],
+            #[cfg(otp_domain = "29")]
+            CoreExpr::Record { argument, id, pairs } => {
+                let pairs = self.list(pairs.iter().copied().map(child).collect());
+                vec![child(*argument), child(*id), pairs]
+            }
+            #[cfg(otp_domain = "29")]
+            CoreExpr::RecordPair { key, value } => vec![child(*key), child(*value)],
             CoreExpr::Map {
                 base,
                 pairs,

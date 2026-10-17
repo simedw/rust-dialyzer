@@ -16,7 +16,7 @@ struct Request {
 }
 fn main() {
     let registry =
-        Registry::load(include_str!("../../corpus/bifs.json")).expect("valid native catalogue");
+        Registry::standard().expect("valid native catalogue");
     if std::env::args().any(|x| x == "--supported") {
         println!(
             "{}",

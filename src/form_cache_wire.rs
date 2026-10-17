@@ -23,6 +23,8 @@ pub fn cache_to_value(cache: &FormCache) -> Result<serde_json::Value, String> {
                     NativeValue::Tuple(vec![atom(&n.module), atom(&n.name), int(n.arity)]),
                 ])),
                 Unfold::Record(name) => Ok(NativeValue::Tuple(vec![atom("record"), atom(name)])),
+                #[cfg(otp_domain = "29")]
+                Unfold::NativeRecord { module, name } => Ok(NativeValue::Tuple(vec![atom("native_record"), NativeValue::Tuple(vec![atom(module), atom(name)])])),
             })
             .collect::<Result<Vec<_>, String>>()?;
         let key = NativeValue::Tuple(vec![
@@ -77,6 +79,8 @@ pub(crate) fn push(out: &mut crate::shared_vec::SharedVec<ErlangTerm>, term: Erl
 }
 fn native(out: &mut crate::shared_vec::SharedVec<ErlangTerm>, v: &NativeValue) -> TermId {
     let term = match v {
+        #[cfg(otp_domain = "29")]
+        NativeValue::Map(entries) => ErlangTerm::Map(entries.iter().map(|(k,v)| (native(out,k),native(out,v))).collect()),
         NativeValue::Atom(v) => ErlangTerm::Atom(v.clone()),
         NativeValue::Integer(v) => ErlangTerm::Integer(v.to_string()),
         NativeValue::Nil => ErlangTerm::Nil,
@@ -97,6 +101,8 @@ pub(crate) fn copy_arena(out: &mut crate::shared_vec::SharedVec<ErlangTerm>, ter
             continue;
         }
         match &terms[id.0] {
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => work.extend(record.fields.iter().map(|(_,value)|*value)),
             ErlangTerm::Tuple(v) => work.extend(v),
             ErlangTerm::List { items, tail } => {
                 work.extend(items);
@@ -114,6 +120,12 @@ pub(crate) fn copy_arena(out: &mut crate::shared_vec::SharedVec<ErlangTerm>, ter
     for id in reachable {
         let at = |id: &TermId| ids[&id.0];
         let term = match &terms[id] {
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => {
+                let mut record=record.clone();
+                record.fields=record.fields.iter().map(|(name,value)|(name.clone(),at(value))).collect();
+                ErlangTerm::Record(record)
+            }
             ErlangTerm::Tuple(v) => ErlangTerm::Tuple(v.iter().map(at).collect()),
             ErlangTerm::List { items, tail } => ErlangTerm::List {
                 items: items.iter().map(at).collect(),
@@ -125,4 +137,17 @@ pub(crate) fn copy_arena(out: &mut crate::shared_vec::SharedVec<ErlangTerm>, ter
         ids.insert(id, push(out, term));
     }
     ids[&root.0]
+}
+
+#[cfg(all(test, otp_domain = "29"))]
+mod native_record_copy_tests {
+    use super::*;
+    #[test]
+    fn record_payload_children_are_reachable_and_remapped() {
+        let source=vec![ErlangTerm::Atom("unused".into()),ErlangTerm::Integer("42".into()),ErlangTerm::Record(Box::new(crate::core::NativeRecord{module:"m".into(),name:"r".into(),exported:true,fields:vec![("x".into(),TermId(1))]}))].into();
+        let mut target=crate::shared_vec::SharedVec::new();let root=copy_arena(&mut target,&source,TermId(2));
+        assert_eq!(root,TermId(1));assert_eq!(target.len(),2);
+        let ErlangTerm::Record(record)=&target[root.0] else {panic!("record")};
+        assert_eq!(record.fields,vec![("x".into(),TermId(0))]);assert_eq!(target[0],ErlangTerm::Integer("42".into()));
+    }
 }

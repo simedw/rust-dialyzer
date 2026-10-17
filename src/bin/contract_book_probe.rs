@@ -31,7 +31,7 @@ struct Request {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("contract source expected")?;
     let source: Source = serde_json::from_str(&std::fs::read_to_string(path)?)?;
-    let registry = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let registry = Registry::standard()?;
     let compiled = source
         .contracts
         .iter()

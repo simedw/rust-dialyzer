@@ -6,6 +6,8 @@ pub enum NativeValue {
     Integer(BigInt),
     Atom(String),
     Tuple(Vec<NativeValue>),
+    #[cfg(otp_domain = "29")]
+    Map(BTreeMap<NativeValue, NativeValue>),
     Nil,
     List(Vec<NativeValue>),
 }
@@ -15,8 +17,10 @@ impl NativeValue {
             Self::Integer(_) => 0,
             Self::Atom(_) => 1,
             Self::Tuple(_) => 2,
-            Self::Nil => 3,
-            Self::List(_) => 4,
+            #[cfg(otp_domain = "29")]
+            Self::Map(_) => 3,
+            Self::Nil => 4,
+            Self::List(_) => 5,
         }
     }
     fn atom(s: &str) -> Self {
@@ -46,6 +50,8 @@ impl NativeValue {
                 json!({"term":"tuple","values":t.iter().map(Self::to_value).collect::<Vec<_>>()})
             }
             Self::Nil => json!({"term":"nil"}),
+            #[cfg(otp_domain = "29")]
+            Self::Map(entries) => json!({"term":"map","entries":entries.iter().map(|(k,v)|vec![k.to_value(),v.to_value()]).collect::<Vec<_>>()}),
             Self::List(t) => {
                 json!({"term":"list","values":t.iter().map(Self::to_value).collect::<Vec<_>>()})
             }
@@ -61,6 +67,10 @@ impl Ord for NativeValue {
                 (Self::Atom(a), Self::Atom(b)) => a.cmp(b),
                 (Self::Tuple(a), Self::Tuple(b)) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
                 (Self::List(a), Self::List(b)) => a.cmp(b),
+                #[cfg(otp_domain = "29")]
+                (Self::Map(a), Self::Map(b)) => a.len().cmp(&b.len())
+                    .then_with(|| a.keys().cmp(b.keys()))
+                    .then_with(|| a.values().cmp(b.values())),
                 _ => Ordering::Equal,
             })
     }
@@ -317,6 +327,10 @@ impl Type {
                         ]),
                     );
                 }
+                #[cfg(otp_domain = "29")]
+                if let Some(records) = s.view().records {
+                    return records_native_value(records);
+                }
                 unreachable!("direct canonical family is nonempty")
             }
         }
@@ -357,7 +371,39 @@ impl FamilyStore {
                 maps: self.maps_owner().cloned(),
                 ..Slots::default()
             }),
+            #[cfg(otp_domain = "29")]
+            Type::families(Slots {
+                records: self.records_owner().cloned(),
+                ..Slots::default()
+            }),
         ]
+    }
+}
+
+#[cfg(otp_domain = "29")]
+fn records_native_value(records: RecordsView<'_>) -> NativeValue {
+    fn record(r: &NativeRecord) -> NativeValue {
+        use NativeValue as N;
+        let name = match &r.name {
+            NativeRecordName::Any => N::atom("nil"),
+            NativeRecordName::Named { module, name } =>
+                N::tuple(vec![N::atom(module), N::atom(name)]),
+            NativeRecordName::Atom(name) => N::atom(name),
+        };
+        let fields = r.fields.iter().map(|(key, field)| {
+            let value = match field {
+                RecordField::Missing => N::atom("missing"),
+                RecordField::Present(value) =>
+                    N::tuple(vec![N::atom("present"), value.native_value()]),
+            };
+            (N::atom(key), value)
+        }).collect();
+        N::unknown("record", N::tuple(vec![name, N::Map(fields)]))
+    }
+    match records {
+        RecordsView::Record(r) => record(r),
+        RecordsView::Set(rs) => NativeValue::unknown(
+            "record_set", NativeValue::list(rs.iter().map(record).collect())),
     }
 }
 
@@ -373,6 +419,8 @@ pub struct NativeOrderKey(std::sync::Arc<[u8]>);
 const KEY_INTEGER: u8 = 0x10;
 const KEY_ATOM: u8 = 0x20;
 const KEY_TUPLE: u8 = 0x60;
+#[cfg(otp_domain = "29")]
+const KEY_MAP: u8 = 0x70;
 const KEY_NIL: u8 = 0x80;
 const KEY_LIST: u8 = 0x90;
 const KEY_NEGATIVE: u8 = 0x01;
@@ -489,6 +537,13 @@ impl NativeValue {
                 t.iter().for_each(|v| v.write_key(w));
             }
             Self::Nil => w.nil(),
+            #[cfg(otp_domain = "29")]
+            Self::Map(entries) => {
+                w.0.push(KEY_MAP);
+                w.length(entries.len(), false);
+                for key in entries.keys() { key.write_key(w); }
+                for value in entries.values() { value.write_key(w); }
+            }
             // Unlike `list`, the constructor keeps an empty `List` apart from nil.
             Self::List(t) => {
                 w.0.push(KEY_LIST);
@@ -729,6 +784,10 @@ impl Type {
                         m.default_key.write_key(w);
                         m.default_value.write_key(w);
                     });
+                }
+                #[cfg(otp_domain = "29")]
+                if let Some(records) = s.view().records {
+                    return records_native_value(records).write_key(w);
                 }
                 unreachable!("direct canonical family is nonempty")
             }

@@ -77,7 +77,7 @@ fn run(row: &Value) -> Result<Value, String> {
         &program,
         &DependencyPolicy::parse(include_str!("../../corpus/dependency_policy.json"))?,
     )?;
-    let registry = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let registry = Registry::standard()?;
     let nodes = DataflowNodes::build(&core, &labels)
         .map_err(|error| CallGraphError::Boundary(error).to_string())?;
     let mut graph = match SourceCallGraph::build(&nodes, &program, &deps, &registry) {

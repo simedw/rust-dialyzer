@@ -139,6 +139,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-dialyzer-otp29"
+version = "0.1.0"
+dependencies = [
+ "im",
+ "mimalloc",
+ "num-bigint",
+ "num-traits",
+ "ryu",
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "rust-dialyzer-poc"
 version = "0.1.0"
 dependencies = [

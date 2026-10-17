@@ -1,0 +1,56 @@
+{
+  "otp": "29.1.2",
+  "erts": "17.1.1",
+  "dialyzer": "6.0.4",
+  "source_archive_sha256": "c79966661e35fe4aff8ec003db63682e3b33b10b672220d51bf93c0a9244b049",
+  "sources": [
+    {
+      "file": "lib/compiler/src/v3_core.erl",
+      "sha256": "b406f7f4c6f7b58dc9aa4608703c82eaf302714c874f38dd1c7fec62d4017637"
+    },
+    {
+      "file": "lib/stdlib/src/erl_internal.erl",
+      "sha256": "d7d62083e74560591851d85821b379274fdcc88a7e10870ae6a7448775abef9d"
+    },
+    {
+      "file": "lib/stdlib/src/erl_expand_records.erl",
+      "sha256": "e15be4ec55253aba245d41b3af4b542ed8744bd45693d4f48f7967a62c82041d"
+    },
+    {
+      "file": "lib/dialyzer/src/dialyzer_clean_core.erl",
+      "sha256": "d6d8745812b3c329e8762246bf9d0c50095bfd3faa09d8e1335f6db4f877bea9"
+    },
+    {
+      "file": "lib/dialyzer/src/erl_types.erl",
+      "sha256": "abfa550a3aeb3cbc2c6c2c09ea0adcf8d74661ba6ac8acb3d5359ac63571f7da"
+    },
+    {
+      "file": "lib/dialyzer/src/erl_bif_types.erl",
+      "sha256": "00a81242f2e3cf47f04d16b80f2ac277a2f2a6dd9992a9c88862b989da2c043b"
+    },
+    {
+      "file": "lib/dialyzer/src/dialyzer_dataflow.erl",
+      "sha256": "ed2c6504677cdafd05fc788fb85fb392eeffc7bfeae0d4a74c401b4921de6a86"
+    },
+    {
+      "file": "lib/dialyzer/src/dialyzer_typesig.erl",
+      "sha256": "25ca05417263eac4b4ec03bff33c88610726ac4a929d26b9579cf69cbe2aaee5"
+    },
+    {
+      "file": "lib/dialyzer/src/dialyzer_contracts.erl",
+      "sha256": "f77602c163e8d7f4db63ec3924c70a712e25c4fd793cf9b15b60c0d41929b0f5"
+    },
+    {
+      "file": "erts/emulator/beam/utils.c",
+      "sha256": "d899860f79adae3cf1c52a9e644aad3c58bfe5a2242ee9fd61163ae0bed9800f"
+    },
+    {
+      "file": "erts/emulator/beam/erl_term_hashing.c",
+      "sha256": "7c6d55c1a7ced3042e609de90c3424a07e44b63f44b5763059ee2bcfe297b0d3"
+    },
+    {
+      "file": "erts/emulator/beam/erl_map.c",
+      "sha256": "47f77a3456ed1d17bab547f50427aca109564ed072d0945096790d84f998ea69"
+    }
+  ]
+}

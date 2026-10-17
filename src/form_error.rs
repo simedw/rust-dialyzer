@@ -216,6 +216,8 @@ impl ReasonBuilder {
                 continue;
             }
             let children: Vec<TermId> = match &terms[id.0] {
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(record) => record.fields.iter().map(|(_, value)| *value).collect(),
                 ErlangTerm::Tuple(v) => v.clone(),
                 ErlangTerm::List { items, tail } => items.iter().copied().chain([*tail]).collect(),
                 ErlangTerm::Map(v) => v.iter().flat_map(|(k, v)| [*k, *v]).collect(),
@@ -228,6 +230,12 @@ impl ReasonBuilder {
             }
             let at = |c: &TermId| ids[&c.0];
             let term = match &terms[id.0] {
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(record) => {
+                    let mut record = record.clone();
+                    record.fields.iter_mut().for_each(|(_, value)| *value = at(value));
+                    ErlangTerm::Record(record)
+                }
                 ErlangTerm::Tuple(v) => ErlangTerm::Tuple(v.iter().map(at).collect()),
                 ErlangTerm::List { items, tail } => ErlangTerm::List {
                     items: items.iter().map(at).collect(),
@@ -247,6 +255,8 @@ impl ReasonBuilder {
             Visit(&'a N),
             Tuple(usize),
             List(usize),
+            #[cfg(otp_domain = "29")]
+            Map(usize),
         }
         let mut work = vec![Work::Visit(value)];
         let mut values = Vec::new();
@@ -264,6 +274,11 @@ impl ReasonBuilder {
                         work.push(Work::List(xs.len()));
                         work.extend(xs.iter().rev().map(Work::Visit));
                     }
+                    #[cfg(otp_domain = "29")]
+                    N::Map(entries) => {
+                        work.push(Work::Map(entries.len()));
+                        work.extend(entries.iter().rev().flat_map(|(k,v)| [Work::Visit(v),Work::Visit(k)]));
+                    }
                 },
                 Work::Tuple(n) => {
                     let children = values.split_off(values.len() - n);
@@ -272,6 +287,11 @@ impl ReasonBuilder {
                 Work::List(n) => {
                     let children = values.split_off(values.len() - n);
                     values.push(self.list(children));
+                }
+                #[cfg(otp_domain = "29")]
+                Work::Map(n) => {
+                    let children = values.split_off(values.len() - n * 2);
+                    values.push(self.push(ErlangTerm::Map(children.chunks_exact(2).map(|p| (p[0],p[1])).collect())));
                 }
             }
         }

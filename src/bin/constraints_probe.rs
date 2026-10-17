@@ -46,6 +46,8 @@ fn native(e: LatticeError) -> Value {
         LatticeError::BadGenerators(_) => "bad_generators",
         LatticeError::BadGenerator(_) => "bad_generator",
         LatticeError::NativeNonTerminating => "native_nonterminating",
+        #[cfg(otp_domain = "29")]
+        LatticeError::RecordIterationOrderRequired => "record_iteration_order_required",
     };
     let payload = match &e {
         LatticeError::CaseClause(t) | LatticeError::BadMatch(t) | LatticeError::BadGenerator(t) => {
@@ -319,7 +321,7 @@ fn parse_derived(d: &Value) -> Result<DerivedOp, String> {
 fn registry() -> Result<&'static Registry, String> {
     static REGISTRY: std::sync::OnceLock<Result<Registry, String>> = std::sync::OnceLock::new();
     REGISTRY
-        .get_or_init(|| Registry::load(include_str!("../../corpus/bifs.json")))
+        .get_or_init(|| Registry::standard())
         .as_ref()
         .map_err(Clone::clone)
 }

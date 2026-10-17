@@ -1074,7 +1074,7 @@ mod lookup_index_tests {
         let labels = Labels::build(&core, CoreLabel(0)).unwrap();
         let policy = crate::closure_dependencies::DependencyPolicy::parse(include_str!("../corpus/dependency_policy.json")).unwrap();
         let dependencies = ClosureDependencies::analyze(&core, &program, &policy).unwrap();
-        let registry = Registry::load(include_str!("../corpus/bifs.json")).unwrap();
+        let registry = Registry::standard().unwrap();
         let nodes = DataflowNodes::build(&core, &labels).unwrap();
         SourceCallGraph::build(&nodes, &program, &dependencies, &registry).unwrap()
     }
@@ -1272,7 +1272,7 @@ mod diagnostic_snapshot_tests {
         let initial_functions = FunctionState::new(vec![FunctionDefinition { key: FunctionKey::Label(label), node: Some(function),
             arity: 0, escaping: true, name: Some(FunctionName { module: "snapshot".into(), name: "f".into(), arity: 0 }),
             raw_signature: None, callers: vec![] }]);
-        let registry = Registry::load(include_str!("../corpus/bifs.json")).unwrap();
+        let registry = Registry::standard().unwrap();
         let letrec = crate::letrec_types::LetrecLinks::default();
         let initial = BinderState::<AnalysisWarning>::for_compiler_module(&core, ModuleId(0), false).unwrap();
         let mut functions = initial_functions.clone();

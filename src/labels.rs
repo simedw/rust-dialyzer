@@ -107,6 +107,10 @@ fn pattern_variables(module: &CoreModule, patterns: &[NodeId]) -> Result<Vec<Nod
             }
             CoreExpr::Tuple(nodes) | CoreExpr::Binary(nodes) => todo.extend(nodes.iter().rev()),
             CoreExpr::Map { pairs, .. } => todo.extend(pairs.iter().rev()),
+            #[cfg(otp_domain = "29")]
+            CoreExpr::Record { pairs, .. } => todo.extend(pairs.iter().rev()),
+            #[cfg(otp_domain = "29")]
+            CoreExpr::RecordPair { value, .. } => todo.push(*value),
             CoreExpr::MapPair {
                 operation, value, ..
             } => {
@@ -218,6 +222,10 @@ fn module_labels(module: &CoreModule) -> Result<(Vec<Option<CoreLabel>>, Vec<boo
                         children.extend(nodes)
                     }
                     CoreExpr::Cons { head, tail } => children.extend([*head, *tail]),
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::Record { argument, id, pairs } => { children.extend([*argument, *id]); children.extend(pairs); }
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::RecordPair { key, value } => children.extend([*key, *value]),
                     CoreExpr::Map {
                         base,
                         pairs,

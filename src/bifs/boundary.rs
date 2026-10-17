@@ -9,6 +9,8 @@ pub enum NativeTerm {
     Atom { value: String },
     Integer { value: String },
     Tuple { items: Vec<Self> },
+    #[cfg(otp_domain = "29")]
+    Map { entries: Vec<(Self, Self)> },
     List { items: Vec<Self>, tail: Box<Self> },
     Nil,
 }
@@ -21,6 +23,8 @@ impl NativeTerm {
             Visit(&'a NativeTerm),
             Tuple(usize),
             List(usize),
+            #[cfg(otp_domain = "29")]
+            Map(usize),
         }
         let mut frames = vec![Frame::Visit(self)];
         let mut values = Vec::new();
@@ -39,10 +43,20 @@ impl NativeTerm {
                         frames.push(Frame::Visit(tail));
                         frames.extend(items.iter().rev().map(Frame::Visit));
                     }
+                    #[cfg(otp_domain = "29")]
+                    Self::Map { entries } => {
+                        frames.push(Frame::Map(entries.len()));
+                        frames.extend(entries.iter().rev().flat_map(|(k,v)| [Frame::Visit(v),Frame::Visit(k)]));
+                    }
                 },
                 Frame::Tuple(count) => {
                     let items = values.split_off(values.len() - count);
                     values.push(builder.tuple(items));
+                }
+                #[cfg(otp_domain = "29")]
+                Frame::Map(count) => {
+                    let children = values.split_off(values.len() - count * 2);
+                    values.push(builder.push(crate::core::ErlangTerm::Map(children.chunks_exact(2).map(|p| (p[0],p[1])).collect())));
                 }
                 Frame::List(count) => {
                     let tail = values.pop().expect("list tail visited");
@@ -288,10 +302,51 @@ impl NativeTerm {
                     .map(Self::type_value)
                     .collect::<Result<Vec<_>, _>>()?,
             ),
+            #[cfg(otp_domain = "29")]
+            "record" => {
+                use crate::lattice::{NativeRecordName, RecordField};
+                let parts = elements.tuple_len(2)?;
+                let name = match &parts[0] {
+                    Self::Atom { value } if value == "nil" => NativeRecordName::Any,
+                    Self::Atom { value } => NativeRecordName::Atom(value.as_str().into()),
+                    other => {
+                        let pair = other.tuple_len(2)?;
+                        NativeRecordName::Named { module: pair[0].atom()?.into(), name: pair[1].atom()?.into() }
+                    }
+                };
+                let Self::Map { entries } = &parts[1] else {
+                    return Err("native record fields must be a map".into());
+                };
+                let mut fields = std::collections::BTreeMap::new();
+                for (key, value) in entries {
+                    let field = match value {
+                        Self::Atom { value } if value == "missing" => RecordField::Missing,
+                        value => {
+                            let pair = value.tuple_len(2)?;
+                            if pair[0].atom()? != "present" { return Err("invalid native record field presence".into()); }
+                            RecordField::Present(pair[1].type_value()?)
+                        }
+                    };
+                    fields.insert(key.atom()?.into(), field);
+                }
+                Type::record(name, fields)
+            }
+            #[cfg(otp_domain = "29")]
+            "record_set" => {
+                use crate::lattice::{TypeView, RecordsView};
+                let mut records = Vec::new();
+                for value in elements.list()? {
+                    let typ = value.type_value()?;
+                    let TypeView::Families(slots) = typ.view() else { return Err("native record_set member is not a record".into()); };
+                    let Some(RecordsView::Record(record)) = slots.records else { return Err("native record_set member is not a direct record".into()); };
+                    records.push(record.clone());
+                }
+                Type::record_set(records)?
+            }
             "union" => {
                 let values = elements.list()?;
-                if values.len() != 8 {
-                    return Err("native union requires8slots".into());
+                if values.len() != crate::domain::UNION_ARITY {
+                    return Err(format!("native union requires {} slots", crate::domain::UNION_ARITY));
                 }
                 values.iter().try_fold(Type::none(), |a, x| {
                     a.join(&x.type_value()?).map_err(|e| e.to_string())
@@ -340,6 +395,11 @@ fn decode_arena(
                 .iter()
                 .map(|id| decode_arena(arena, *id, depth + 1))
                 .collect::<Result<_, _>>()?,
+        },
+        #[cfg(otp_domain = "29")]
+        ErlangTerm::Map(entries) => NativeTerm::Map {
+            entries: entries.iter().map(|(k,v)| Ok((decode_arena(arena,*k,depth+1)?,decode_arena(arena,*v,depth+1)?)))
+                .collect::<Result<_, String>>()?,
         },
         ErlangTerm::List { items, tail } => NativeTerm::List {
             items: items

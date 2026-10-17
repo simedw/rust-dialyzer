@@ -70,6 +70,8 @@ pub fn prepare(forms: &ErlangTerms) -> Result<ErlangTerms, String> {
                     pending.extend([k, v]);
                 }
             }
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => pending.extend(record.fields.iter().map(|(_, value)| *value)),
             _ => (),
         }
     }
@@ -88,6 +90,11 @@ pub fn prepare(forms: &ErlangTerms) -> Result<ErlangTerms, String> {
             },
             ErlangTerm::Map(xs) => {
                 ErlangTerm::Map(xs.iter().map(|(k, v)| (remap[k.0], remap[v.0])).collect())
+            }
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(mut record) => {
+                for (_, value) in &mut record.fields { *value = remap[value.0]; }
+                ErlangTerm::Record(record)
             }
             _ => continue,
         };

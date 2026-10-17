@@ -72,7 +72,7 @@ fn domain(t: &Type) -> Value {
     }
 }
 fn main() {
-    let registry = Registry::load(include_str!("../../corpus/bifs.json")).unwrap();
+    let registry = Registry::standard().unwrap();
     for l in io::stdin().lock().lines() {
         let r: Value = serde_json::from_str(&l.unwrap()).unwrap();
         let a = input(&r["left"]);

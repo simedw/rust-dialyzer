@@ -131,6 +131,8 @@ struct Descriptor {
 fn transfer(mfa: &Mfa) -> Transfer {
     use Transfer::*;
     match (mfa.module.as_str(), mfa.function.as_str(), mfa.arity) {
+        #[cfg(otp_domain = "29")]
+        ("erlang", "is_integer", 3) => Any,
         ("erlang", name, _)
             if [
                 "+", "-", "*", "/", "div", "rem", "band", "bor", "bxor", "bsl", "bsr", "bnot",
@@ -327,6 +329,13 @@ fn transfer(mfa: &Mfa) -> Transfer {
     }
 }
 impl Registry {
+    pub fn standard() -> Result<Self, String> {
+        #[cfg(otp_domain = "28")]
+        let text = include_str!("../../corpus/bifs.json");
+        #[cfg(otp_domain = "29")]
+        let text = include_str!("../../corpus/bifs-otp29.json");
+        Self::load(text)
+    }
     pub fn load(text: &str) -> Result<Self, String> {
         let catalogue: Catalogue = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let mut entries = BTreeMap::new();
@@ -486,8 +495,11 @@ impl Registry {
                 FunctionArity => {
                     predicates::function_arity(&values[0], &values[1]).map_err(native)?
                 }
+                #[cfg(otp_domain = "28")]
                 Record => structural::record(&values[0], &values[1], values.get(2))
                     .map_err(TransferError::NativeException)?,
+                #[cfg(otp_domain = "29")]
+                Record => structural::record29(values).map_err(TransferError::NativeException)?,
                 Constant => entry
                     .constant
                     .as_ref()

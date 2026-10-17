@@ -1,6 +1,7 @@
 import json,random,os,subprocess,itertools
 from pathlib import Path
-root=Path(__file__).resolve().parents[2];h=root/'.cache/constraints';h.mkdir(parents=True,exist_ok=True);rng=random.Random(271)
+from config import configure
+config=configure();root=Path(__file__).resolve().parents[2];h=config.out;h.mkdir(parents=True,exist_ok=True);rng=random.Random(271)
 a=lambda k:{'kind':k};atom=lambda *v:{'kind':'atoms','values':list(v)};integer=lambda *v:{'kind':'integers','values':[str(x)for x in v]};key=lambda n:{'integer':str(n)};var=lambda n:{'kind':'var','id':key(n)}
 pool=[a('any'),a('none'),a('unit'),a('atom'),a('integer'),a('number'),a('float'),atom('a'),atom('true'),atom('false'),atom('true','false'),integer(-1),integer(0),integer(1),integer(2),{'kind':'range','from':'0','to':'pos_inf'},{'kind':'range','from':'neg_inf','to':'-1'},{'kind':'range','from':'-2','to':'3'}]
 for opacity in ['transparent','opaque']:
@@ -37,8 +38,8 @@ for _ in range(1000):
   commands.append({'derived':d,'bindings':[{'id':key(1),'type':value},{'id':key(2),'type':a('any')}]})
 for _ in range(250):commands.append({'derived':{'operation':'binary_segments','segments':[rng.choice(pool)for i in range(rng.randrange(6))]},'bindings':[{'id':key(1),'type':a('any')},{'id':key(2),'type':a('any')}]})
 input_=h/'structural.jsonl';input_.write_text(''.join(json.dumps(c)+'\n'for c in commands))
-with input_.open('rb')as inp:rs=subprocess.check_output([str(root/'target/release/constraints_probe')],stdin=inp)
+with input_.open('rb')as inp:rs=subprocess.check_output([str(config.binary)],stdin=inp)
 (h/'structural.rust.jsonl').write_bytes(rs);rust=[json.loads(x)for x in rs.splitlines()]
-env=os.environ.copy();env.update(ASDF_ERLANG_VERSION='28.3',ASDF_ELIXIR_VERSION='1.19.4-otp-28');subprocess.run(['elixir',str(root/'scripts/constraint_probes/native_structural.exs'),str(root),str(input_),str(h/'structural.native.json')],env=env,check=True)
+env=config.env;subprocess.run(['elixir',str(root/'scripts/constraint_probes/native_structural.exs'),str(root),str(input_),str(h/'structural.native.json')],env=env,check=True)
 native=json.loads((h/'structural.native.json').read_text());assert len(rust)==len(native)==len(commands),'incomplete oracle or Rust output'
 failures=[{'index':i,'command':commands[i],'rust':r,'native':n}for i,(r,n)in enumerate(zip(rust,native))if {k:v for k,v in r.items()if k!='detail'}!={k:v for k,v in n.items()if k!='detail'}];(h/'structural-verification.json').write_text(json.dumps({'commands':len(commands),'passed':len(commands)-len(failures),'failures':failures},indent=2));print(len(commands),len(failures),flush=True)

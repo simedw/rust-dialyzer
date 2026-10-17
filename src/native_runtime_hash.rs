@@ -39,6 +39,8 @@ pub enum NativeHashKey {
         bits: u64,
     },
     Map(Vec<(Self, Self)>),
+    #[cfg(otp_domain = "29")]
+    Record { module: String, name: String, exported: bool, fields: Vec<(String, Self)> },
     Tuple(Vec<Self>),
     Cons(Box<Self>, Box<Self>),
     Nil,
@@ -63,6 +65,9 @@ impl NativeHashKey {
         ) -> Result<NativeHashKey, RuntimeHashError> {
             use NativeHashKey as K;
             Ok(match &arena.terms[id.0] {
+                #[cfg(otp_domain = "29")]
+                T::Record(r) => K::Record { module:r.module.clone(),name:r.name.clone(),exported:r.exported,
+                    fields:r.fields.iter().map(|(k,v)| Ok((k.clone(),read(arena,order,*v)?))).collect::<Result<_,RuntimeHashError>>()? },
                 T::ExternalFun(external_fun_payload) => {
                     let crate::core::ExternalFun {
                         module,
@@ -119,6 +124,11 @@ impl NativeHashKey {
         fn append(key: &NativeHashKey, nodes: &mut Vec<T>) -> TermId {
             use NativeHashKey as K;
             let node = match key {
+                #[cfg(otp_domain = "29")]
+                K::Record { module,name,exported,fields } => T::Record(Box::new(crate::core::NativeRecord {
+                    module:module.clone(),name:name.clone(),exported:*exported,
+                    fields:fields.iter().map(|(k,v)| (k.clone(),append(v,nodes))).collect(),
+                })),
                 K::ExternalFun {
                     module,
                     function,

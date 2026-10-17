@@ -1,8 +1,10 @@
 import json, random, subprocess
 from pathlib import Path
+from probe_config import configuration
 
 WORKSPACE = Path(__file__).resolve().parents[2]
-root = WORKSPACE / ".cache/types"
+CONFIG = configuration(WORKSPACE)
+root = CONFIG.out
 root.mkdir(parents=True, exist_ok=True)
 r = random.Random(28307)
 k = lambda kind, **kw: dict(kind=kind, **kw)
@@ -96,6 +98,8 @@ types = base + [
         ],
     ),
 ]
+if CONFIG.otp == "29":
+    types[-1]["values"].append(none)
 commands = [dict(op="substitute", a=t, bindings=s) for t in types for s in sets]
 commands += [
     dict(op="substitute", a=nested(r.randint(1, 4)), bindings=r.choice(sets))
@@ -106,7 +110,7 @@ out = root / "subst_results.jsonl"
 p.write_text("".join(json.dumps(c) + "\n" for c in commands))
 with p.open("rb") as src, out.open("wb") as dest:
     subprocess.run(
-        [str(WORKSPACE / "target/release/type_probe")],
+        [str(CONFIG.binary)],
         stdin=src,
         stdout=dest,
         check=True,

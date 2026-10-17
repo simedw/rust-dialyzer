@@ -101,11 +101,9 @@ fn direct_emission_matches_reference_across_all_clean_core_fixtures() {
                     ErlangTerm::Atom(name) => {
                         atoms.insert(name.clone());
                     }
-                    ErlangTerm::ExternalFun {
-                        module, function, ..
-                    } => {
-                        atoms.insert(module.clone());
-                        atoms.insert(function.clone());
+                    ErlangTerm::ExternalFun(fun) => {
+                        atoms.insert(fun.module.clone());
+                        atoms.insert(fun.function.clone());
                     }
                     _ => {}
                 }

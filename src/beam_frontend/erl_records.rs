@@ -5,6 +5,9 @@
 use super::super::{erl_bifs, term::Arena};
 use crate::core::{ErlangTerm, ErlangTerms, TermId};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(otp_domain = "29")]
+#[path = "erl_records/native29.rs"]
+mod native29;
 
 #[derive(Clone)]
 struct Access {
@@ -23,6 +26,10 @@ struct Expander {
     pending: Vec<Access>,
     checked: BTreeSet<Vec<u8>>,
     calls: BTreeSet<(String, usize)>,
+    #[cfg(otp_domain = "29")]
+    native: BTreeMap<String, native29::Definition>,
+    #[cfg(otp_domain = "29")]
+    module: String,
 }
 pub(super) fn expand(forms: &ErlangTerms) -> Result<ErlangTerms, String> {
     let a = Arena::from_terms(forms);
@@ -36,7 +43,13 @@ pub(super) fn expand(forms: &ErlangTerms) -> Result<ErlangTerms, String> {
         pending: Vec::new(),
         checked: BTreeSet::new(),
         calls: BTreeSet::new(),
+        #[cfg(otp_domain = "29")]
+        native: BTreeMap::new(),
+        #[cfg(otp_domain = "29")]
+        module: String::new(),
     };
+    #[cfg(otp_domain = "29")]
+    e.init_native_records(&input)?;
     for &id in &input {
         let f = e.a.tuple_fields(id)?.to_vec();
         if e.a.tag(id) == Some("function") {
@@ -398,6 +411,8 @@ impl Expander {
         let an = *f
             .get(1)
             .ok_or("record preparation: expression annotation")?;
+        #[cfg(otp_domain = "29")]
+        if let Some(record) = self.native_expression(&f, pattern)? { return Ok(record); }
         match tag.as_str() {
             "var" | "atom" | "integer" | "char" | "float" | "string" | "nil" | "debug_line"
             | "executable_line" | "ssa_check_when" => return Ok(id),
@@ -607,7 +622,9 @@ impl Expander {
             "catch" => f[2] = self.expr(f[2], false)?,
             "lc" | "bc" | "mc" => {
                 f[3] = self.qualifiers(f[3])?;
-                f[2] = self.expr(f[2], false)?;
+                if cfg!(otp_domain = "29") && matches!(self.a.get(f[2]), ErlangTerm::List { .. } | ErlangTerm::Nil) {
+                    f[2] = self.list(f[2], false)?;
+                } else { f[2] = self.expr(f[2], false)?; }
             }
             "maybe" => {
                 f[2] = self.list(f[2], false)?;
@@ -669,7 +686,9 @@ impl Expander {
             Some(
                 "atom" | "integer" | "char" | "float" | "string" | "nil" | "var" | "record_index",
             ) => true,
-            Some("record_field") => self.guard_candidate(f[2]),
+            Some("record_field") => self.guard_candidate(if cfg!(otp_domain = "29") && f.len() == 4 { f[3] } else { f[2] }),
+            #[cfg(otp_domain = "29")]
+            Some("record") if f.len() == 4 => self.a.list_items(f[3]).is_ok_and(|pairs| pairs.into_iter().all(|pair| self.guard_candidate(pair))),
             Some("op") => f.iter().skip(3).all(|x| self.guard_candidate(*x)),
             Some("call") => {
                 let Ok(t) = self.a.tuple_fields(f[2]) else {
@@ -717,6 +736,15 @@ impl Expander {
         }
     }
     fn record_test(&mut self, an: TermId, value: TermId, name: &str) -> Result<TermId, String> {
+        #[cfg(otp_domain = "29")]
+        if let Some(definition) = self.native.get(name) {
+            let module = match definition { native29::Definition::Local(_) => self.module.clone(), native29::Definition::Imported(module) => module.clone() };
+            let generated = self.anno_flag(an, "generated")?;
+            let module = self.lit_atom(an, &module);
+            let name = self.lit_atom(an, name);
+            let call = self.call(generated, "is_record", vec![value, module, name]);
+            return self.expr(call, false);
+        }
         let size = self.defs(name)?.len() + 1;
         if self.guard
             && matches!(
@@ -868,6 +896,7 @@ impl Expander {
     }
 }
 fn is_guard_bif(n: &str, a: usize) -> bool {
+    if cfg!(otp_domain = "29") && matches!((n, a), ("is_record", 1) | ("is_integer", 3)) { return true; }
     matches!(
         (n, a),
         ("abs", 1)

@@ -15,7 +15,7 @@ impl Lower {
         let expr = self.expr(node)?;
         self.force_safe_expression(expr)
     }
-    fn force_safe_expression(&mut self, mut expr: Expr) -> Result<Expr> {
+    pub(super) fn force_safe_expression(&mut self, mut expr: Expr) -> Result<Expr> {
         let safe = match self.a.tag(expr.value) {
             Some("c_literal" | "c_tuple" | "c_cons") => true,
             Some("c_var") => !matches!(
@@ -41,6 +41,8 @@ impl Lower {
             return self.source_safe(node);
         }
         let expr = self.expr(node)?;
+        #[cfg(otp_domain = "29")]
+        if self.a.tag(expr.value) == Some("c_record") { return Ok(expr); }
         if matches!(
             self.a.tag(expr.value),
             Some("c_apply" | "c_call" | "c_fun" | "c_binary" | "c_map")
@@ -132,7 +134,33 @@ impl Lower {
         let failed = self.fresh(empty);
         let ann = self.annotation(location)?;
         let failure = self.failure(vec![failed], ann, "badmatch")?;
-        let mut pattern = self.raw_pattern(source)?;
+        let counters = (self.counter, self.fun_counter, self.goto_counter);
+        let mut pattern = match self.raw_pattern(source) {
+            Ok(pattern) => pattern,
+            Err(Error::NoMatch) => {
+                (self.counter, self.fun_counter, self.goto_counter) = counters;
+                right = self.force_safe_expression(right)?;
+                let sanitized = self.sanitize_pattern(source)?;
+                let pattern = self.raw_pattern(sanitized)?;
+                let tuple_ann = self.empty();
+                let reason = if self.a.tag(right.value) == Some("c_literal") {
+                    let badmatch = self.a.atom("badmatch");
+                    let value = self.a.tuple_fields(right.value)?[2];
+                    let value = self.a.tuple(vec![badmatch, value]);
+                    self.literal(tuple_ann, value)
+                } else {
+                    let badmatch = self.atom_literal("badmatch");
+                    let values = self.a.list(vec![badmatch, right.value]);
+                    self.a.tagged("c_tuple", vec![tuple_ann, values])
+                };
+                let name = self.atom_literal("match_fail");
+                let arguments = self.a.list(vec![reason]);
+                let failure = self.a.tagged("c_primop", vec![ann, name, arguments]);
+                right.pre.push(Pre::Effect(failure));
+                pattern
+            }
+            Err(error) => return Err(error),
+        };
         let mut result = right.value;
         if mode == MatchMode::Safe {
             right = self.force_safe_expression(right)?;

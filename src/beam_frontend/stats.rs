@@ -77,6 +77,10 @@ pub fn core_node_count(core: &ErlangTerms) -> Result<usize, String> {
             Some("c_catch") => (&[2], &[]),
             Some("c_map") => (&[], &[3]),
             Some("c_map_pair") => (&[2, 3, 4], &[]),
+            #[cfg(otp_domain = "29")]
+            Some("c_record") => (&[], &[4]),
+            #[cfg(otp_domain = "29")]
+            Some("c_record_pair") => (&[2, 3], &[]),
             tag => return Err(format!("unsupported Core statistics tag {tag:?}")),
         };
         for &field in nodes {
@@ -111,6 +115,8 @@ pub fn reachable_term_count(terms: &ErlangTerms) -> usize {
                     pending.extend([key, value]);
                 }
             }
+            #[cfg(otp_domain = "29")]
+            crate::core::ErlangTerm::Record(record) => pending.extend(record.fields.iter().map(|(_, value)| *value)),
             _ => (),
         }
     }

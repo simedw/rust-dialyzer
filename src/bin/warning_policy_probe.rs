@@ -4,7 +4,7 @@ use std::io::{self, BufRead};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Registry::load(include_str!("../../corpus/warnings.json"))?;
     let bifs =
-        rust_dialyzer_poc::bifs::registry::Registry::load(include_str!("../../corpus/bifs.json"))?;
+        rust_dialyzer_poc::bifs::registry::Registry::standard()?;
     let classify = std::env::args().any(|a| a == "--returns");
     for line in io::stdin().lock().lines() {
         let path = line?;

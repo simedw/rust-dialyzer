@@ -278,6 +278,34 @@ pub fn record(tuple: &Type, tag: &Type, size: Option<&Type>) -> Result<Type, Nat
     }
 }
 
+#[cfg(otp_domain = "29")]
+pub fn record29(args: &[Type]) -> Result<Type, NativeTransferError> {
+    use crate::lattice::{RecordTest, TypePredicate};
+    let value = &args[0];
+    if args.len() == 1 {
+        return Ok(if value.is_native_record() { Type::atom("true") }
+            else if value.meet(&Type::record_any())?.is_none() { Type::atom("false") }
+            else { boolean() });
+    }
+    let native = if args.len() == 2 {
+        value.is_native_record_named(&args[1].to_native_value())
+    } else {
+        value.is_native_record_qualified(&args[1].to_native_value(),&args[2].to_native_value())
+    };
+    match native {
+        RecordTest::True => return Ok(Type::atom("true")),
+        RecordTest::Unknown => return Ok(boolean()),
+        RecordTest::False => {}
+    }
+    if !value.predicate(TypePredicate::Tuple)? {
+        return Ok(if value.meet(&Type::tuple_any())?.is_none() { Type::atom("false") } else { boolean() });
+    }
+    // In OTP 29 erl_bif_types, is_integer(Z) receives the native type term,
+    // so the tuple arity branch cannot run for canonical type arguments.
+    if args.len() == 3 { return Ok(boolean()); }
+    record(value,&args[1],None)
+}
+
 pub fn is_nil(value: &Type) -> Result<bool, NativeTransferError> {
     Ok(value.shallow_structural()? == Type::nil())
 }

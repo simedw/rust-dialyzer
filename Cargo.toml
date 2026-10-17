@@ -5,6 +5,11 @@ version = "0.1.0"
 edition = "2024"
 default-run = "rust-dialyzer"
 
+[workspace]
+members = ["backend29"]
+default-members = ["."]
+resolver = "3"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

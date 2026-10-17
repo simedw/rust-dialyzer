@@ -1,0 +1,59 @@
+[package]
+name = "rust-dialyzer-otp29"
+version = "0.1.0"
+license = "MIT"
+edition = "2024"
+build = "../build.rs"
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[lib]
+name = "rust_dialyzer_poc"
+path = "../src/lib.rs"
+
+[features]
+live_bytes = []
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.148"
+num-bigint = "0.4.6"
+num-traits = "0.2.19"
+im = "15.1.0"
+mimalloc = { version = "0.1", default-features = false }
+ryu = "=1.0.22"
+unicode-segmentation = "=1.12.0"
+
+[[bin]]
+name = "rust-dialyzer-otp29"
+path = "../src/bin/rust-dialyzer.rs"
+
+[[bin]]
+name = "core_cache_analyze_otp29"
+path = "../src/bin/core_cache_analyze.rs"
+
+[[bin]]
+name = "beam_core_compile_otp29"
+path = "../src/bin/beam_core_compile.rs"
+
+[[bin]]
+name = "type_probe_otp29"
+path = "../src/bin/type_probe.rs"
+
+[[bin]]
+name = "bif_probe_otp29"
+path = "../src/bin/bif_probe.rs"
+
+[[bin]]
+name = "constraints_probe_otp29"
+path = "../src/bin/constraints_probe.rs"
+
+[[test]]
+name = "frontend_oracle_otp29"
+path = "tests/frontend_oracle.rs"
+
+[[test]]
+name = "runtime_oracle_otp29"
+path = "tests/runtime_oracle.rs"

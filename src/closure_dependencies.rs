@@ -560,6 +560,10 @@ impl Analysis<'_> {
                         tasks.push(*base);
                         tasks.extend(pairs);
                     }
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::Record { pairs, .. } => tasks.extend(pairs),
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::RecordPair { key,value } => tasks.extend([*key,*value]),
                     CoreExpr::MapPair {
                         operation,
                         key,
@@ -778,6 +782,14 @@ impl Analysis<'_> {
                         CoreExpr::Values(xs) => frames.push(many(xs.clone(), Finish::Values, 1)),
                         CoreExpr::Map { pairs, .. } => {
                             frames.push(many(pairs.clone(), Finish::Merged, num_returns))
+                        }
+                        #[cfg(otp_domain = "29")]
+                        CoreExpr::Record { pairs, .. } => {
+                            frames.push(many(pairs.clone(), Finish::Merged, num_returns))
+                        }
+                        #[cfg(otp_domain = "29")]
+                        CoreExpr::RecordPair { key,value } => {
+                            frames.push(many(vec![*key,*value], Finish::Merged, num_returns))
                         }
                         CoreExpr::MapPair { key, value, .. } => {
                             frames.push(many(vec![*key, *value], Finish::Merged, num_returns))

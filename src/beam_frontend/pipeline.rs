@@ -62,6 +62,12 @@ fn atom_names(compilations: &[Compilation]) -> Vec<String> {
                             pending.extend([key, value]);
                         }
                     }
+                    #[cfg(otp_domain = "29")]
+                    ErlangTerm::Record(record) => {
+                        names.insert(record.module.as_str());
+                        names.insert(record.name.as_str());
+                        for (name, value) in &record.fields { names.insert(name.as_str()); pending.push(*value); }
+                    }
                     _ => {}
                 }
             }

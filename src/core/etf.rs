@@ -198,6 +198,19 @@ fn erlang_term(entry: &Term, id: usize, orders: &mut BTreeMap<TermId, Vec<usize>
                 orders.insert(TermId(id), order);
                 ErlangTerm::Map(flat.chunks_exact(2).map(|kv| (kv[0], kv[1])).collect())
             }
+            #[cfg(otp_domain = "29")]
+            [Term::Atom("record"), Term::Atom(module), Term::Atom(name), Term::Atom(exported), Term::List(fields)] => {
+                let exported = match *exported { "true" => true, "false" => false, _ => return Err(bad()) };
+                let mut unique = std::collections::BTreeSet::new();
+                let fields = fields.iter().map(|field| {
+                    let Term::Tuple(pair) = field else { return Err(bad()); };
+                    let [Term::Atom(name), value] = pair.as_slice() else { return Err(bad()); };
+                    if !unique.insert(*name) { return Err(bad()); }
+                    let value = usize::try_from(int(value)?).ok().filter(|&value| value < id).ok_or_else(bad)?;
+                    Ok(((*name).to_owned(), TermId(value)))
+                }).collect::<Result<_>>()?;
+                ErlangTerm::Record(Box::new(crate::core::NativeRecord { module: (*module).to_owned(), name: (*name).to_owned(), exported, fields }))
+            }
             _ => return Err(bad()),
         },
         _ => return Err(bad()),
@@ -240,7 +253,11 @@ fn flat_module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
         let Term::Tuple(f) = entry else {
             return Err(format!("{path}.nodes[{id}]: expected node tuple"));
         };
-        let [Term::Atom(kind), annotations, Term::List(groups), value, map_arg, map_pattern] = f.as_slice() else {
+        #[cfg(otp_domain = "29")]
+        let record_metadata = match f.len() { 6 => None, 8 => Some((&f[6], &f[7])), _ => return Err(format!("{path}.nodes[{id}]: expected 6 or 8-field node")) };
+        #[cfg(not(otp_domain = "29"))]
+        if f.len() != 6 { return Err(format!("{path}.nodes[{id}]: expected 6-field node")); }
+        let [Term::Atom(kind), annotations, Term::List(groups), value, map_arg, map_pattern] = &f[..f.len().min(6)] else {
             return Err(format!("{path}.nodes[{id}]: expected 6-field node"));
         };
         let raw = RawNode {
@@ -249,6 +266,10 @@ fn flat_module_from_etf(bytes: &[u8]) -> Result<CoreModule> {
             groups: groups.iter().map(ids).collect::<Result<_>>()?,
             value: optional(value)?,
             map_arg: optional(map_arg)?,
+            #[cfg(otp_domain = "29")]
+            record_arg: record_metadata.map(|(arg, _)| optional(arg)).transpose()?.flatten(),
+            #[cfg(otp_domain = "29")]
+            record_id: record_metadata.map(|(_, id)| optional(id)).transpose()?.flatten(),
             map_pattern: match map_pattern {
                 Term::Atom("undefined") => None,
                 Term::Atom("true") => Some(true),

@@ -131,6 +131,12 @@ impl<'a> Reader<'a> {
                     .u32()?
                     .checked_mul(2)
                     .ok_or("Native Core: size overflow")?,
+                #[cfg(otp_domain = "29")]
+                67 => {
+                    let count = self.u32()?;
+                    if self.u8()? > 1 { return Err("Native Core: invalid record flags".into()); }
+                    count.checked_mul(2).and_then(|count| count.checked_add(2)).ok_or("Native Core: size overflow")?
+                }
                 tag => return Err(format!("Native Core: unsupported ETF tag {tag}")),
             };
             pending = pending
@@ -209,6 +215,12 @@ struct Frame<'a> {
     argument_id: Option<u64>,
     argument_return: Option<usize>,
     pattern: Option<bool>,
+    #[cfg(otp_domain = "29")]
+    record_identity: Option<Span>,
+    #[cfg(otp_domain = "29")]
+    record_identity_id: Option<u64>,
+    #[cfg(otp_domain = "29")]
+    record_identity_return: Option<usize>,
 }
 
 impl<'a> Builder<'a> {
@@ -232,6 +244,8 @@ impl<'a> Builder<'a> {
         let id = TermId(self.terms.len());
         let contains_map = match &term {
             ErlangTerm::Map(_) => true,
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => record.fields.iter().any(|(_, value)| self.contains_map[value.0]),
             ErlangTerm::Tuple(items) => items.iter().any(|id| self.contains_map[id.0]),
             ErlangTerm::List { items, tail } => {
                 self.contains_map[tail.0] || items.iter().any(|id| self.contains_map[id.0])
@@ -368,6 +382,28 @@ impl<'a> Builder<'a> {
                 )
             }
             106 => ErlangTerm::Nil,
+            #[cfg(otp_domain = "29")]
+            67 => {
+                let count = r.u32()?;
+                if count > r.bytes.len().saturating_sub(r.at) / 2 { return Err("Native Core: impossible record field count".into()); }
+                let exported = match r.u8()? { 0 => false, 1 => true, _ => return Err("Native Core: invalid record flags".into()) };
+                let module = r.native_atom()?;
+                let name = r.native_atom()?;
+                self.atom(module);
+                self.atom(name);
+                let module = module.to_owned();
+                let name = name.to_owned();
+                let mut names = Vec::with_capacity(count);
+                let mut unique = std::collections::BTreeSet::new();
+                for _ in 0..count {
+                    let name = r.native_atom()?;
+                    if !unique.insert(name) { return Err("Native Core: duplicate record field".into()); }
+                    self.atom(name);
+                    names.push(name.to_owned());
+                }
+                let fields = names.into_iter().map(|name| self.value(r, layouts, depth + 1).map(|value| (name, value))).collect::<Result<_>>()?;
+                ErlangTerm::Record(Box::new(crate::core::NativeRecord { module, name, exported, fields }))
+            }
             tag @ (107 | 108) => {
                 let mut tag = tag;
                 let mut items = Vec::new();
@@ -491,6 +527,7 @@ impl<'a> Builder<'a> {
         value: Option<u64>,
         map_arg: Option<u64>,
         map_pattern: Option<bool>,
+        #[cfg(otp_domain = "29")] record_id: Option<u64>,
     ) -> Result<NodeId> {
         let id = self.nodes.len();
         let raw = RawNode {
@@ -498,7 +535,11 @@ impl<'a> Builder<'a> {
             annotations: annotations.0 as u64,
             groups,
             value,
-            map_arg,
+            map_arg: if kind == "map" { map_arg } else { None },
+            #[cfg(otp_domain = "29")]
+            record_arg: if kind == "record" { map_arg } else { None },
+            #[cfg(otp_domain = "29")]
+            record_id,
             map_pattern,
         };
         let node = build_node(
@@ -528,6 +569,10 @@ impl<'a> Builder<'a> {
                     "alias" | "apply" | "case" | "cons" | "fun" | "letrec" | "primop" | "seq" => 4,
                     "call" | "clause" | "let" | "map" | "map_pair" | "receive" => 5,
                     "module" => 6,
+                    #[cfg(otp_domain = "29")]
+                    "record" => 5,
+                    #[cfg(otp_domain = "29")]
+                    "record_pair" => 4,
                     "bitstr" | "try" => 7,
                     _ => return Err(format!("Native Core: unsupported record {tag}")),
                 };
@@ -544,6 +589,8 @@ impl<'a> Builder<'a> {
                         Some(value.0 as u64),
                         None,
                         None,
+                        #[cfg(otp_domain = "29")]
+                        None,
                     )?);
                 } else {
                     let schema: &'static [u8] = match kind {
@@ -559,13 +606,19 @@ impl<'a> Builder<'a> {
                         "letrec" => b"PS",
                         "module" => b"SLPP",
                         "map_pair" => b"SSS",
+                        #[cfg(otp_domain = "29")]
+                        "record" => b"L",
+                        #[cfg(otp_domain = "29")]
+                        "record_pair" => b"SS",
                         _ => return Err("Native Core: missing group schema".into()),
                     };
-                    let argument = if kind == "map" {
+                    let argument = if kind == "map" || cfg!(otp_domain = "29") && kind == "record" {
                         Some(r.native_span()?)
                     } else {
                         None
                     };
+                    #[cfg(otp_domain = "29")]
+                    let record_identity = if kind == "record" { Some(r.native_span()?) } else { None };
                     frames.push(Frame {
                         kind,
                         annotations,
@@ -577,6 +630,12 @@ impl<'a> Builder<'a> {
                         argument_id: None,
                         argument_return: None,
                         pattern: None,
+                        #[cfg(otp_domain = "29")]
+                        record_identity,
+                        #[cfg(otp_domain = "29")]
+                        record_identity_id: None,
+                        #[cfg(otp_domain = "29")]
+                        record_identity_return: None,
                     });
                 }
             }
@@ -591,6 +650,16 @@ impl<'a> Builder<'a> {
                     }
                     frame.argument_id = Some(id.0 as u64);
                     r.at = end;
+                } else if cfg!(otp_domain = "29") && frame.kind == "record"
+                    && { #[cfg(otp_domain = "29")] { frame.record_identity_return.is_some() } #[cfg(not(otp_domain = "29"))] { false } }
+                {
+                    #[cfg(otp_domain = "29")]
+                    {
+                        let end = frame.record_identity_return.take().unwrap();
+                        if r.at != frame.record_identity.unwrap().end { return Err("Native Core: record id span mismatch".into()); }
+                        frame.record_identity_id = Some(id.0 as u64);
+                        r.at = end;
+                    }
                 } else {
                     let active = frame
                         .active
@@ -645,12 +714,21 @@ impl<'a> Builder<'a> {
             }
             if let Some(span) = frame.argument {
                 if frame.argument_id.is_none() {
-                    frame.pattern = Some(match r.native_atom()? {
+                    if frame.kind == "map" { frame.pattern = Some(match r.native_atom()? {
                         "true" => true,
                         "false" => false,
                         _ => return Err("Native Core: map pattern is not boolean".into()),
-                    });
+                    }); }
                     frame.argument_return = Some(r.at);
+                    r.at = span.start;
+                    entering = true;
+                    continue;
+                }
+            }
+            #[cfg(otp_domain = "29")]
+            if let Some(span) = frame.record_identity {
+                if frame.record_identity_id.is_none() {
+                    frame.record_identity_return = Some(r.at);
                     r.at = span.start;
                     entering = true;
                     continue;
@@ -664,6 +742,8 @@ impl<'a> Builder<'a> {
                 None,
                 frame.argument_id,
                 frame.pattern,
+                #[cfg(otp_domain = "29")]
+                frame.record_identity_id,
             )?);
         }
     }

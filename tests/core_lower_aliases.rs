@@ -22,3 +22,5 @@ fn check(name:&str) {
     }
 }
 #[test] fn core_lower_alias_patterns() {check("native_aliases");}
+
+#[test] fn core_lower_impossible_alias_patterns() {check("native_impossible_aliases");}

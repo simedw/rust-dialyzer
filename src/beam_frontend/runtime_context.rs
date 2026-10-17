@@ -20,10 +20,21 @@ pub struct RuntimeContext {
     pub closure_profile: ClosureCodeProfile,
     pub identity_origin: IdentityOrigin,
 }
+
+pub fn runtime_major(typesig: &[u8], contracts: &[u8]) -> Result<&'static str, String> {
+    match (sha256_hex(typesig).as_str(),sha256_hex(contracts).as_str()) {
+        ("08945a69dd63a44ce877d696e1c27be2753de29ae6fc1f8e183d37ab0add9882",
+         "75cf94ef5951b50537e90eab8cb718ec64cbefb61bdca071b35851abbd1c27cb") => Ok("28"),
+        ("fd3294e8c5859cc934c0dda3a8538c6017f5a91cd66cb3c33b8faea0b22d7078",
+         "8b260fbf75f47be6febe0c476f91e872b860ffe3e5244530f6b71e846f3fc102") => Ok("29"),
+        _ => Err("unrecognized Dialyzer build: require an authenticated OTP 28.3 or OTP 29.1.2 typesig/contracts BEAM pair".into()),
+    }
+}
 impl RuntimeContext {
     /// Import a captured compiler context for differential research. This does
     /// not reconstruct its transient atom identities from BEAM metadata.
     pub fn import(context: Value, closure_profile: &Value) -> Result<Self, String> {
+        crate::domain::check_major(context["profile"]["otp"].as_str().ok_or("runtime OTP major missing")?)?;
         CoreProgram::from_modules(&context, vec![])?;
         NativeAtomLayout::parse(&context["atom_layout"]).map_err(|e| e.to_string())?;
         let closure_profile = ClosureCodeProfile::parse(closure_profile)?;
@@ -44,15 +55,18 @@ impl RuntimeContext {
         contracts_beam: &[u8],
         limits: Limits,
     ) -> Result<Self, String> {
+        Self::native_authenticated(names, typesig_beam, contracts_beam, limits)
+    }
+    fn native_authenticated(
+        names: impl IntoIterator<Item = String>,
+        typesig_beam: &[u8],
+        contracts_beam: &[u8],
+        limits: Limits,
+    ) -> Result<Self, String> {
+        let major = runtime_major(typesig_beam,contracts_beam)?;
+        crate::domain::check_major(major)?;
         let typesig = fun_profile(typesig_beam, limits)?;
         let contracts = fun_profile(contracts_beam, limits)?;
-        if typesig["original_sha256"]
-            != "08945a69dd63a44ce877d696e1c27be2753de29ae6fc1f8e183d37ab0add9882"
-            || contracts["original_sha256"]
-                != "75cf94ef5951b50537e90eab8cb718ec64cbefb61bdca071b35851abbd1c27cb"
-        {
-            return Err("native context compiler profile mismatch: require pinned OTP28.3 dialyzer5.4 original BEAMs".into());
-        }
         if typesig["module"] != "dialyzer_typesig" || contracts["module"] != "dialyzer_contracts" {
             return Err(
                 "native context requires original dialyzer_typesig and dialyzer_contracts BEAMs"
@@ -105,6 +119,13 @@ pub fn module_atoms(modules: &[CoreModule]) -> BTreeSet<String> {
                     atoms.insert(module.clone());
                     atoms.insert(function.clone());
                 }
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(r) => {
+                    atoms.insert(r.module.clone());
+                    atoms.insert(r.name.clone());
+                    atoms.insert(r.exported.to_string());
+                    atoms.extend(r.fields.iter().map(|(k,_)| k.clone()));
+                }
                 _ => {}
             }
         }
@@ -114,6 +135,12 @@ pub fn module_atoms(modules: &[CoreModule]) -> BTreeSet<String> {
 
 /// This frontend implements this profile, not whichever compiler is installed.
 pub fn pinned_profile() -> Value {
+    #[cfg(otp_domain = "29")]
+    return json!({"otp":"29","erts":"17.1.1","elixir":"1.19.4","dialyzer":"6.0.4",
+        "term_map_order":"native_to_list_with_iterator",
+        "core_options":["no_copt","to_core","binary","return_errors","no_inline",
+            "strict_record_tests","dialyzer","no_spawn_compiler_process"]});
+    #[cfg(otp_domain = "28")]
     json!({"otp":"28","erts":"16.2","elixir":"1.19.4","dialyzer":"5.4",
         "term_map_order":"native_to_list_with_iterator",
         "core_options":["no_copt","to_core","binary","return_errors","no_inline",
@@ -296,11 +323,17 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::native_runtime_hash::NativeHashKey;
+    #[cfg(otp_domain = "28")]
     const TYPESIG: &[u8] =
         include_bytes!("../../tests/fixtures/beam_core_port/runtime_context/dialyzer_typesig.beam");
+    #[cfg(otp_domain = "28")]
     const CONTRACTS: &[u8] = include_bytes!(
         "../../tests/fixtures/beam_core_port/runtime_context/dialyzer_contracts.beam"
     );
+    #[cfg(otp_domain = "29")]
+    const TYPESIG: &[u8] = include_bytes!("../../backend29/tests/fixtures/otp29/runtime_context/dialyzer_typesig.beam");
+    #[cfg(otp_domain = "29")]
+    const CONTRACTS: &[u8] = include_bytes!("../../backend29/tests/fixtures/otp29/runtime_context/dialyzer_contracts.beam");
     fn fixture(bytes: &[u8], oracle: &str) {
         let actual = fun_profile(bytes, Limits::default()).unwrap();
         let mut expected: Value = serde_json::from_str(oracle).unwrap();
@@ -314,17 +347,21 @@ mod tests {
     }
     #[test]
     fn original_funt_matches_independent_otp_oracle() {
+        #[cfg(otp_domain = "28")]
+        let (typesig,contracts) = (
+            include_str!("../../tests/fixtures/beam_core_port/runtime_context/dialyzer_typesig.json"),
+            include_str!("../../tests/fixtures/beam_core_port/runtime_context/dialyzer_contracts.json"));
+        #[cfg(otp_domain = "29")]
+        let (typesig,contracts) = (
+            include_str!("../../backend29/tests/fixtures/otp29/runtime_context/dialyzer_typesig.json"),
+            include_str!("../../backend29/tests/fixtures/otp29/runtime_context/dialyzer_contracts.json"));
         fixture(
             TYPESIG,
-            include_str!(
-                "../../tests/fixtures/beam_core_port/runtime_context/dialyzer_typesig.json"
-            ),
+            typesig,
         );
         fixture(
             CONTRACTS,
-            include_str!(
-                "../../tests/fixtures/beam_core_port/runtime_context/dialyzer_contracts.json"
-            ),
+            contracts,
         );
     }
     #[test]
@@ -405,7 +442,7 @@ mod tests {
             RuntimeContext::native([], &modified, CONTRACTS, Limits::default())
                 .err()
                 .unwrap()
-                .contains("profile mismatch")
+                .contains("unrecognized Dialyzer build")
         );
         let mut bytes = b"FOR1\0\0\0\0BEAM".to_vec();
         fn chunk(bytes: &mut Vec<u8>, name: &[u8], data: &[u8]) {

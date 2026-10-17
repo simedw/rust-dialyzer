@@ -77,7 +77,7 @@ fn run(row: &Value) -> Result<Value, String> {
     let labels = Labels::build(&core, CoreLabel(0))?;
     let nodes = DataflowNodes::build(&core, &labels)?;
     let program = Program::build(&core)?;
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let bifs = Registry::standard()?;
     let mut graph_inputs = GraphInputs::empty();
     for l in row["escaping"].as_array().ok_or("escaping")? {
         graph_inputs

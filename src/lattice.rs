@@ -1,4 +1,10 @@
 pub use crate::variable_integer::VariableInteger;
+#[cfg(otp_domain = "29")]
+mod records;
+#[cfg(otp_domain = "29")]
+use records::Records;
+#[cfg(otp_domain = "29")]
+pub use records::{NativeRecord, NativeRecordName, RecordField, RecordTest, RecordsView};
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
 use serde_json::{Value, json};
@@ -12,6 +18,8 @@ pub enum LatticeError {
     FunctionClause,
     BadArg,
     NativeNonTerminating,
+    #[cfg(otp_domain = "29")]
+    RecordIterationOrderRequired,
     CaseClause(Box<Type>),
     BadMatch(Box<Type>),
     BadMatchBoolean(bool),
@@ -21,7 +29,11 @@ pub enum LatticeError {
 }
 impl std::fmt::Display for LatticeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self{Self::BadGenerator(t)=>write!(f,"OTP bad_generator: {}",t.to_value()),Self::BadGenerators(tails)=>write!(f,"OTP bad_generators: {}",json!([tails.0.iter().map(Type::to_value).collect::<Vec<_>>(),tails.1.iter().map(Type::to_value).collect::<Vec<_>>()])),Self::BadMatchNative(v)=>write!(f,"OTP badmatch native: {}",v.to_value()),Self::BadMatchBoolean(v)=>write!(f,"OTP badmatch: {}",v),Self::BadMatch(t)=>write!(f,"OTP badmatch: {}",t.to_value()),Self::CaseClause(t)=>write!(f,"OTP case_clause: {}",t.to_value()),Self::NativeNonTerminating=>f.write_str("native_nonterminating: repeated active nominal operation pair"),Self::FunctionClause=>f.write_str("OTP function_clause"),Self::BadArg=>f.write_str("OTP badarg"),Self::OpaqueSentinelSubtraction=>f.write_str("OTP function_clause: opaque sentinel cannot be forced into structural union for subtraction")}
+        #[cfg(otp_domain = "29")]
+        if matches!(self, Self::RecordIterationOrderRequired) {
+            return f.write_str("native record map iteration order required for more than 32 fields");
+        }
+        match self{#[cfg(otp_domain = "29")] Self::RecordIterationOrderRequired => unreachable!(),Self::BadGenerator(t)=>write!(f,"OTP bad_generator: {}",t.to_value()),Self::BadGenerators(tails)=>write!(f,"OTP bad_generators: {}",json!([tails.0.iter().map(Type::to_value).collect::<Vec<_>>(),tails.1.iter().map(Type::to_value).collect::<Vec<_>>()])),Self::BadMatchNative(v)=>write!(f,"OTP badmatch native: {}",v.to_value()),Self::BadMatchBoolean(v)=>write!(f,"OTP badmatch: {}",v),Self::BadMatch(t)=>write!(f,"OTP badmatch: {}",t.to_value()),Self::CaseClause(t)=>write!(f,"OTP case_clause: {}",t.to_value()),Self::NativeNonTerminating=>f.write_str("native_nonterminating: repeated active nominal operation pair"),Self::FunctionClause=>f.write_str("OTP function_clause"),Self::BadArg=>f.write_str("OTP badarg"),Self::OpaqueSentinelSubtraction=>f.write_str("OTP function_clause: opaque sentinel cannot be forced into structural union for subtraction")}
     }
 }
 impl std::error::Error for LatticeError {}
@@ -112,6 +124,8 @@ const HAS_VAR: u8 = 1;
 const ANY_VAR: u8 = 2;
 /// `contains_nominal()` holds.
 const NOMINAL: u8 = 4;
+/// OTP29 opacity marking also drops explicit missing native-record fields.
+const BLINDING_CHANGES: u8 = 8;
 /// Facts about a type that would otherwise need a walk over it, computed once
 /// from the children's facts when the type is built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,10 +193,16 @@ impl Info {
                         }
                     }
                 }
+                #[cfg(otp_domain = "29")]
+                if let Some(records) = s.records() {
+                    if records.nominal() { flags |= NOMINAL; }
+                    if records.blinding_changes() { flags |= BLINDING_CHANGES; }
+                    from = from.max(records.limited_from());
+                }
                 if let Some(m) = s.maps() {
                     flags |= m.default_key.info.flags | m.default_value.info.flags;
                     for e in &m.entries {
-                        flags |= e.value.info.flags & NOMINAL;
+                        flags |= e.value.info.flags & (NOMINAL | BLINDING_CHANGES);
                         from = from.max(2).max(deeper(&e.value));
                     }
                     from = from.max(deeper(&m.default_key)).max(deeper(&m.default_value));
@@ -932,6 +952,8 @@ struct Slots {
     number: Option<Arc<Numeric>>,
     tuple: Option<Arc<Tuples>>,
     maps: Option<Arc<Maps>>,
+    #[cfg(otp_domain = "29")]
+    records: Option<Arc<Records>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum FamilyStore {
@@ -943,6 +965,8 @@ enum FamilyStore {
     Numeric(Arc<Numeric>),
     Tuples(Arc<Tuples>),
     Maps(Arc<Maps>),
+    #[cfg(otp_domain = "29")]
+    Records(Arc<Records>),
     Union(Arc<Slots>),
 }
 impl FamilyStore {
@@ -971,6 +995,10 @@ impl FamilyStore {
             }
             if let Some(value) = slots.maps.take() {
                 return Self::Maps(value);
+            }
+            #[cfg(otp_domain = "29")]
+            if let Some(value) = slots.records.take() {
+                return Self::Records(value);
             }
         }
         Self::Union(Arc::new(slots))
@@ -1055,6 +1083,16 @@ impl FamilyStore {
     fn maps(&self) -> Option<&Maps> {
         self.maps_owner().map(Arc::as_ref)
     }
+    #[cfg(otp_domain = "29")]
+    fn records_owner(&self) -> Option<&Arc<Records>> {
+        match self {
+            Self::Records(value) => Some(value),
+            Self::Union(slots) => slots.records.as_ref(),
+            _ => None,
+        }
+    }
+    #[cfg(otp_domain = "29")]
+    fn records(&self) -> Option<&Records> { self.records_owner().map(Arc::as_ref) }
     fn union_record(&self) -> bool {
         matches!(self, Self::Union(slots) if slots.union_record)
     }
@@ -1101,6 +1139,8 @@ impl FamilyStore {
                 maps: Some(value),
                 ..Slots::default()
             },
+            #[cfg(otp_domain = "29")]
+            Self::Records(value) => Slots { records: Some(value), ..Slots::default() },
             Self::Union(slots) => Arc::unwrap_or_clone(slots),
         }
     }
@@ -1122,6 +1162,8 @@ impl FamilyStore {
             number: join_slot(self.number_owner(), b.number_owner(), Numeric::join),
             tuple: checked_join_slot(self.tuple_owner(), b.tuple_owner(), Tuples::join_shared)?,
             maps: checked_join_slot(self.maps_owner(), b.maps_owner(), Maps::join_shared)?,
+            #[cfg(otp_domain = "29")]
+            records: checked_join_slot(self.records_owner(), b.records_owner(), Records::join_shared)?,
         })
     }
     fn meet(&self, b: &Self) -> Result<Slots, LatticeError> {
@@ -1145,6 +1187,8 @@ impl FamilyStore {
             number: meet_slot(self.number_owner(), b.number_owner(), Numeric::meet_shared),
             tuple: checked_meet_slot(self.tuple_owner(), b.tuple_owner(), Tuples::meet_shared)?,
             maps: checked_meet_slot(self.maps_owner(), b.maps_owner(), Maps::meet_shared)?,
+            #[cfg(otp_domain = "29")]
+            records: checked_meet_slot(self.records_owner(), b.records_owner(), Records::meet_shared)?,
         })
     }
     fn subtract(&self, b: &Self) -> Result<Slots, LatticeError> {
@@ -1175,6 +1219,8 @@ impl FamilyStore {
                 number,
                 tuple,
                 maps,
+                #[cfg(otp_domain = "29")]
+                records: checked_subtract_slot(self.records_owner(), b.records_owner(), Records::subtract_shared)?,
             }
         })
     }
@@ -1195,6 +1241,8 @@ impl FamilyStore {
                 .map(|m| Maps::limit_shared(m, k))
                 .transpose()?
                 .flatten(),
+            #[cfg(otp_domain = "29")]
+            records: self.records_owner().map(|r| Records::limit_shared(r, k)).transpose()?,
             ..self.rebuild_base()
         })
     }
@@ -1215,6 +1263,8 @@ impl FamilyStore {
                 _ => None,
             },
             maps: None,
+            #[cfg(otp_domain = "29")]
+            records: self.records_owner().cloned(),
         }
     }
     /// Whether `Type::families(slots)` would rebuild exactly this store.
@@ -1241,6 +1291,8 @@ impl FamilyStore {
                 _ => false,
             }
         }
+        #[cfg(otp_domain = "29")]
+        if !same(self.records_owner(), &slots.records) { return false; }
         same(self.atoms_owner(), &slots.atoms)
             && same(self.bitstrings_owner(), &slots.bitstrings)
             && same(self.functions_owner(), &slots.functions)
@@ -1256,8 +1308,8 @@ impl FamilyStore {
 }
 impl std::fmt::Debug for FamilyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Slots")
-            .field("union_record", &self.union_record())
+        let mut debug = f.debug_struct("Slots");
+        debug.field("union_record", &self.union_record())
             .field("atoms", &self.atoms())
             .field("bitstrings", &self.bitstrings())
             .field("functions", &self.functions())
@@ -1265,8 +1317,10 @@ impl std::fmt::Debug for FamilyStore {
             .field("list", &self.list())
             .field("number", &self.number())
             .field("tuple", &self.tuple())
-            .field("maps", &self.maps())
-            .finish()
+            .field("maps", &self.maps());
+        #[cfg(otp_domain = "29")]
+        debug.field("records", &self.records());
+        debug.finish()
     }
 }
 
@@ -1281,6 +1335,8 @@ impl FamilyStore {
             (Self::Numeric(a), Self::Numeric(b)) => Arc::ptr_eq(a, b),
             (Self::Tuples(a), Self::Tuples(b)) => Arc::ptr_eq(a, b),
             (Self::Maps(a), Self::Maps(b)) => Arc::ptr_eq(a, b),
+            #[cfg(otp_domain = "29")]
+            (Self::Records(a), Self::Records(b)) => Arc::ptr_eq(a, b),
             (Self::Union(a), Self::Union(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -1297,12 +1353,16 @@ impl Slots {
             self.number.is_some(),
             self.tuple.is_some(),
             self.maps.is_some(),
+            #[cfg(otp_domain = "29")]
+            self.records.is_some(),
         ]
         .into_iter()
         .filter(|v| *v)
         .count()
     }
     fn empty(&self) -> bool {
+        #[cfg(otp_domain = "29")]
+        if self.records.is_some() { return false; }
         self.atoms.is_none()
             && self.bitstrings.is_none()
             && self.functions.is_none()
@@ -2352,9 +2412,14 @@ impl Type {
                     b.name.clone(),
                     self::NominalSet::raw(vec![y.as_ref().clone()], Self::none()),
                 ))?,
-                (NominalSet(_), _) | (Nominal(_), _) => {
-                    self.meet(&Self::raw_nominal(a.name.clone(), rhs.clone()))?
-                }
+                #[cfg(otp_domain = "29")]
+                (NominalSet(ns), _) => Self::nominal(a.name.clone(), Self::nominal_cartesian(
+                    &ns.nominals.iter().map(self::Nominal::as_type).collect::<Vec<_>>(),
+                    std::slice::from_ref(rhs),
+                )?),
+                #[cfg(not(otp_domain = "29"))]
+                (NominalSet(_), _) => self.meet(&Self::raw_nominal(a.name.clone(), rhs.clone()))?,
+                (Nominal(_), _) => self.meet(&Self::raw_nominal(a.name.clone(), rhs.clone()))?,
                 (_, NominalSet(_)) | (_, Nominal(_)) => rhs.nominal_meet(self)?,
                 _ => Self::none(),
             },
@@ -3532,6 +3597,8 @@ impl Type {
             }
             (Product(_), _) | (_, Product(_)) => self.clone(),
             (Families(a), Families(b)) => Self::families_sharing(a.subtract(b)?, self, self),
+            #[cfg(otp_domain = "29")]
+            (Families(s), Opaque) if !s.union_record() && matches!(s.records(), Some(Records::Record(_))) => *self,
             (Opaque, _) | (_, Opaque) => return Err(LatticeError::OpaqueSentinelSubtraction),
         })
     }
@@ -3615,6 +3682,8 @@ impl Type {
                     .collect::<Result<Vec<_>, _>>()?,
             ),
             "union_raw" => Self::from_union_record(values()?)?,
+            #[cfg(otp_domain = "29")]
+            "record" | "record_set" => Self::from_records(Records::from_value(value)?),
             "nominal_raw" => Self::raw_nominal(
                 NominalName::from_value(&value["name"])?,
                 Self::from_value(&value["inner"])?,
@@ -3811,6 +3880,8 @@ impl Type {
                 if let Some(m) = s.maps() {
                     values.push(m.value());
                 }
+                #[cfg(otp_domain = "29")]
+                if let Some(r) = s.records() { values.push(r.value()); }
                 if values.len() == 1 {
                     values.pop().unwrap()
                 } else {
@@ -3862,6 +3933,8 @@ pub struct SlotsView<'a> {
     pub number: Option<NumberView<'a>>,
     pub tuples: Option<TuplesView<'a>>,
     pub maps: Option<MapView<'a>>,
+    #[cfg(otp_domain = "29")]
+    pub records: Option<RecordsView<'a>>,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct MapView<'a> {
@@ -4044,6 +4117,8 @@ impl FamilyStore {
         let s = self;
         SlotsView {
             is_union_record: s.union_record(),
+            #[cfg(otp_domain = "29")]
+            records: s.records().map(Records::view),
             maps: s.maps().map(|m| MapView {
                 entries: &m.entries,
                 default_key: &m.default_key,
@@ -4112,7 +4187,7 @@ impl Type {
         match &self.repr {
             Repr::Nominal(n) => n.inner.structural(),
             Repr::NominalSet(_) => self.shallow_structural()?.structural(),
-            _ => self.transform_children(&|t| t.structural()),
+            _ => self.transform_children_with_records(&|t| t.structural(), false),
         }
     }
     /// Whether any nominal (named, possibly opaque) type or the opaque
@@ -4145,6 +4220,10 @@ impl Type {
                                 pending.extend(v.elements.iter());
                             }
                         }
+                    }
+                    #[cfg(otp_domain = "29")]
+                    if let Some(records) = slots.records() {
+                        for record in records.rows() { pending.extend(record.values()); }
                     }
                     if let Some(m) = slots.maps() {
                         pending.extend(m.entries.iter().map(|e| &e.value));
@@ -4186,10 +4265,22 @@ impl Type {
     where
         F: Fn(&Self) -> Result<Self, LatticeError>,
     {
+        self.transform_children_with_records(f, true)
+    }
+    fn transform_children_with_records<F>(&self, f: &F, _transform_records: bool) -> Result<Self, LatticeError>
+    where
+        F: Fn(&Self) -> Result<Self, LatticeError>,
+    {
         Ok(match &self.repr {
             Repr::Product(p) => Self::raw_product(p.iter().map(f).collect::<Result<Vec<_>, _>>()?),
             Repr::Families(slots) => {
-                if slots.functions().is_none()
+                let leaf_records = {
+                    #[cfg(otp_domain = "29")]
+                    { !_transform_records || slots.records().is_none() }
+                    #[cfg(not(otp_domain = "29"))]
+                    { true }
+                };
+                if leaf_records && slots.functions().is_none()
                     && !matches!(slots.list(), Some(Lists::List { .. }))
                     && !matches!(slots.tuple(), Some(Tuples::Set(_)))
                     && slots.maps().is_none()
@@ -4248,6 +4339,10 @@ impl Type {
                     s.maps = Maps::canonical(entries, f(&x.default_key)?, f(&x.default_value)?)?
                         .map(|m| reuse_left(m, x));
                 }
+                #[cfg(otp_domain = "29")]
+                if _transform_records && let Some(records) = slots.records_owner() {
+                    s.records = Some(reuse_left(records.transform(f)?, records));
+                }
                 Self::families_sharing(s, self, self)
             }
             _ => self.clone(),
@@ -4258,9 +4353,10 @@ impl Type {
         required: &Self,
         module: &str,
     ) -> Result<OpacityConflict, LatticeError> {
-        // Without nominal or opaque parts, `blind` returns its input, so there
-        // is no conflict; skip the meet and both rebuilds.
-        if !self.contains_nominal() && !required.contains_nominal() {
+        // Opacity marking can also change OTP29 native-record missing fields.
+        if !self.contains_nominal() && !required.contains_nominal()
+            && (self.info.flags | required.info.flags) & BLINDING_CHANGES == 0
+        {
             if verify_fast_paths() {
                 let slow = self.opacity_conflict_full(required, module)?;
                 assert_eq!(slow, OpacityConflict::None, "opacity fast path: {self:?} vs {required:?}");
@@ -4384,6 +4480,10 @@ impl Type {
                 if let Some(m) = s.maps() {
                     out.push(Self::from_map(Some(m.clone())))
                 }
+                #[cfg(otp_domain = "29")]
+                if let Some(records) = s.records_owner() {
+                    out.push(Self::families(Slots { records: Some(records.clone()), ..Slots::default() }));
+                }
                 out
             }
         })
@@ -4401,6 +4501,8 @@ impl Slots {
             self.number.as_deref().map(Numeric::value),
             self.tuple.as_deref().map(Tuples::value),
             self.maps.as_deref().map(Maps::value),
+            #[cfg(otp_domain = "29")]
+            self.records.as_deref().map(Records::value),
         ]
         .into_iter()
         .map(|v| v.unwrap_or_else(|| Type::none().to_value()))
@@ -4409,8 +4511,11 @@ impl Slots {
 }
 impl Type {
     fn from_union_record(values: &[Value]) -> Result<Self, String> {
-        if values.len() != 8 {
+        if values.len() != crate::domain::UNION_ARITY {
+            #[cfg(not(otp_domain = "29"))]
             return Err("native union record requires eight ordered slots".into());
+            #[cfg(otp_domain = "29")]
+            return Err("native union record requires nine ordered slots".into());
         }
         let mut slots = Slots::default();
         for (index, value) in values.iter().enumerate() {
@@ -4434,6 +4539,8 @@ impl Type {
                 5 => slots.number = expected.number.take(),
                 6 => slots.tuple = expected.tuple.take(),
                 7 => slots.maps = expected.maps.take(),
+                #[cfg(otp_domain = "29")]
+                8 => slots.records = expected.records.take(),
                 _ => unreachable!(),
             };
             if !expected.empty() {
@@ -4521,6 +4628,8 @@ impl Type {
                         && m.default_key.is_limited_walk(depth - 1)
                         && m.default_value.is_limited_walk(depth - 1)
                 });
+                #[cfg(otp_domain = "29")]
+                if s.records().is_some_and(|r| !r.limited(depth)) { return false; }
                 functions && list && tuple && map
             }
             _ => true,
@@ -4632,6 +4741,10 @@ impl Type {
                         m.default_value.substitute_aux(lookup)?,
                     )?
                     .map(Arc::new);
+                }
+                #[cfg(otp_domain = "29")]
+                if let Some(records) = slots.records_owner() {
+                    s.records = Some(reuse_left(records.transform(&|t| t.substitute_aux(lookup))?, records));
                 }
                 if slots.union_record() {
                     Self::new(Repr::Families(FamilyStore::raw(s)))
@@ -4863,8 +4976,12 @@ impl From<LatticeError> for UnificationError {
     }
 }
 #[derive(Default)]
-struct Unifier {
+struct Unifier<'a> {
     bindings: UnificationBindings,
+    #[cfg(otp_domain = "29")]
+    record_order: Option<&'a dyn Fn(&[crate::atom::Atom]) -> Result<Vec<usize>, LatticeError>>,
+    #[cfg(not(otp_domain = "29"))]
+    lifetime: std::marker::PhantomData<&'a ()>,
 }
 /// A borrowed `UnificationValue`, so unifying the parts of a type doesn't
 /// clone them. `Other` never holds `UnificationValue::Type`, so the derived
@@ -4916,6 +5033,16 @@ impl Type {
         u.pair(Val::Type(self), Val::Type(rhs), None)?;
         Ok(u.bindings)
     }
+    #[cfg(otp_domain = "29")]
+    pub fn unify_bindings_with_record_order(
+        &self,
+        rhs: &Self,
+        order: &dyn Fn(&[crate::atom::Atom]) -> Result<Vec<usize>, LatticeError>,
+    ) -> Result<UnificationBindings, UnificationError> {
+        let mut u = Unifier { record_order: Some(order), ..Unifier::default() };
+        u.pair(Val::Type(self), Val::Type(rhs), None)?;
+        Ok(u.bindings)
+    }
     fn direct_slots(&self) -> Option<&FamilyStore> {
         match &self.repr {
             Repr::Families(s) if !s.union_record() => Some(s),
@@ -4923,7 +5050,25 @@ impl Type {
         }
     }
 }
-impl Unifier {
+impl Unifier<'_> {
+    #[cfg(otp_domain = "29")]
+    fn record_values(&self, record: &NativeRecord) -> Result<Vec<Type>, UnificationError> {
+        let keys = record.fields.keys().copied().collect::<Vec<_>>();
+        let indices = if let Some(order) = self.record_order {
+            let indices = order(&keys)?;
+            let mut seen = vec![false; keys.len()];
+            if indices.len() != keys.len() || indices.iter().any(|&i| {
+                i >= seen.len() || std::mem::replace(&mut seen[i], true)
+            }) { return Err(LatticeError::BadArg.into()); }
+            indices
+        } else {
+            if keys.len() > 32 { return Err(LatticeError::RecordIterationOrderRequired.into()); }
+            (0..keys.len()).collect()
+        };
+        Ok(indices.into_iter().filter_map(|i| match &record.fields[&keys[i]] {
+            RecordField::Present(t) => Some(*t), RecordField::Missing => None,
+        }).collect())
+    }
     fn mismatch(a: Val, b: Val) -> UnificationError {
         UnificationError::Mismatch {
             left: Box::new(a.to_owned()),
@@ -5139,6 +5284,18 @@ impl Unifier {
                         up,
                     );
                 }
+            }
+            #[cfg(otp_domain = "29")]
+            match (sa.and_then(FamilyStore::records), sb.and_then(FamilyStore::records)) {
+                (Some(Records::Record(a)), Some(Records::Record(b))) => {
+                    return self.lists(&self.record_values(a)?, &self.record_values(b)?, up);
+                }
+                (Some(Records::Set(a)), Some(Records::Set(b))) => {
+                    let types = |rs: &[NativeRecord]| rs.iter().cloned()
+                        .map(|r| Type::from_records(Records::Record(r))).collect::<Vec<_>>();
+                    return self.lists(&types(a), &types(b), up);
+                }
+                _ => {}
             }
             if let (Some(ma), Some(mb)) = (sa.and_then(|s| s.maps()), sb.and_then(|s| s.maps())) {
                 self.types(&ma.default_key, &mb.default_key, up)?;
@@ -5895,14 +6052,24 @@ mod tests {
         let left = Type::from_value(&command["a"]).unwrap();
         let right = Type::from_value(&command["b"]).unwrap();
         for _ in 0..2 {
+            #[cfg(not(otp_domain = "29"))]
             assert_eq!(left.join(&right), Err(LatticeError::NativeNonTerminating));
+            #[cfg(otp_domain = "29")]
+            {
+                let expected=Type::from_value(&json!({"kind":"nominal_set","nominals":[
+                    {"kind":"nominal","name":{"symbol":"alpha"},"inner":{"kind":"any"}},
+                    command["a"],
+                    {"kind":"nominal","name":{"module":"mod_b","name":"t","arity":0,"opacity":"opaque"},"inner":{"kind":"atom"}}
+                ],"structural":{"kind":"none"}})).unwrap();
+                assert_eq!(left.join(&right).unwrap(),expected);
+            }
         }
         assert_eq!(a.join(&a).unwrap(), a);
     }
     #[test]
     fn native_solver_records_and_substitution_shortcuts() {
         let none = Type::none();
-        let raw=Type::from_value(&json!({"kind":"union_raw","values":[none.to_value(),none.to_value(),none.to_value(),none.to_value(),none.to_value(),none.to_value(),none.to_value(),none.to_value()]})).unwrap();
+        let raw=Type::from_value(&json!({"kind":"union_raw","values":vec![none.to_value();crate::domain::UNION_ARITY]})).unwrap();
         assert_ne!(raw, none);
         assert_eq!(raw.limit(1).unwrap(), raw);
         assert_eq!(raw.structural().unwrap(), none);
@@ -6089,7 +6256,7 @@ mod family_sharing_tests {
     #[test]
     fn raw_union_record_roundtrip_substitution_and_validation_are_preserved() {
         let tuple = Type::tuple(vec![Type::variable_integer(1.into())]).unwrap();
-        let mut values = vec![Type::none().to_value(); 8];
+        let mut values = vec![Type::none().to_value(); crate::domain::UNION_ARITY];
         values[6] = tuple.to_value();
         let wire = json!({"kind":"union_raw", "values": values});
         let original = Type::from_value(&wire).unwrap();
@@ -6108,14 +6275,14 @@ mod family_sharing_tests {
             )]))
             .unwrap();
         assert!(slots(&replaced).union_record());
-        let mut expected = vec![Type::none().to_value(); 8];
+        let mut expected = vec![Type::none().to_value(); crate::domain::UNION_ARITY];
         expected[6] = Type::tuple(vec![Type::atom("bound")]).unwrap().to_value();
         assert_eq!(
             replaced.to_value(),
             json!({"kind":"union_raw", "values": expected})
         );
         assert_eq!(original.to_value(), wire);
-        let mut misplaced = vec![Type::none().to_value(); 8];
+        let mut misplaced = vec![Type::none().to_value(); crate::domain::UNION_ARITY];
         misplaced[0] = tuple.to_value();
         assert_eq!(
             Type::from_union_record(&misplaced).unwrap_err(),
@@ -6624,6 +6791,8 @@ mod rebuild_base_tests {
                 default_key: Type::any(),
                 default_value: Type::none(),
             })),
+            #[cfg(otp_domain = "29")]
+            records: None,
         };
         let base = FamilyStore::raw(source.clone()).rebuild_base();
         assert!(base.union_record);

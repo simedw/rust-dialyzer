@@ -5,9 +5,15 @@ use num_bigint::Sign;
 use num_traits::ToPrimitive;
 use std::collections::BTreeMap;
 
+fn hash_kind(otp28: u64) -> u64 {
+    otp28 + u64::from(cfg!(otp_domain = "29") && otp28 >= 7)
+}
+
 enum Node<'a> {
     Atomic(&'a Key),
     Tuple(Vec<usize>),
+    #[cfg(otp_domain = "29")]
+    Record { definition_hash: u32, values: Vec<usize> },
     Cons(usize, usize),
     FlatMap(Vec<(usize, usize)>),
     Hamt {
@@ -32,6 +38,15 @@ impl<'a> Arena<'a> {
         layout: &NativeAtomLayout,
     ) -> Result<usize, RuntimeHashError> {
         let id = match key {
+            #[cfg(otp_domain = "29")]
+            Key::Record { module,name,exported,fields } => {
+                let definition_hash = crate::portable_term_hash::record_definition_hash(module,name,*exported,fields);
+                let mut ordered = fields.iter().map(|(k,v)| Ok((layout.atom_identity(k)?,v)))
+                    .collect::<Result<Vec<_>,RuntimeHashError>>()?;
+                ordered.sort_by_key(|(id,_)| *id);
+                let values = ordered.into_iter().map(|(_,v)| self.append(v,layout)).collect::<Result<_,_>>()?;
+                self.push(Node::Record { definition_hash,values })
+            }
             Key::Tuple(xs) => {
                 let children = xs
                     .iter()
@@ -164,8 +179,20 @@ pub(crate) fn hash(layout: &NativeAtomLayout, key: &Key) -> Result<u64, RuntimeH
                     continue;
                 }
             }
-            Node::FlatMap(entries) => {
+            #[cfg(otp_domain = "29")]
+            Node::Record { definition_hash,values } => {
                 state.alpha(7);
+                state.beta(values.len() as u64 + 1);
+                state.alpha(1);
+                state.beta((u64::from(*definition_hash) << 4) | 15);
+                if let Some((last,rest)) = values.split_last() {
+                    for id in rest { push_node(&arena,layout,*id,&mut state,&mut stack)?; }
+                    current = *last;
+                    continue;
+                }
+            }
+            Node::FlatMap(entries) => {
+                state.alpha(hash_kind(7));
                 state.beta(entries.len() as u64);
                 if let Some((last, rest)) = entries.split_last() {
                     for (k, v) in rest {
@@ -182,7 +209,7 @@ pub(crate) fn hash(layout: &NativeAtomLayout, key: &Key) -> Result<u64, RuntimeH
                 size,
                 children,
             } => {
-                state.alpha(*tag);
+                state.alpha(hash_kind(*tag));
                 if let Some(size) = size {
                     state.beta(*size as u64);
                 }
@@ -253,7 +280,7 @@ pub(crate) fn hash(layout: &NativeAtomLayout, key: &Key) -> Result<u64, RuntimeH
                     } else {
                         let (sign, digits) = value.to_u64_digits();
                         state.alpha(
-                            (if sign == Sign::Minus { 14 } else { 15 })
+                            hash_kind(if sign == Sign::Minus { 14 } else { 15 })
                                 | ((digits.len() as u64) << 32),
                         );
                         let mut i = 0;
@@ -268,11 +295,11 @@ pub(crate) fn hash(layout: &NativeAtomLayout, key: &Key) -> Result<u64, RuntimeH
                     }
                 }
                 Key::Float(bits) => {
-                    state.alpha(20);
+                    state.alpha(hash_kind(20));
                     state.beta(*bits);
                 }
                 Key::Bits { bytes, bits } => {
-                    state.alpha(11);
+                    state.alpha(hash_kind(11));
                     state.beta(*bits);
                     let count = (*bits / 8) as usize;
                     let mut i = 0;

@@ -38,6 +38,8 @@ pub fn write_with_map_orders(
                 ErlangTerm::Tuple(xs) => xs.clone(),
                 ErlangTerm::List { items, tail } => items.iter().copied().chain([*tail]).collect(),
                 ErlangTerm::Map(entries) => entries.iter().flat_map(|(k, v)| [*k, *v]).collect(),
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(record) => record.fields.iter().map(|(_, value)| *value).collect(),
                 _ => Vec::new(),
             };
             for child in children.into_iter().rev() {
@@ -67,6 +69,18 @@ pub fn write_with_map_orders(
                 ))
             }
             ErlangTerm::Nil => out.string("[]"),
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => {
+                let atom = |name: &str| match encoding { Encoding::Latin1 => context.atom_latin1(name), Encoding::Unicode => context.atom_to_string(name) };
+                let mut parts = vec![out.string(&format!("#{}:{}{{", atom(&record.module), atom(&record.name)))];
+                for (index, (name, value)) in record.fields.iter().enumerate() {
+                    if index > 0 { parts.push(out.integer(44)); }
+                    parts.push(out.string(&format!("{} = ", atom(name))));
+                    parts.push(written[value.0].unwrap());
+                }
+                parts.push(out.integer(125));
+                out.list(parts)
+            }
             ErlangTerm::Atom(a) => out.string(&match encoding {
                 Encoding::Latin1 => context.atom_latin1(a),
                 Encoding::Unicode => context.atom_to_string(a),

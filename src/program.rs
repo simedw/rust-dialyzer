@@ -135,6 +135,10 @@ pub enum MetadataKind {
     Spec,
     Callback,
     Record,
+    #[cfg(otp_domain = "29")]
+    NativeRecord,
+    #[cfg(otp_domain = "29")]
+    ImportRecord,
     Behaviour,
     ExportType,
     OptionalCallbacks,
@@ -802,6 +806,22 @@ impl Program {
                             owner,
                         });
                     }
+                    stack.push(*value);
+                }
+                #[cfg(otp_domain = "29")]
+                CoreExpr::Record { argument, id, pairs } => {
+                    let snapshot = self.snapshot_scope(scope);
+                    uses.extend([*argument, *id].into_iter().map(|node| Task {
+                        node,
+                        scope: snapshot,
+                        owner,
+                    }));
+                    stack.extend(pairs.iter().rev().copied());
+                }
+                #[cfg(otp_domain = "29")]
+                CoreExpr::RecordPair { key, value } => {
+                    let snapshot = self.snapshot_scope(scope);
+                    uses.push(Task { node: *key, scope: snapshot, owner });
                     stack.push(*value);
                 }
                 CoreExpr::Map { base, pairs, .. } => {

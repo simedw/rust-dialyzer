@@ -120,6 +120,8 @@ fn endpoint(value: EndpointView<'_>) -> Bound {
 }
 pub fn integer_domain(value: &Type) -> Result<Option<Type>, NativeTransferError> {
     let value = value.shallow_structural()?;
+    #[cfg(otp_domain = "29")]
+    if matches!(value.view(),TypeView::Families(s) if s.records.is_some()) { return Ok(None); }
     let integer = matches!(value.view(),TypeView::Families(s) if matches!(s.number,Some(NumberView::Integer(_)))&&s.atoms.is_none()&&s.list.is_none()&&s.tuples.is_none()&&s.identifiers.is_none()&&s.bitstrings.is_none()&&s.functions.is_none()&&s.maps.is_none());
     Ok(if integer { Some(value) } else { None })
 }

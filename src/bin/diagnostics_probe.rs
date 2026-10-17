@@ -106,7 +106,7 @@ fn context(v: &Value) -> PresentationContext {
     ctx
 }
 fn main() {
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json")).unwrap();
+    let bifs = Registry::standard().unwrap();
     for line in io::stdin().lock().lines() {
         let v: Value = serde_json::from_str(&line.unwrap()).unwrap();
         let ctx = context(&v);

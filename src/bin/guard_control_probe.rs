@@ -93,6 +93,10 @@ fn run(v: &Value, registry: &rust_dialyzer_poc::bifs::registry::Registry) -> Res
         translated_files: BTreeMap::new().into(),
         letrec: BTreeMap::new().into(),
         records: BTreeMap::new().into(),
+        #[cfg(otp_domain = "29")]
+        native_records: BTreeMap::new().into(),
+        #[cfg(otp_domain = "29")]
+        native_record_imports: BTreeMap::new().into(),
         warnings: WarningState {
             warning_mode: v["warnings"].as_bool().unwrap_or(false),
             warnings: vec![],

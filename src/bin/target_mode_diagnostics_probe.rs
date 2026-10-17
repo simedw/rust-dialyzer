@@ -30,7 +30,7 @@ fn matches(w: &[NativeWarning], v: &Value) -> bool {
 fn main() {
     let path = std::env::args().nth(1).unwrap();
     let library_data = std::fs::read_to_string(path).unwrap();
-    let registry = Registry::load(include_str!("../../corpus/bifs.json")).unwrap();
+    let registry = Registry::standard().unwrap();
     let mut schema_checked = false;
     let mut preparations = BTreeMap::<String, Arc<PreparedDefinitions>>::new();
     let mut libraries = BTreeMap::new();

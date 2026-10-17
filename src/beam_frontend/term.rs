@@ -243,6 +243,8 @@ pub fn compact(input: ErlangTerms) -> Result<ErlangTerms, String> {
                 pending.push(*tail);
             }
             ErlangTerm::Map(pairs) => pending.extend(pairs.iter().flat_map(|(k, v)| [*k, *v])),
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => pending.extend(record.fields.iter().map(|(_, value)| *value)),
             _ => (),
         }
     }
@@ -271,6 +273,8 @@ pub fn compact(input: ErlangTerms) -> Result<ErlangTerms, String> {
                 ErlangTerm::Map(pairs) => pairs
                     .iter_mut()
                     .try_for_each(|(k, v)| mapped(k).and_then(|()| mapped(v)))?,
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(record) => record.fields.iter_mut().try_for_each(|(_, value)| mapped(value))?,
                 _ => (),
             }
             remap[i] = terms.len();
@@ -287,6 +291,32 @@ pub fn compact(input: ErlangTerms) -> Result<ErlangTerms, String> {
 #[cfg(test)]
 mod compaction_tests {
     use super::*;
+    #[cfg(otp_domain = "29")]
+    #[test]
+    fn compact_native_record_preserves_nested_and_shared_field_references() {
+        let mut a = Arena::default();
+        a.atom("discarded draft");
+        let key = a.atom("key");
+        let value = a.integer(42);
+        let pair = a.tuple(vec![key, value]);
+        let nested = a.push(ErlangTerm::Map(vec![(key, pair)]));
+        let inner = a.push(ErlangTerm::Record(Box::new(crate::core::NativeRecord {
+            module: "records".into(), name: "inner".into(), exported: false,
+            fields: vec![("nested".into(), nested)],
+        })));
+        let root = a.push(ErlangTerm::Record(Box::new(crate::core::NativeRecord {
+            module: "records".into(), name: "outer".into(), exported: true,
+            fields: vec![("second".into(), inner), ("first".into(), nested), ("shared".into(), inner)],
+        })));
+        let input = a.finish(root);
+        let output = compact(input.clone()).unwrap();
+        let limits = crate::external_term::Limits::default();
+        assert_eq!(crate::external_term::encode(&input, limits, false).unwrap(), crate::external_term::encode(&output, limits, false).unwrap());
+        assert_eq!(output.terms.len(), input.terms.len() - 1);
+        let ErlangTerm::Record(record) = &output.terms[output.root.0] else { panic!("record lost") };
+        assert_eq!(record.fields[0].1, record.fields[2].1);
+        assert!(record.fields.iter().all(|(_, value)| value.0 < output.root.0));
+    }
     #[test]
     fn compaction_preserves_complete_terms_and_shared_children() {
         let mut a = Arena::default();

@@ -19,6 +19,10 @@ use crate::{
 };
 use std::collections::{BTreeMap, VecDeque};
 
+#[cfg(otp_domain = "29")]
+#[path = "body_native_records.rs"]
+mod native_records;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BodyMessage {
     Function {
@@ -44,6 +48,8 @@ pub enum BodyMessage {
         pattern: String,
         actual: String,
     },
+    #[cfg(otp_domain = "29")]
+    NativeRecordUpdate { variable: crate::lattice::NativeValue, identity: crate::lattice::NativeValue },
     MapUpdate {
         map: String,
         key: String,
@@ -134,6 +140,8 @@ struct Value {
     typ: Type,
 }
 enum Collection {
+    #[cfg(otp_domain = "29")]
+    NativeRecord { identity: crate::lattice::NativeRecordName, keys: Vec<crate::atom::Atom> },
     Product,
     Binary,
     Call {
@@ -171,6 +179,10 @@ struct MapCursor {
 }
 enum Frame {
     Visit(NodeRef, DataflowMap),
+    #[cfg(otp_domain = "29")]
+    NativeRecord { node: NodeRef, argument: NodeRef, identity: crate::lattice::NativeRecordName, checkpoint: usize },
+    #[cfg(otp_domain = "29")]
+    NativeRecordUpdate { node: NodeRef, argument: NodeRef, identity: crate::lattice::NativeRecordName, updates: Type, checkpoint: usize },
     Collection {
         remaining: VecDeque<NodeRef>,
         types: Vec<Type>,
@@ -866,6 +878,9 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
         state: &mut BinderState<W>,
     ) -> Result<Value> {
         let typ = match finish {
+            #[cfg(otp_domain = "29")]
+            Collection::NativeRecord { identity, keys } => Type::record(identity,
+                keys.into_iter().zip(types).map(|(k,v)| (k,crate::lattice::RecordField::Present(v))).collect()),
             Collection::Call {
                 tree,
                 module,
@@ -1071,6 +1086,8 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
         let mut state = state.clone();
         let mut todo = vec![Frame::Visit(node, map.clone())];
         let mut values: Vec<Value> = Vec::new();
+        #[cfg(otp_domain = "29")]
+        let mut record_states: Vec<Option<(BinderState<W>,FunctionState)>> = Vec::new();
         let mut work = 0usize;
         while let Some(frame) = todo.pop() {
             work += 1;
@@ -1140,6 +1157,27 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
                                 value: reference(value),
                             });
                             todo.push(Frame::Visit(reference(size), map));
+                        }
+                        #[cfg(otp_domain = "29")]
+                        CoreExpr::Record { argument, id, pairs } => {
+                            let id = reference(id);
+                            let CoreExpr::Literal(term) = self.patterns.nodes.expression(id)? else {
+                                return Err(BodyError::Boundary("native record identity is not literal".into()));
+                            };
+                            let identity = state.resolve_native_record_id(&self.patterns.nodes.module(id.module)?.terms,*term)?;
+                            let mut keys = Vec::new();
+                            let mut fields = Vec::new();
+                            for pair in pairs {
+                                let CoreExpr::RecordPair { key,value } = self.patterns.nodes.expression(reference(pair))? else {
+                                    return Err(BodyError::Boundary("native record pair expected".into()));
+                                };
+                                keys.push(crate::atom::Atom::from(self.atom(reference(key))?));
+                                fields.push(reference(value));
+                            }
+                            let checkpoint = record_states.len();
+                            record_states.push(Some((state.clone(),self.functions.clone())));
+                            todo.push(Frame::NativeRecord { node,argument:reference(argument),identity:identity.clone(),checkpoint });
+                            Self::collect(&mut todo,fields,map,Collection::NativeRecord { identity,keys },&mut values,self,&mut state)?;
                         }
                         CoreExpr::Map { base, pairs, .. } => {
                             todo.push(Frame::MapBase {
@@ -1291,6 +1329,8 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
                                 }
                                 "dialyzer_unknown" | "remove_message" | "nif_start"
                                 | "debug_line" | "executable_line" => Type::any(),
+                                #[cfg(otp_domain = "29")]
+                                "record_field" => Type::any(),
                                 _ => {
                                     return Err(BodyError::Unported {
                                         node,
@@ -1361,6 +1401,44 @@ impl<'b, 'c> BodyFlow<'_, 'b, 'c> {
                             .ok_or_else(|| BodyError::Boundary("case body absent".into()))?,
                     );
                     self.next_body_clause(cursor, &mut todo, &mut values, &mut state)?;
+                }
+                #[cfg(otp_domain = "29")]
+                Frame::NativeRecord { node,argument,identity,checkpoint } => {
+                    let value = values.pop().ok_or_else(||BodyError::Boundary("native record fields absent".into()))?;
+                    if matches!(self.patterns.nodes.expression(argument)?,CoreExpr::Literal(_)) {
+                        let (old,functions) = record_states[checkpoint].take().expect("record creation checkpoint");
+                        state = old;
+                        *self.functions = functions;
+                        values.push(self.native_record_inf(node,&identity,value,&mut state)?);
+                    } else {
+                        record_states[checkpoint] = Some((state.clone(),self.functions.clone()));
+                        todo.push(Frame::NativeRecordUpdate { node,argument,identity,updates:value.typ,checkpoint });
+                        todo.push(Frame::Visit(argument,value.map));
+                    }
+                }
+                #[cfg(otp_domain = "29")]
+                Frame::NativeRecordUpdate { node,argument,identity,updates,checkpoint } => {
+                    let mut value = values.pop().ok_or_else(||BodyError::Boundary("native record update argument absent".into()))?;
+                    value.typ = value.typ.meet(&Type::record(identity.clone(),BTreeMap::new()))?;
+                    if value.typ.is_impossible() {
+                        let (old,functions) = record_states[checkpoint].take().expect("record update checkpoint");
+                        state = old;
+                        *self.functions = functions;
+                        let variable = self.native_record_variable(argument)?;
+                        let identity = Self::native_record_identity_value(&identity);
+                        self.emit(node,BodyMessage::NativeRecordUpdate { variable,identity },&mut state)?;
+                        values.push(value);
+                    } else {
+                        record_states[checkpoint].take();
+                        let crate::lattice::TypeView::Families(slots) = updates.view() else { return Err(LatticeError::FunctionClause.into()); };
+                        let Some(crate::lattice::RecordsView::Record(record)) = slots.records else { return Err(LatticeError::FunctionClause.into()); };
+                        let fields = record.fields.iter().filter_map(|(k,v)| match v {
+                            crate::lattice::RecordField::Present(v)=>Some((k.clone(),*v)),
+                            crate::lattice::RecordField::Missing=>None,
+                        }).collect::<Vec<_>>();
+                        value.typ = value.typ.record_replace(if matches!(identity,crate::lattice::NativeRecordName::Any) {None} else {Some(&identity)},&fields)?;
+                        values.push(self.native_record_inf(node,&identity,value,&mut state)?);
+                    }
                 }
                 Frame::Collection {
                     mut remaining,
@@ -1705,6 +1783,10 @@ impl BodyWarning {
                 "record_constr",
                 vec![string(actual), string(fields)],
             ),
+            #[cfg(otp_domain = "29")]
+            BodyMessage::NativeRecordUpdate { variable,identity } => (
+                "warn_matching","record_update",vec![variable.clone(),identity.clone()],
+            ),
             BodyMessage::RecordBinding {
                 tag,
                 pattern,
@@ -1770,13 +1852,18 @@ mod snapshot_refresh_tests {
         let core = CoreProgram::parse(r#"{"version":5,"profile":{"term_map_order":"native_to_list_with_iterator","otp":"28","erts":"16","elixir":"1.20.4","dialyzer":"5","core_options":[]},"modules":[]}"#).unwrap();
         let labels = Labels::build(&core, CoreLabel(0)).unwrap();
         let nodes = DataflowNodes::build(&core, &labels).unwrap();
-        let bifs = Registry::load(include_str!("../corpus/bifs.json")).unwrap();
+        let bifs = Registry::standard().unwrap();
         for missing_at in [None, Some(0), Some(1)] {
             let mut functions = FunctionState::new(vec![FunctionDefinition { key: FunctionKey::Label(CoreLabel(1)), node: None, arity: 1, escaping: false, name: None, raw_signature: None, callers: vec![] }]);
             let mut patterns = Patterns::new(&nodes);
             let links: crate::letrec_types::LetrecLinks = (0..2).map(|i| (CoreLabel(10 + i), CoreLabel(if missing_at == Some(i) { 2 } else { 1 }))).collect::<BTreeMap<_,_>>().into();
             let flow = BodyFlow { patterns: &mut patterns, functions: &mut functions, bifs: &bifs, calls: None, guards: None, letrec: &links };
-            let mut state = BinderState::<u32> { module: "fixture".into(), current_fun: WarningFunction::Undefined, translated_files: BTreeMap::new().into(), records: BTreeMap::new().into(), letrec: BTreeMap::from([(CoreLabel(10).into(), Type::atom("old")), (CoreLabel(99).into(), Type::atom("extra"))]).into(), warnings: WarningState { warning_mode: true, warnings: vec![7] } };
+            let mut state = BinderState::<u32> { module: "fixture".into(), current_fun: WarningFunction::Undefined, translated_files: BTreeMap::new().into(), records: BTreeMap::new().into(),
+                #[cfg(otp_domain = "29")]
+                native_records: BTreeMap::new().into(),
+                #[cfg(otp_domain = "29")]
+                native_record_imports: BTreeMap::new().into(),
+                letrec: BTreeMap::from([(CoreLabel(10).into(), Type::atom("old")), (CoreLabel(99).into(), Type::atom("extra"))]).into(), warnings: WarningState { warning_mode: true, warnings: vec![7] } };
             let prior = state.clone(); let mut expected = state.letrec.as_ref().clone();
             let legacy = (|| -> Result<()> { for (&variable, &function) in &links { expected.insert(variable.into(), flow.function_type(function)?); } Ok(()) })();
             let actual = flow.refresh_letrec(&mut state);

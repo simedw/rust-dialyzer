@@ -175,9 +175,9 @@ impl Lower {
         let arena = self.a.snapshot(a);
         let order = crate::term_order::TermOrderArena::reachable(&arena, &[a, b])?;
         if exact {
-            order.compare_map_keys(a, &order, b)
+            Ok(order.compare_map_keys(a, &order, b)?)
         } else {
-            order.compare(a, &order, b)
+            Ok(order.compare(a, &order, b)?)
         }
     }
     fn constant_operator_binary(

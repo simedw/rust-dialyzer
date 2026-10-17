@@ -323,6 +323,8 @@ impl Site {
 }
 enum Finish {
     Tuple,
+    #[cfg(otp_domain = "29")]
+    Record,
     Values,
     Cons,
     Alias(NodeId),
@@ -1454,6 +1456,16 @@ impl<'a> Generator<'a> {
                                         .clone(),
                                 );
                             }
+                            #[cfg(otp_domain = "29")]
+                            CoreExpr::Record { pairs, .. } => {
+                                let children = pairs.into_iter().map(|node| {
+                                    match &self.module(&site).nodes[node.0].expr {
+                                        CoreExpr::RecordPair { value, .. } => Ok(*value),
+                                        _ => Err(GenerationError::Boundary("native record pair expected".into())),
+                                    }
+                                }).collect::<Result<Vec<_>>>()?;
+                                schedule(children, Finish::Record);
+                            }
                             CoreExpr::Map { pairs, .. } => {
                                 let pattern = crate::patterns::PatternRef::Core(site.reference());
                                 let entries = pairs
@@ -1715,6 +1727,9 @@ impl<'a> Generator<'a> {
                                         Type::bitstring(0.into(), 0.into())
                                             .map_err(GenerationError::BitstringDomain)?,
                                     ),
+                                    #[cfg(otp_domain = "29")]
+                                    ErlangTerm::Atom(s) if ["record_field","is_native_record","is_record_accessible"].contains(&s.as_str()) =>
+                                        values.push(Type::any()),
                                     ErlangTerm::Atom(s)
                                         if [
                                             "remove_message",
@@ -1884,6 +1899,8 @@ impl<'a> Generator<'a> {
                             Finish::Cons => {
                                 self.cons_constraints(self.var(&site)?, args, self.foldable(&site))?
                             }
+                            #[cfg(otp_domain = "29")]
+                            Finish::Record => self.var(&site)?,
                         };
                         values.push(value);
                     }
@@ -2890,7 +2907,7 @@ mod capture_store_tests {
         let profile = ClosureCodeProfile::parse(&serde_json::json!({
             "module":"dialyzer_typesig", "original_sha256":"0000000000000000000000000000000000000000000000000000000000000000", "fun_table":[]
         })).unwrap();
-        let registry = Registry::load(include_str!("../../corpus/bifs.json")).unwrap();
+        let registry = Registry::standard().unwrap();
         let propagated = PropagatedTypes::default();
         let records = BTreeMap::new();
         let seed = [ModuleId(0), ModuleId(0)];
@@ -2952,7 +2969,7 @@ mod capture_store_tests {
         let program = crate::program::Program::build(&core).unwrap();
         let runtime = crate::constraints::generation_capture_headers::GenerationRuntimeCaptures::for_analysis("capture-test".into(), labels.next_label, &program).unwrap();
         let profile = ClosureCodeProfile::parse(&serde_json::json!({"module":"dialyzer_typesig","original_sha256":"0000000000000000000000000000000000000000000000000000000000000000","fun_table":[]})).unwrap();
-        let registry = Registry::load(include_str!("../../corpus/bifs.json")).unwrap();
+        let registry = Registry::standard().unwrap();
         let propagated = PropagatedTypes::default();
         let records = BTreeMap::new();
         let store = CoreCaptureStore::new(&core, &labels);
@@ -3377,7 +3394,7 @@ mod capture_store_tests {
         let profile = empty_generation_profile();
         let propagated = PropagatedTypes::default();
         let records = BTreeMap::new();
-        let registry = Registry::load(include_str!("../../corpus/bifs.json")).unwrap();
+        let registry = Registry::standard().unwrap();
         let make = || {
             fixture_generator(
                 &nodes,

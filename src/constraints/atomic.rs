@@ -98,13 +98,17 @@ impl AtomicConstraint {
             bindings,
             KeySet::new(),
             log.as_deref_mut(),
+            #[cfg(otp_domain = "29")]
+            arena.record_layout.as_deref(),
         )?;
         match (self.relation, first) {
             (_, AtomicStatus::Failed) => Ok(AtomicStatus::Failed),
             (Relation::Subtype, solved) => Ok(solved),
             (Relation::Equal, AtomicStatus::Solved(updated)) => match &self.right {
                 ConstraintValue::Type(ty) => {
-                    refine_access(ty, &intersection, bindings, updated, log)
+                    refine_access(ty, &intersection, bindings, updated, log,
+                        #[cfg(otp_domain = "29")]
+                        arena.record_layout.as_deref())
                 }
                 ConstraintValue::Derived(_) => Ok(AtomicStatus::Failed),
             },
@@ -119,7 +123,9 @@ pub(crate) fn refine(
     mut bindings: BindingMap,
     updated: KeySet,
 ) -> Result<AtomicOutcome, SolveError> {
-    let status = refine_access(original, intersection, &mut bindings, updated, None)?;
+    let status = refine_access(original, intersection, &mut bindings, updated, None,
+        #[cfg(otp_domain = "29")]
+        None)?;
     Ok(status.into_outcome(bindings))
 }
 pub(super) fn refine_access<A: BindingAccess>(
@@ -128,6 +134,8 @@ pub(super) fn refine_access<A: BindingAccess>(
     bindings: &mut A,
     updated: KeySet,
     log: Option<&mut WriteLog>,
+    #[cfg(otp_domain = "29")]
+    record_layout: Option<&crate::native_runtime_hash::NativeAtomLayout>,
 ) -> Result<AtomicStatus, SolveError> {
     if let Some(variable) = original.variable_ref() {
         if intersection.variable_ref().is_none() {
@@ -142,7 +150,23 @@ pub(super) fn refine_access<A: BindingAccess>(
             );
         }
     }
-    let unified = match original.unify_bindings(intersection) {
+    #[cfg(otp_domain = "29")]
+    let unified = if let Some(layout) = record_layout {
+        original.unify_bindings_with_record_order(intersection, &|keys| {
+            use crate::native_runtime_hash::NativeHashKey;
+            crate::native_map_order::ordered_keys(layout,
+                keys.iter().map(|key| NativeHashKey::Atom(key.to_string())))
+                .map_err(|_| LatticeError::RecordIterationOrderRequired)?
+                .into_iter().map(|key| {
+                    let NativeHashKey::Atom(key) = key else { unreachable!() };
+                    keys.iter().position(|candidate| *candidate == key.as_str())
+                        .ok_or(LatticeError::RecordIterationOrderRequired)
+                }).collect()
+        })
+    } else { original.unify_bindings(intersection) };
+    #[cfg(otp_domain = "28")]
+    let unified = original.unify_bindings(intersection);
+    let unified = match unified {
         Ok(v) => v,
         Err(UnificationError::Mismatch { .. }) => return Ok(AtomicStatus::Failed),
         Err(UnificationError::NativeError(e)) => return Err(SolveError::Native(e)),

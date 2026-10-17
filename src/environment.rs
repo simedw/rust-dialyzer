@@ -270,6 +270,27 @@ fn import_mode(
                     }
                     report.records += 1;
                 }
+                #[cfg(otp_domain = "29")]
+                "import_record" => {
+                    if key.len()!=2 { return Err("native import_record key must have two fields".into()); }
+                    candidate.native_record_imports.insert((mid,atom(&tables.terms,key[1])?.into()),atom(&tables.terms,*value)?.into());
+                }
+                #[cfg(otp_domain = "29")]
+                "native_record" => {
+                    if key.len()!=2 { return Err("native native_record key must have two fields".into()); }
+                    let pair=tuple(&tables.terms,key[1],2)?;
+                    let defining=atom(&tables.terms,pair[0])?.to_owned();let record_name=atom(&tables.terms,pair[1])?.to_owned();
+                    let value=tuple(&tables.terms,*value,2)?;
+                    let mut fields=Vec::new();let mut cached=BTreeMap::new();
+                    for id in list(&tables.terms,value[1])? {
+                        let field=tuple(&tables.terms,id,3)?;let field_name=atom(&tables.terms,field[0])?.to_owned();
+                        cached.insert(field_name.clone(),crate::type_exports::type_from_arena(tables,field[2])?);
+                        fields.push(RecordField{name:field_name,declared_type:Some(candidate.parse(&source,mid,field[1])?),default_expression:None});
+                    }
+                    candidate.native_record_cached_types.insert((defining.clone(),record_name.clone()),cached);
+                    candidate.native_records.insert((mid,defining,record_name.clone()),Record{module:mid,name:record_name,fields,metadata:usize::MAX});
+                    report.records+=1;
+                }
                 _ => return Err(format!("unknown native type table entry {tag}")),
             }
         }

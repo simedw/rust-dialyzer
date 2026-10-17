@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &closure_policy,
     )?;
     let plan = Plan::build(&program, closures)?;
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let bifs = Registry::standard()?;
     let dependencies = std::env::args()
         .nth(2)
         .map(|path| {

@@ -16,6 +16,8 @@ enum Term {
     Cons(Box<RuntimeTerm>, Box<RuntimeTerm>),
     Tuple(Vec<RuntimeTerm>),
     Map(Vec<(RuntimeTerm, RuntimeTerm)>),
+    #[cfg(otp_domain = "29")]
+    Record { module: String, name: String, fields: BTreeMap<String, RuntimeTerm> },
 }
 impl RuntimeTerm {
     pub fn atom(value: impl Into<String>) -> Self {
@@ -67,6 +69,10 @@ impl RuntimeTerm {
         }
         Self(Term::Map(keys.into_iter().collect()))
     }
+    #[cfg(otp_domain = "29")]
+    pub fn record(module: impl Into<String>, name: impl Into<String>, fields: BTreeMap<String, Self>) -> Self {
+        Self(Term::Record { module: module.into(), name: name.into(), fields })
+    }
     pub fn from_value(value: &Value) -> Result<Self, String> {
         let kind = value["term"].as_str().ok_or("missing runtime term kind")?;
         let identity = || {
@@ -116,6 +122,18 @@ impl RuntimeTerm {
                 Self::from_value(&value["tail"])?,
             )),
             "tuple" => Ok(Self::tuple(items("elements")?)),
+            #[cfg(otp_domain = "29")]
+            "record" | "native_record" => {
+                let mut fields = BTreeMap::new();
+                for field in value["fields"].as_array().ok_or("missing runtime record fields")? {
+                    let key = field["key"].as_str().ok_or("runtime record field must be atom")?.to_owned();
+                    if fields.insert(key, Self::from_value(&field["value"])?).is_some() {
+                        return Err("duplicate runtime record field".into());
+                    }
+                }
+                Ok(Self::record(value["module"].as_str().ok_or("missing runtime record module")?,
+                    value["name"].as_str().ok_or("missing runtime record name")?, fields))
+            },
             "map" => Ok(Self::map(
                 value["pairs"]
                     .as_array()
@@ -148,6 +166,8 @@ impl Type {
                 Self::from_runtime_term(head)?,
                 Self::from_runtime_term(tail)?,
             )?,
+            #[cfg(otp_domain = "29")]
+            Term::Record { .. } => Self::record_any(),
             Term::Tuple(elements) => Self::tuple(
                 elements
                     .iter()

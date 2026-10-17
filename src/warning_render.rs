@@ -152,6 +152,8 @@ fn validate_render_arena(arena: &ErlangTerms) -> Result<()> {
                     add(value)?;
                 }
             }
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => for (_, value) in &record.fields { add(*value)?; },
             _ => {}
         }
         if depth > MAX_DEPTH || expanded > MAX_EXPANDED {
@@ -317,11 +319,38 @@ pub struct Renderer {
 }
 impl Default for Renderer {
     fn default() -> Self {
-        Self {
-            functions: source::source()
+        let functions = source::source()
                 .into_iter()
                 .map(|(n, a, c)| ((n, a), c))
-                .collect(),
+                .collect();
+        #[cfg(otp_domain = "29")]
+        let functions = {
+            let mut functions: BTreeMap<_, Vec<Clause>> = functions;
+            functions.entry((Function::Message, 3)).or_default().push(Clause {
+                patterns: vec![
+                    Pattern::Tuple(vec![
+                        Pattern::Atom("record_update"),
+                        Pattern::Cons(Box::new(Pattern::Var("Arg")), Box::new(Pattern::Cons(
+                            Box::new(Pattern::Tuple(vec![Pattern::Var("M"), Pattern::Var("N")])),
+                            Box::new(Pattern::Nil),
+                        ))),
+                    ]),
+                    Pattern::Var("_I"), Pattern::Var("_E"),
+                ],
+                guards: vec![],
+                body: vec![Expr::Call(Function::Format, vec![
+                    Expr::Text("The record update cannot succeed because ~tw is not a native record of type #~tw:~tw{}\n"),
+                    Expr::Cons(Box::new(Expr::Var("Arg")), Box::new(Expr::Cons(
+                        Box::new(Expr::Var("M")), Box::new(Expr::Cons(
+                            Box::new(Expr::Var("N")), Box::new(Expr::Nil),
+                        )),
+                    ))),
+                ])],
+            });
+            functions
+        };
+        Self {
+            functions,
             context: PresentationContext::default(),
         }
     }
@@ -670,6 +699,8 @@ impl Renderer {
                 ErlangTerm::ExternalFun(_) => Value::Other("function"),
                 ErlangTerm::Bitstring { .. } => Value::Other("bitstring"),
                 ErlangTerm::Map(_) => Value::Other("map"),
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(_) => Value::Other("record"),
             };
             values.push(Rc::new(value));
         }
@@ -798,6 +829,18 @@ pub fn process_warnings(arena: &ErlangTerms, warnings: &[TermId]) -> Result<Vec<
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(otp_domain = "29")]
+    #[test]
+    fn native_record_update_message_matches_upstream() {
+        let atom = |name: &str| Rc::new(Value::Atom(name.into()));
+        let message = Rc::new(Value::Tuple(vec![atom("record_update"), Rc::new(Value::List(vec![
+            atom("Value"), Rc::new(Value::Tuple(vec![atom("record-module"), atom("entry")])),
+        ]))]));
+        let rendered = Renderer::default().call(Function::Message, &[
+            message, boolean(false), atom("line"),
+        ], Options::default()).unwrap();
+        assert_eq!(string(&rendered).unwrap(), "The record update cannot succeed because 'Value' is not a native record of type #'record-module':entry{}\n");
+    }
     #[test]
     fn rejects_deep_and_exponential_dag_before_recursive_values_exist() {
         for (count, copies) in [(100_000, 1), (30, 2)] {

@@ -1,11 +1,18 @@
 The type operations in src/lattice.rs adapt algorithms from Erlang/OTP
-lib/dialyzer/src/erl_types.erl, pinned to OTP-28.3, commit
-ab489c0b260c637a9487f8753909ea94dacbbec2. This Rust adaptation is modified
-from the original Erlang implementation.
+lib/dialyzer/src/erl_types.erl. The OTP 28 domain is pinned to OTP-28.3,
+commit ab489c0b260c637a9487f8753909ea94dacbbec2. The OTP 29 domain adapts
+OTP-29.1.2, including native-record type operations in src/lattice/records.rs.
+These Rust adaptations are modified from the original Erlang implementation.
 
 Original notices:
 Copyright 2004-2010 held by the authors. All Rights Reserved.
-Copyright Ericsson AB 2020-2025. All Rights Reserved.
+Copyright Ericsson AB 2020-2026. All Rights Reserved.
 @copyright 2000-2003 Richard Carlsson, 2006-2009 Tobias Lindahl
 
 The original is licensed under Apache License 2.0, reproduced in LICENSE.txt.
+
+The OTP 29 term ordering and hashing ports in src/term_order.rs,
+src/native_runtime_hash.rs, src/portable_term_hash.rs and src/runtime_hash_nodes.rs
+also adapt erts/emulator/beam/{utils.c,erl_term_hashing.c,erl_map.c} from OTP-29.1.2.
+Copyright Ericsson AB and contributors. Licensed under Apache License 2.0.
+The source hashes are recorded in ../../docs/beam-core-port/source-profile-otp29.json.

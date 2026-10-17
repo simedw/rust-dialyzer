@@ -82,11 +82,9 @@ fn atoms(arena: &ErlangTerms) -> FastHashSet<String> {
             T::Atom(name) => {
                 names.insert(name.clone());
             }
-            T::ExternalFun {
-                module, function, ..
-            } => {
-                names.insert(module.clone());
-                names.insert(function.clone());
+            T::ExternalFun(fun) => {
+                names.insert(fun.module.clone());
+                names.insert(fun.function.clone());
             }
             T::Tuple(items) => pending.extend(items.iter().copied()),
             T::List { items, tail } => {

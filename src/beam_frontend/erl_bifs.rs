@@ -1,6 +1,7 @@
 //! Auto-imported BIF table from OTP 28.3 erl_internal.erl.
 //! Apache-2.0; Copyright Ericsson AB and contributors.
 pub fn is_auto_bif(name: &str, arity: usize) -> bool {
+    if cfg!(otp_domain = "29") && matches!((name, arity), ("is_record", 1) | ("is_integer", 3) | ("exit_signal", 2 | 3)) { return true; }
     matches!(
         (name, arity),
         ("abs", 1)

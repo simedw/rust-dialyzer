@@ -1,0 +1,1299 @@
+{
+  "date": "2026-10-16",
+  "runtimes": {
+    "28": {
+      "otp": "28.3",
+      "erts": "16.2",
+      "dialyzer": "5.4"
+    },
+    "29": {
+      "otp": "29.1.2",
+      "erts": "17.1.1",
+      "dialyzer": "6.0.4"
+    }
+  },
+  "rust_tests": {
+    "28": {
+      "passed": 417,
+      "ignored_by_default": 6,
+      "test_groups": 136,
+      "ignored_tests": [
+        "test beam_frontend::erl_prepare::tests::record_preparation_oracles ... ignored, requires RECORD_PREP_ORACLES fixture directory",
+        "test temporary_contracts::location_snapshot_tests::actual_location_cost_diagnostic ... ignored, actual retained Core population diagnostic; run explicitly",
+        "test entire_corpus_adapter_matches_compiler_transport ... ignored, requires independently captured corpus compiler oracles and manifest",
+        "test corpus::entire_corpus_direct_adapter_matches_compiler_transport ... ignored, requires independently captured corpus compiler oracles and manifest",
+        "test full_corpus_emission_and_atom_scope_parity ... ignored, requires the saved whole-workload BEAM inventory and runtime layouts",
+        "test complete_native_runtime_scope_analysis ... ignored, requires complete independently captured compiler Core and analyzer inputs"
+      ]
+    },
+    "29": {
+      "passed": 396,
+      "ignored_by_default": 2,
+      "test_groups": 10,
+      "ignored_tests": [
+        "test beam_frontend::erl_prepare::tests::record_preparation_oracles ... ignored, requires RECORD_PREP_ORACLES fixture directory",
+        "test temporary_contracts::location_snapshot_tests::actual_location_cost_diagnostic ... ignored, actual retained Core population diagnostic; run explicitly"
+      ]
+    }
+  },
+  "comparisons": {
+    "28": {
+      "normal": {
+        "types": {
+          "passed": 653626,
+          "commands": 653626,
+          "native_values": 532977,
+          "native_errors": 120638,
+          "native_timeouts": 11,
+          "binary_sha256": "c260a219f067859b89c1c0cb3ce82ebcd411da7ab4bfc2497a120bec2d9092c3"
+        },
+        "type_probe_exclusions": [
+          "cache__new/0",
+          "lookup_record/3",
+          "module_type_deps_of_type_defs/1",
+          "t_abstract_records/2",
+          "t_check_record_fields/6",
+          "t_from_form/6",
+          "t_from_form_check_remote/4",
+          "t_from_form_without_remote/3",
+          "t_var_names/1",
+          "type_form_to_remote_modules/1",
+          "type_is_defined/4",
+          "var_table__new/0"
+        ],
+        "bifs": {
+          "passed": 48165,
+          "requested": 48165,
+          "supported_mfas": 148,
+          "binary_sha256": "eaa7fd1744448ac9b9fdc6f06cd90f8479d23155032498aaf8e53fb425ec841f"
+        },
+        "constraints": {
+          "passed": 60768,
+          "commands": 60768,
+          "closure_ordering": {
+            "pairs": 6561,
+            "passed": 6561,
+            "differences": [],
+            "original_beam_sha256": "08945A69DD63A44CE877D696E1C27BE2753DE29AE6FC1F8E183D37AB0ADD9882",
+            "factory_cases": 64,
+            "code_sites": 55,
+            "expected_code_sites": 55,
+            "expected_factory_cases": 64,
+            "otp": "28"
+          }
+        }
+      },
+      "verify": {
+        "types": {
+          "passed": 653626,
+          "commands": 653626,
+          "native_values": 532977,
+          "native_errors": 120638,
+          "native_timeouts": 11,
+          "binary_sha256": "c260a219f067859b89c1c0cb3ce82ebcd411da7ab4bfc2497a120bec2d9092c3"
+        },
+        "type_probe_exclusions": [
+          "cache__new/0",
+          "lookup_record/3",
+          "module_type_deps_of_type_defs/1",
+          "t_abstract_records/2",
+          "t_check_record_fields/6",
+          "t_from_form/6",
+          "t_from_form_check_remote/4",
+          "t_from_form_without_remote/3",
+          "t_var_names/1",
+          "type_form_to_remote_modules/1",
+          "type_is_defined/4",
+          "var_table__new/0"
+        ],
+        "bifs": {
+          "passed": 48165,
+          "requested": 48165,
+          "supported_mfas": 148,
+          "binary_sha256": "eaa7fd1744448ac9b9fdc6f06cd90f8479d23155032498aaf8e53fb425ec841f"
+        },
+        "constraints": {
+          "passed": 60768,
+          "commands": 60768,
+          "closure_ordering": {
+            "pairs": 6561,
+            "passed": 6561,
+            "differences": [],
+            "original_beam_sha256": "08945A69DD63A44CE877D696E1C27BE2753DE29AE6FC1F8E183D37AB0ADD9882",
+            "factory_cases": 64,
+            "code_sites": 55,
+            "expected_code_sites": 55,
+            "expected_factory_cases": 64,
+            "otp": "28"
+          }
+        }
+      }
+    },
+    "29": {
+      "normal": {
+        "types": {
+          "passed": 659256,
+          "commands": 659256,
+          "native_values": 538590,
+          "native_errors": 120657,
+          "native_timeouts": 9,
+          "binary_sha256": "2a3584ad7fdb5fb75ff22059646ee51a4d99aaac382b7c285db05dd947daeb5c"
+        },
+        "type_probe_exclusions": [
+          "cache__new/0",
+          "lookup_record/3",
+          "module_type_deps_of_type_defs/1",
+          "t_abstract_records/2",
+          "t_check_record_fields/6",
+          "t_from_form/6",
+          "t_from_form_check_remote/4",
+          "t_from_form_without_remote/3",
+          "t_var_names/1",
+          "type_form_to_remote_modules/1",
+          "type_is_defined/4",
+          "var_table__new/0"
+        ],
+        "bifs": {
+          "passed": 54073,
+          "requested": 54073,
+          "supported_mfas": 150,
+          "binary_sha256": "810c87840bc1300a7041655883c1a192fdb744820ba6d26d07cea710cdbdfb09"
+        },
+        "constraints": {
+          "passed": 60768,
+          "commands": 60768,
+          "closure_ordering": {
+            "pairs": 6561,
+            "passed": 6561,
+            "differences": [],
+            "original_beam_sha256": "FD3294E8C5859CC934C0DDA3A8538C6017F5A91CD66CB3C33B8FAEA0B22D7078",
+            "factory_cases": 64,
+            "code_sites": 55,
+            "expected_code_sites": 55,
+            "expected_factory_cases": 64,
+            "otp": "29"
+          }
+        },
+        "record_cases": 1204,
+        "end_to_end": {
+          "exported_signatures": 21,
+          "warnings": 10,
+          "warnings_exact": true,
+          "signatures_exact": true
+        }
+      },
+      "verify": {
+        "types": {
+          "passed": 659256,
+          "commands": 659256,
+          "native_values": 538590,
+          "native_errors": 120657,
+          "native_timeouts": 9,
+          "binary_sha256": "2a3584ad7fdb5fb75ff22059646ee51a4d99aaac382b7c285db05dd947daeb5c"
+        },
+        "type_probe_exclusions": [
+          "cache__new/0",
+          "lookup_record/3",
+          "module_type_deps_of_type_defs/1",
+          "t_abstract_records/2",
+          "t_check_record_fields/6",
+          "t_from_form/6",
+          "t_from_form_check_remote/4",
+          "t_from_form_without_remote/3",
+          "t_var_names/1",
+          "type_form_to_remote_modules/1",
+          "type_is_defined/4",
+          "var_table__new/0"
+        ],
+        "bifs": {
+          "passed": 54073,
+          "requested": 54073,
+          "supported_mfas": 150,
+          "binary_sha256": "b861b6c159db012c624280cf057a4b0bcebb0de28187acdd1a2fa6a1ded2f21c"
+        },
+        "constraints": {
+          "passed": 60768,
+          "commands": 60768,
+          "closure_ordering": {
+            "pairs": 6561,
+            "passed": 6561,
+            "differences": [],
+            "original_beam_sha256": "FD3294E8C5859CC934C0DDA3A8538C6017F5A91CD66CB3C33B8FAEA0B22D7078",
+            "factory_cases": 64,
+            "code_sites": 55,
+            "expected_code_sites": 55,
+            "expected_factory_cases": 64,
+            "otp": "29"
+          }
+        },
+        "record_cases": 1204,
+        "end_to_end": {
+          "exported_signatures": 21,
+          "warnings": 10,
+          "warnings_exact": true,
+          "signatures_exact": true
+        }
+      }
+    }
+  },
+  "scope_notes": [
+    "Analysis is entirely Rust. Native Dialyzer is used only to produce verification oracles.",
+    "The compatibility claim is limited to the authenticated pinned distributions, not every build of either major.",
+    "This report covers repository tests and native Dialyzer differential checks. It does not claim to run the complete upstream Erlang/ERTS test distribution.",
+    "Type probes cover their declared API operations. They do not cover every erl_types metadata helper. Constraint probes cover atomic/scoped constraints and closure ordering; the public end-to-end tests cover the production analysis path separately.",
+    "Large-project checks use OTP 28 cached compiler inputs. The 327-case OTP 29 warning replay uses the same compiled BEAM fixtures with fresh native OTP 29 library PLTs and warning oracles. OTP 29 compilation is tested independently by raw/clean Core, native-record/comprehension fixtures and three added upstream cases.",
+    "Native errors and bounded upstream nontermination are checked outcomes in the differential type tests, not skipped cases.",
+    "Project timings were collected under concurrent compiler load and are not a performance comparison."
+  ],
+  "fixes": [
+    "OTP28 impossible-alias lowering and boxed ExternalFun integration-test compilation",
+    "Separate authenticated OTP28/OTP29 workers with fixed type domains",
+    "OTP29 native-record types, literals, Core, compiler, metadata, binding, guards and dataflow",
+    "Caller scope for record arguments to OTP29 local and remote type aliases, with regression",
+    "Gzip-aware project signature comparison"
+  ],
+  "warnings": {
+    "28": {
+      "passed": 327,
+      "required": 327,
+      "mode": "normal"
+    },
+    "29-normal": {
+      "passed": 330,
+      "required": 330,
+      "broad_corpus": 327,
+      "new_upstream_otp29_cases": 3,
+      "binary_sha256": "c9e8d59e17f2259ee3dc934ba2e89c80a3b6e409208800f3ad6807621f8eeef8"
+    },
+    "29-verify": {
+      "passed": 330,
+      "required": 330,
+      "broad_corpus": 327,
+      "new_upstream_otp29_cases": 3,
+      "binary_sha256": "c9e8d59e17f2259ee3dc934ba2e89c80a3b6e409208800f3ad6807621f8eeef8"
+    }
+  },
+  "original_upstream_tests": {
+    "28": {
+      "deterministic_suite_cases": 3,
+      "property_contracts": 6,
+      "property_trials": 30000,
+      "property_source_sha256": "d7cef1764a15a2aeeeb960fee6ad5d7f1633ba174dbd3d8918f89c356bbf1eb9"
+    },
+    "29": {
+      "deterministic_suite_cases": 3,
+      "property_contracts": 6,
+      "property_trials": 30000,
+      "property_source_sha256": "07944cc12385b403acfbf126a97ce2eee22caaa82fa7026f06765fd0faabae19"
+    }
+  },
+  "project_parity": {
+    "passed": true,
+    "cases": [
+      {
+        "project": "full",
+        "mode": "normal",
+        "seconds": 30.423261957941577,
+        "detail": "Traceback (most recent call last):\n  File \"/Users/simedw/Documents/ChatGPT/rust-dialyzer/bench/phase0/check.py\", line 77, in <module>\n    main()\n  File \"/Users/simedw/Documents/ChatGPT/rust-dialyzer/bench/phase0/check.py\", line 64, in main\n    sig = json.loads(s.stdout.strip().splitlines()[-1])\n                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^\nIndexError: list index out of range\n",
+        "original_runner_exit_code": 1,
+        "comparison_replayed": true,
+        "exit_code": 0,
+        "parity": true,
+        "signatures": {
+          "native_signature_count": 42246,
+          "otp_signature_count": 42246,
+          "common_count": 42246,
+          "exact_matches": 42246,
+          "complete_exact_parity": true,
+          "missing_count": 0,
+          "extra_count": 0
+        },
+        "warnings": "otp 400, rust 400, shared 400, otp-only 0, rust-only 0",
+        "comparison_evidence_sha256": {
+          "signature-summary.json": "fcf1bb8678a54751eebf961c33576bc01f2fdb9e4e57320c3259d87d756b482a",
+          "sig-comparison.json": "20195c2ba5d3c3240acaa1e23420961d162698871be8a3c54dfc2e55cc30946f",
+          "warning-summary.txt": "1723185ab9fd6e8e965a0cbf1eca941faa91bb3fec7fc1a35eb3cdb91f801eb0"
+        }
+      },
+      {
+        "project": "full",
+        "mode": "verify",
+        "seconds": 192.10395654093008,
+        "detail": "Traceback (most recent call last):\n  File \"/Users/simedw/Documents/ChatGPT/rust-dialyzer/bench/phase0/check.py\", line 77, in <module>\n    print(json.dumps(summary, indent=1))\n    ^^^^^^\n  File \"/Users/simedw/Documents/ChatGPT/rust-dialyzer/bench/phase0/check.py\", line 64, in main\n    s = subprocess.run([sys.executable, HERE / \"compare_signatures.py\",\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nIndexError: list index out of range\n",
+        "original_runner_exit_code": 1,
+        "comparison_replayed": true,
+        "exit_code": 0,
+        "parity": true,
+        "signatures": {
+          "native_signature_count": 42246,
+          "otp_signature_count": 42246,
+          "common_count": 42246,
+          "exact_matches": 42246,
+          "complete_exact_parity": true,
+          "missing_count": 0,
+          "extra_count": 0
+        },
+        "warnings": "otp 400, rust 400, shared 400, otp-only 0, rust-only 0",
+        "comparison_evidence_sha256": {
+          "signature-summary.json": "fcf1bb8678a54751eebf961c33576bc01f2fdb9e4e57320c3259d87d756b482a",
+          "sig-comparison.json": "4782c41654712eeace856f430ed0b7286a72a39ba108464c7be3eb3a9bde6318",
+          "warning-summary.txt": "1723185ab9fd6e8e965a0cbf1eca941faa91bb3fec7fc1a35eb3cdb91f801eb0"
+        }
+      },
+      {
+        "project": "subset",
+        "mode": "normal",
+        "exit_code": 0,
+        "seconds": 4.953388083027676,
+        "status": "ok",
+        "wall_s": 3.2,
+        "load_s": 0.12,
+        "analysis_s": 2.93,
+        "instructions_T": 0.096,
+        "peak_GB": 1.58,
+        "warnings": "otp 7433, rust 7433, shared 7433, otp-only 0, rust-only 0",
+        "signatures": "7117/7117 exact, 0 missing, 0 extra",
+        "parity": true
+      },
+      {
+        "project": "subset",
+        "mode": "sequential",
+        "exit_code": 0,
+        "seconds": 10.67240329098422,
+        "status": "ok",
+        "wall_s": 9.08,
+        "load_s": 0.13,
+        "analysis_s": 8.79,
+        "instructions_T": 0.094,
+        "peak_GB": 1.5,
+        "warnings": "otp 7433, rust 7433, shared 7433, otp-only 0, rust-only 0",
+        "signatures": "7117/7117 exact, 0 missing, 0 extra",
+        "parity": true
+      },
+      {
+        "project": "phoenix",
+        "mode": "normal",
+        "exit_code": 0,
+        "seconds": 11.474255583016202,
+        "status": "ok",
+        "wall_s": 11.13,
+        "load_s": 0.5,
+        "analysis_s": 10.39,
+        "instructions_T": 0.414,
+        "peak_GB": 4.93,
+        "warnings": "otp 199, rust 199, shared 199, otp-only 0, rust-only 0",
+        "signatures": "1544/1544 exact, 0 missing, 0 extra",
+        "parity": true
+      },
+      {
+        "project": "phoenix",
+        "mode": "verify",
+        "exit_code": 0,
+        "seconds": 119.79633549996652,
+        "status": "ok",
+        "wall_s": 119.44,
+        "load_s": 0.54,
+        "analysis_s": 118.44,
+        "instructions_T": 4.147,
+        "peak_GB": 16.81,
+        "warnings": "otp 199, rust 199, shared 199, otp-only 0, rust-only 0",
+        "signatures": "1544/1544 exact, 0 missing, 0 extra",
+        "parity": true
+      }
+    ],
+    "comparator_recovery": "The first two runs completed analysis; the original comparator failed to open gzip oracle data. The saved outputs were compared with the gzip-aware comparator after fixing bench/phase0/check.py. Original errors remain in each case."
+  },
+  "cli": {
+    "cases": [
+      {
+        "otp": "28",
+        "command": [
+          "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/rust-dialyzer",
+          "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/cli-otp28"
+        ],
+        "exit_code": 2,
+        "warning_output": "lib/otp_matrix.ex:2: Invalid type specification for function 'Elixir.OtpMatrix':value/0.\n The success typing is 'Elixir.OtpMatrix':value\n          () -> 'bad'\n But the spec is 'Elixir.OtpMatrix':value\n          () -> integer()\n The return types do not overlap\n",
+        "diagnostics": "analyzing 554 modules from 6 apps, reporting on otp_matrix\nload 0.7s, analysis 4.7s\n1 warnings\n",
+        "passed": true,
+        "binary_sha256": "a436d5e976fcaabca847a15e81425845ee88c9384cc8bc62099de097d5c794a8"
+      },
+      {
+        "otp": "29",
+        "command": [
+          "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/rust-dialyzer",
+          "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/cli-otp29"
+        ],
+        "exit_code": 2,
+        "warning_output": "lib/otp_matrix.ex:2: Invalid type specification for function 'Elixir.OtpMatrix':value/0.\n The success typing is 'Elixir.OtpMatrix':value\n          () -> 'bad'\n But the spec is 'Elixir.OtpMatrix':value\n          () -> integer()\n The return types do not overlap\n",
+        "diagnostics": "analyzing 556 modules from 6 apps, reporting on otp_matrix\nload 0.9s, analysis 9.9s\n1 warnings\n",
+        "passed": true,
+        "binary_sha256": "a436d5e976fcaabca847a15e81425845ee88c9384cc8bc62099de097d5c794a8",
+        "worker_sha256": "d6eddc1eb5232a23c9db2940364372d280cffbe86ac83fb0e79d505c8c8e23f4",
+        "native_warnings_exact": true
+      }
+    ]
+  },
+  "release29_commands": [
+    {
+      "id": "warning-corpus29-final-normal",
+      "command": [
+        "python3",
+        "scripts/verify_otp_warning_corpus.py",
+        "--otp-install",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--binary",
+        "target/release/core_cache_analyze_otp29",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/warning-corpus29-final-normal",
+        "--reuse-oracle"
+      ],
+      "verify": false,
+      "exit_code": 0,
+      "seconds": 149.8227700840216
+    },
+    {
+      "id": "warning-corpus29-new-final-normal",
+      "command": [
+        "python3",
+        "scripts/verify_otp_warning_corpus.py",
+        "--otp-install",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--binary",
+        "target/release/core_cache_analyze_otp29",
+        "--cases",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/warning-corpus29-new/manifest-input.json",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/warning-corpus29-new-final-normal",
+        "--reuse-oracle"
+      ],
+      "verify": false,
+      "exit_code": 0,
+      "seconds": 1.7291456249076873
+    },
+    {
+      "id": "analysis29-final-normal",
+      "command": [
+        "python3",
+        "scripts/verify_otp29_analysis.py",
+        "--runtime",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--probe",
+        "target/release/core_cache_analyze_otp29",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/analysis29-final-normal"
+      ],
+      "verify": false,
+      "exit_code": 0,
+      "seconds": 1.5463371250079945
+    },
+    {
+      "id": "records29-final-normal",
+      "command": [
+        "python3",
+        "scripts/verify_otp29_records.py",
+        "--runtime",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--binary",
+        "target/release/type_probe_otp29",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/records29-final-normal"
+      ],
+      "verify": false,
+      "exit_code": 0,
+      "seconds": 31.429025709046982
+    },
+    {
+      "id": "constraints29-final-normal",
+      "command": [
+        "python3",
+        "scripts/verify_constraints.py",
+        "--otp",
+        "29",
+        "--otp-install",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--otp-source",
+        ".cache/otp-29.1.2/otp_src_29.1.2",
+        "--binary",
+        "target/release/constraints_probe_otp29",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/constraints29-final-normal",
+        "--compress-artifacts"
+      ],
+      "verify": false,
+      "exit_code": 0,
+      "seconds": 13.579584707971662
+    },
+    {
+      "id": "warning-corpus29-final-verify",
+      "command": [
+        "python3",
+        "scripts/verify_otp_warning_corpus.py",
+        "--otp-install",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--binary",
+        "target/release/core_cache_analyze_otp29",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/warning-corpus29-final-verify",
+        "--reuse-oracle"
+      ],
+      "verify": true,
+      "exit_code": 0,
+      "seconds": 215.12020858295728
+    },
+    {
+      "id": "warning-corpus29-new-final-verify",
+      "command": [
+        "python3",
+        "scripts/verify_otp_warning_corpus.py",
+        "--otp-install",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--binary",
+        "target/release/core_cache_analyze_otp29",
+        "--cases",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/warning-corpus29-new/manifest-input.json",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/warning-corpus29-new-final-verify",
+        "--reuse-oracle"
+      ],
+      "verify": true,
+      "exit_code": 0,
+      "seconds": 1.7570786670548841
+    },
+    {
+      "id": "analysis29-final-verify",
+      "command": [
+        "python3",
+        "scripts/verify_otp29_analysis.py",
+        "--runtime",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--probe",
+        "target/release/core_cache_analyze_otp29",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/analysis29-final-verify"
+      ],
+      "verify": true,
+      "exit_code": 0,
+      "seconds": 1.3797992080217227
+    },
+    {
+      "id": "records29-final-verify",
+      "command": [
+        "python3",
+        "scripts/verify_otp29_records.py",
+        "--runtime",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--binary",
+        "target/release/type_probe_otp29",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/records29-final-verify"
+      ],
+      "verify": true,
+      "exit_code": 0,
+      "seconds": 31.874686790979467
+    },
+    {
+      "id": "constraints29-final-verify",
+      "command": [
+        "python3",
+        "scripts/verify_constraints.py",
+        "--otp",
+        "29",
+        "--otp-install",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "--otp-source",
+        ".cache/otp-29.1.2/otp_src_29.1.2",
+        "--binary",
+        "target/release/constraints_probe_otp29",
+        "--out",
+        "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/constraints29-final-verify",
+        "--compress-artifacts"
+      ],
+      "verify": true,
+      "exit_code": 0,
+      "seconds": 13.908428958035074
+    }
+  ],
+  "frontend_matrix": {
+    "compiler": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/cargo/debug/beam_core_compile",
+    "compiler_sha256": "fe83580f21751c68396c6e0eab63c1a151ed02f978db7c71e8e3c7f6a36a096c",
+    "versions": [
+      {
+        "install": "/Users/simedw/.asdf/installs/erlang/28.3",
+        "otp": "28",
+        "erts": "16.2",
+        "dialyzer": "5.4",
+        "runtime_sha256": {
+          "dialyzer_typesig": "08945a69dd63a44ce877d696e1c27be2753de29ae6fc1f8e183d37ab0add9882",
+          "dialyzer_contracts": "75cf94ef5951b50537e90eab8cb718ec64cbefb61bdca071b35851abbd1c27cb"
+        },
+        "cases": [
+          {
+            "source": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/tests/fixtures/beam_core_port/aliases/native_aliases.erl",
+            "source_sha256": "8fcaa56f90da06fe4f3fcb329258a7aec1b70c4ed0fc16469565d4e0ccddeb30",
+            "stages": {
+              "raw": true,
+              "clean": true
+            },
+            "compile_exit": 0,
+            "oracle_exit": 0,
+            "passed": true
+          },
+          {
+            "source": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/tests/fixtures/beam_core_port/aliases/native_impossible_aliases.erl",
+            "source_sha256": "9d363f7ce124cb847ffb50f06073b951ee6ffd8755c6c13abb9868281171a518",
+            "stages": {
+              "raw": true,
+              "clean": true
+            },
+            "compile_exit": 0,
+            "oracle_exit": 0,
+            "passed": true
+          }
+        ]
+      },
+      {
+        "install": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+        "otp": "29",
+        "erts": "17.1.1",
+        "dialyzer": "6.0.4",
+        "runtime_sha256": {
+          "dialyzer_typesig": "fd3294e8c5859cc934c0dda3a8538c6017f5a91cd66cb3c33b8faea0b22d7078",
+          "dialyzer_contracts": "8b260fbf75f47be6febe0c476f91e872b860ffe3e5244530f6b71e846f3fc102"
+        },
+        "cases": [
+          {
+            "source": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/tests/fixtures/beam_core_port/aliases/native_aliases.erl",
+            "source_sha256": "8fcaa56f90da06fe4f3fcb329258a7aec1b70c4ed0fc16469565d4e0ccddeb30",
+            "stages": {
+              "raw": true,
+              "clean": true
+            },
+            "compile_exit": 0,
+            "oracle_exit": 0,
+            "passed": true
+          },
+          {
+            "source": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/tests/fixtures/beam_core_port/aliases/native_impossible_aliases.erl",
+            "source_sha256": "9d363f7ce124cb847ffb50f06073b951ee6ffd8755c6c13abb9868281171a518",
+            "stages": {
+              "raw": true,
+              "clean": true
+            },
+            "compile_exit": 0,
+            "oracle_exit": 0,
+            "passed": true
+          }
+        ]
+      }
+    ],
+    "passed": true
+  },
+  "native_full_library_reference": {
+    "modules": 556,
+    "otp": "29",
+    "own_warnings": 1,
+    "status": "ok",
+    "warnings": 104
+  },
+  "postfix_otp28_library_tests": {
+    "passed": 367,
+    "failed": 0,
+    "ignored": 2,
+    "profile": "dev",
+    "log": ".cache/fix-validation/cargo-test28-library-post-fix.log"
+  },
+  "live_frontend_release": {
+    "28": {
+      "compiler": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/beam_core_compile",
+      "compiler_sha256": "82882842f4d3a1b55a0625556afcac030230e91095f61fc4f66200997f900314",
+      "versions": [
+        {
+          "install": "/Users/simedw/.asdf/installs/erlang/28.3",
+          "otp": "28",
+          "erts": "16.2",
+          "dialyzer": "5.4",
+          "runtime_sha256": {
+            "dialyzer_typesig": "08945a69dd63a44ce877d696e1c27be2753de29ae6fc1f8e183d37ab0add9882",
+            "dialyzer_contracts": "75cf94ef5951b50537e90eab8cb718ec64cbefb61bdca071b35851abbd1c27cb"
+          },
+          "cases": [
+            {
+              "source": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/tests/fixtures/beam_core_port/aliases/native_aliases.erl",
+              "source_sha256": "8fcaa56f90da06fe4f3fcb329258a7aec1b70c4ed0fc16469565d4e0ccddeb30",
+              "stages": {
+                "raw": true,
+                "clean": true
+              },
+              "compile_exit": 0,
+              "oracle_exit": 0,
+              "passed": true
+            },
+            {
+              "source": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/tests/fixtures/beam_core_port/aliases/native_impossible_aliases.erl",
+              "source_sha256": "9d363f7ce124cb847ffb50f06073b951ee6ffd8755c6c13abb9868281171a518",
+              "stages": {
+                "raw": true,
+                "clean": true
+              },
+              "compile_exit": 0,
+              "oracle_exit": 0,
+              "passed": true
+            }
+          ]
+        }
+      ],
+      "passed": true
+    },
+    "29": {
+      "compiler": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/beam_core_compile_otp29",
+      "compiler_sha256": "4f5358c3d4d72efd365828116a9bd1d00e6ccca0dd66f32ebcb1d3e3d805afa9",
+      "versions": [
+        {
+          "install": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/otp-29.1.2/runtime",
+          "otp": "29",
+          "erts": "17.1.1",
+          "dialyzer": "6.0.4",
+          "runtime_sha256": {
+            "dialyzer_typesig": "fd3294e8c5859cc934c0dda3a8538c6017f5a91cd66cb3c33b8faea0b22d7078",
+            "dialyzer_contracts": "8b260fbf75f47be6febe0c476f91e872b860ffe3e5244530f6b71e846f3fc102"
+          },
+          "cases": [
+            {
+              "source": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/tests/fixtures/beam_core_port/aliases/native_aliases.erl",
+              "source_sha256": "8fcaa56f90da06fe4f3fcb329258a7aec1b70c4ed0fc16469565d4e0ccddeb30",
+              "stages": {
+                "raw": true,
+                "clean": true
+              },
+              "compile_exit": 0,
+              "oracle_exit": 0,
+              "passed": true
+            },
+            {
+              "source": "/Users/simedw/Documents/ChatGPT/rust-dialyzer/tests/fixtures/beam_core_port/aliases/native_impossible_aliases.erl",
+              "source_sha256": "9d363f7ce124cb847ffb50f06073b951ee6ffd8755c6c13abb9868281171a518",
+              "stages": {
+                "raw": true,
+                "clean": true
+              },
+              "compile_exit": 0,
+              "oracle_exit": 0,
+              "passed": true
+            }
+          ]
+        }
+      ],
+      "passed": true
+    }
+  },
+  "runtime_oracle29": {
+    "terms": 18,
+    "pairwise_comparisons": 324,
+    "hash_algorithms": 3,
+    "etf_round_trips": 18
+  },
+  "backend_boundaries": {
+    "cases": [
+      {
+        "id": "worker29-rejects28",
+        "command": [
+          "/Users/simedw/Documents/ChatGPT/rust-dialyzer/target/release/rust-dialyzer-otp29",
+          "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/cli-otp28"
+        ],
+        "exit_code": 1,
+        "diagnostic": "rust-dialyzer: OTP 28 input cannot be analyzed by the OTP 29 Rust backend\n",
+        "binary_sha256": "d6eddc1eb5232a23c9db2940364372d280cffbe86ac83fb0e79d505c8c8e23f4",
+        "passed": true
+      },
+      {
+        "id": "launcher-missing29-worker",
+        "command": [
+          "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/backend-boundaries/rust-dialyzer",
+          "/Users/simedw/Documents/ChatGPT/rust-dialyzer/.cache/fix-validation/cli-otp28"
+        ],
+        "exit_code": 1,
+        "diagnostic": "rust-dialyzer: OTP 29 Rust worker missing; build it with `cargo build --release -p rust-dialyzer-otp29 --bin rust-dialyzer-otp29`\n",
+        "binary_sha256": "a436d5e976fcaabca847a15e81425845ee88c9384cc8bc62099de097d5c794a8",
+        "passed": true
+      }
+    ],
+    "passed": true
+  },
+  "additional_ignored_test_run": {
+    "test": "temporary_contracts::location_snapshot_tests::actual_location_cost_diagnostic",
+    "passed": true,
+    "log": ".cache/fix-validation/ignored-location-diagnostic.log"
+  },
+  "evidence": [
+    {
+      "path": ".cache/fix-validation/types28-final-release-normal/report.json",
+      "sha256": "19476d8f47bf10a39f8993aef59a2c5c4b3b58428ba875761d52834ffd7c2486"
+    },
+    {
+      "path": ".cache/fix-validation/bifs28-final-normal/report.json",
+      "sha256": "d408f6065816906bf096ba66b9c20baed81040326c9a0d2cd268897628c0c6c8"
+    },
+    {
+      "path": ".cache/fix-validation/constraints28-final-normal/report.json",
+      "sha256": "c71ebe8a51ea16ec903bd88f2042df01e90ee3f9cabe8bd61e5d4b8abccb90ce"
+    },
+    {
+      "path": ".cache/fix-validation/types28-final-release-verify/report.json",
+      "sha256": "e38186ca98bb862142cfc51281c9c9a7df87cd06f1ec8cd54480564a9a977b77"
+    },
+    {
+      "path": ".cache/fix-validation/bifs28-final-verify/report.json",
+      "sha256": "d408f6065816906bf096ba66b9c20baed81040326c9a0d2cd268897628c0c6c8"
+    },
+    {
+      "path": ".cache/fix-validation/constraints28-final-verify/report.json",
+      "sha256": "c71ebe8a51ea16ec903bd88f2042df01e90ee3f9cabe8bd61e5d4b8abccb90ce"
+    },
+    {
+      "path": ".cache/fix-validation/types29-all-normal-v3/report.json",
+      "sha256": "c9b9f6b1818ea9d0c87505aeddc0d40192dd294bdf93098e2e650c0a2684778e"
+    },
+    {
+      "path": ".cache/fix-validation/bifs29-first/report.json",
+      "sha256": "81bdf462dd0898a4bcb184365d989ffc8a9e682a52030add8d8d31ebed723566"
+    },
+    {
+      "path": ".cache/fix-validation/constraints29-final-normal/report.json",
+      "sha256": "eabd2bddac70dd06c64bb33f27857cf2c332f224f27eb48e7b36f19045d3bc31"
+    },
+    {
+      "path": ".cache/fix-validation/types29-all-verify-v3/report.json",
+      "sha256": "ee7db7383dbd2745ae3207a664e690f8a569a8b9d359ab501589e312f597d156"
+    },
+    {
+      "path": ".cache/fix-validation/bifs29-verify/report.json",
+      "sha256": "61a4fc55db05f628d70701271873c5b18e64b024b05ef83b9d7bdd6a0069c12e"
+    },
+    {
+      "path": ".cache/fix-validation/constraints29-final-verify/report.json",
+      "sha256": "eabd2bddac70dd06c64bb33f27857cf2c332f224f27eb48e7b36f19045d3bc31"
+    },
+    {
+      "path": ".cache/validation-2026-10-16/semantic/report.json",
+      "sha256": "adb47314af5703524e1a36a46a5f72413cf5883428e5017bf3e01688017f3511"
+    },
+    {
+      "path": ".cache/fix-validation/warning-corpus29-final-normal/report.json",
+      "sha256": "2f5c59176460ea0b30340b6bf13774fe794f460a43e52b3dfdaa56ce48c33976"
+    },
+    {
+      "path": ".cache/fix-validation/warning-corpus29-new-final-normal/report.json",
+      "sha256": "4da4d369b00016cce3222217ff04b543babc08c37960bb4f8ceaa36edb155c3a"
+    },
+    {
+      "path": ".cache/fix-validation/analysis29-final-normal/report.json",
+      "sha256": "5565d417280ae47c1be59497fc9bdde2a4467d3cc6a24348f7c4bfa676b28f19"
+    },
+    {
+      "path": ".cache/fix-validation/records29-final-normal/report.json",
+      "sha256": "57d0b02a4dd94ee351b53c5c40b35af07e96a48aef2e0ed2033b41c9cf798940"
+    },
+    {
+      "path": ".cache/fix-validation/warning-corpus29-final-verify/report.json",
+      "sha256": "bc10f7f3714fe665cf32066450ab283d9c3ee0de955bc5745ef682c8f172da9c"
+    },
+    {
+      "path": ".cache/fix-validation/warning-corpus29-new-final-verify/report.json",
+      "sha256": "549c625715356a7a4161060ebb42d0670c10fe14839bba40a6cdf7970366c54e"
+    },
+    {
+      "path": ".cache/fix-validation/analysis29-final-verify/report.json",
+      "sha256": "5565d417280ae47c1be59497fc9bdde2a4467d3cc6a24348f7c4bfa676b28f19"
+    },
+    {
+      "path": ".cache/fix-validation/records29-final-verify/report.json",
+      "sha256": "f68fb899a484229b6fc88475058ce419e3ba541cd6096d42dad2d11d4e20fd2e"
+    },
+    {
+      "path": ".cache/fix-validation/original-type-suite28-final/report.json",
+      "sha256": "104b069e47d5845ba6f3cd7903cbb64023259693442fbed8d56a2aa6ae037947"
+    },
+    {
+      "path": ".cache/fix-validation/original-properties28-final-release/report.json",
+      "sha256": "13303dbe78a5580636fa4e88692b9d3a9467b48ce91a5a99bd59d56ccf50be9e"
+    },
+    {
+      "path": ".cache/fix-validation/original-type-suite29/report.json",
+      "sha256": "c8c37177a892ac2f78cd8e80e56989eb8d46af8e47b8f98fd5f5b63ef99c6e7f"
+    },
+    {
+      "path": ".cache/fix-validation/original-properties29-final-release/report.json",
+      "sha256": "42ea679a58550f9932f6b12e5eaec6a3d936457f7c0f5c479529a822c4ac37e6"
+    },
+    {
+      "path": ".cache/fix-validation/project-parity/report-final.json",
+      "sha256": "71acc98f290969dd42934b5c8321200a15d479b1a7c1d89a74790c97c3bc9f52"
+    },
+    {
+      "path": ".cache/fix-validation/cli-checks/report.json",
+      "sha256": "ba5747a966359f81c8952f360d2fb90a11b455b1b1b32489edec294b27246cd0"
+    },
+    {
+      "path": ".cache/fix-validation/final29-runner-report.json",
+      "sha256": "9b470112f2fec99e75d959fefb49352997fda3eb9ace71c63d63a7e0fccac768"
+    },
+    {
+      "path": ".cache/fix-validation/frontend-matrix/report.json",
+      "sha256": "075aef0f7a01179c90a10db5005837b3b1b972b5401281cda3c709529f4f69b0"
+    },
+    {
+      "path": ".cache/fix-validation/cli29-native-oracle/report.json",
+      "sha256": "4e41a91fb56bd50d0ca3bd801bdf784e7d392df0f4529ca4bad099eab2cf4cf7"
+    },
+    {
+      "path": ".cache/fix-validation/frontend28-final-release/report.json",
+      "sha256": "ab47b0e2ae8bec849aba518db1d66655d6b0da569d086b2a0c5afc1039d3720c"
+    },
+    {
+      "path": ".cache/fix-validation/frontend29-final-release/report.json",
+      "sha256": "8f53eb340279d6f172af3f3c704660399fe9f1b66ef6cc847f35f651c75a1637"
+    },
+    {
+      "path": ".cache/fix-validation/backend-boundaries/report.json",
+      "sha256": "849e672b416b68821c62b75459740d1bab8b5e9d7d7ac3d8e6473b7f11348d21"
+    }
+  ],
+  "source_sha256": {
+    "Cargo.toml": "be22ea39488caaf3b2f23321fa40725ce662c8033b3e0aced9947a0345ac8231",
+    "Cargo.lock": "3800365ccfd161583c73f2544de7eb503a781dee0da3175abe352e5377cce843",
+    "build.rs": "1686e6b6f7cf3f122d3794fadc1aa79b35d4ecc619aee9bdd4964854a287c5c1",
+    "backend29/Cargo.toml": "ecb4ac5d77b5a772630407423707c012e239e0de94c8fc1572b53667270d7edb",
+    "src/analysis_inputs.rs": "e2f6bc29057b007e0669534b31f320f0c6df94f502dd3fe474f8aae98a8e99a4",
+    "src/atom.rs": "578370dfa509ac3110c9d91f3f287fcc1bd1dde2b933168f2350f96270dd1f20",
+    "src/beam_frontend/adapter.rs": "4962485991756149087ec6196bd59881af5a4a357590ba46665aeb8e586a60a8",
+    "src/beam_frontend/clean.rs": "59fcf980a3c41d9904f4daf593a63e225af7abec8861fbabd82ea56e6f9a45a5",
+    "src/beam_frontend/clean_view.rs": "203b55bfbeca54c78a54e61d31f7586687ef465e0d803c6553c9ae91f6733d67",
+    "src/beam_frontend/debug.rs": "36297c5c4cbe98b45531c4796da68e6718caf6851e82e022346e1c49659f22c0",
+    "src/beam_frontend/elixir.rs": "0285ce116d9b78071527de7fad45882fdd52cdc12ed6be0ead4545cd2eded112",
+    "src/beam_frontend/elixir_for.rs": "45776731102257fe2c0dbf2427a1c41f4aa24bae5315d4f438b724571ad52442",
+    "src/beam_frontend/elixir_pure.rs": "d4d90d3f1243d98a0ee170e8d9d070cb714cf390e7485a86eb216c44a0d123e2",
+    "src/beam_frontend/elixir_try.rs": "2fd1c8c3cd2a7174367d8e886f8d68d88dc0feba43ac8d74127aa62503f3ba26",
+    "src/beam_frontend/erl_bifs.rs": "955f168ff7ad00268c3b689761ac9ebb6b8a32feaed4eb583e976a71273ceafb",
+    "src/beam_frontend/erl_prepare.rs": "ca330c9961114a639e5fd4053cad6ae8724197d96798b457707f8dcce3ee73e5",
+    "src/beam_frontend/erl_records/native29.rs": "e7f67364fd29b531d60376c67bb3c71b8cac802612a3a21ebf082a6e4f93c567",
+    "src/beam_frontend/erl_records.rs": "fda61738f8b458ea9b45eb8d710841b1e63c5cd273759130cc37f57a6bdc36c1",
+    "src/beam_frontend/lower/binary.rs": "0a3ef07c7f01584eaf686d751460b07ee061e4390f7b215ccd08927b8f293a54",
+    "src/beam_frontend/lower/comprehension/otp29.rs": "e6d6174688babc9a8c1c8753390fa0bc9925c3b018f5213ffac571f73aea705e",
+    "src/beam_frontend/lower/comprehension.rs": "661d64d3cfed443af87f4cbb9bccf3285a6d2d9333471b5d5847f3d5618df6e9",
+    "src/beam_frontend/lower/constant.rs": "0c344b124977b7c48e9d77ac825c579d0425d710a413f4b72803bd7e5f763142",
+    "src/beam_frontend/lower/control.rs": "e2d7caa573d9375faf978ebd6f62236de7e4e07dfd36e262fee9de56df76522b",
+    "src/beam_frontend/lower/exception.rs": "02c919c75616d3ea919a5d2501dc477c12c0dfcf483db00f3ca56a6d81243e01",
+    "src/beam_frontend/lower/exports.rs": "d2811748ebfc230621d833a45d8fd72fb6f0ed442eaa4e172522c1fb3cd28868",
+    "src/beam_frontend/lower/guard_analysis.rs": "9fecde65ca80f289d1bb021020112535bde7f2ed8b85be5ecedd899c6862230d",
+    "src/beam_frontend/lower/literal.rs": "3001f1fa88d8a62a09f44e75d773e733fa2ab44c0d05c8dd638b8b8ea9706d73",
+    "src/beam_frontend/lower/matches.rs": "5bd740a6031d428b64cdabd66b3c2d1a30f5bfa50ad44b19e02a5cfa0d50b491",
+    "src/beam_frontend/lower/pattern.rs": "f5fd5154568cfaae7bcff859fa9bd91a3de9f817a610959cc52987194e86d35b",
+    "src/beam_frontend/lower/receive.rs": "fb3ab142cdc01ce3cbf36ace14b550c51d25cb1113d874e3befb38584473bb7a",
+    "src/beam_frontend/lower/record29.rs": "5f846c141ce39f274dd29639dc7d2f6c0692e59f2ada2c1082e53a62496547f8",
+    "src/beam_frontend/lower/shadow.rs": "3e82a9a3d3aecb21b614ef7afbb9ac2666bcff38cfdd97b9543385d607fa35a5",
+    "src/beam_frontend/lower/split.rs": "35e14df06fd969e8850b59210a16f97bdfa277e35d4f09d43e7dfe0e2098df05",
+    "src/beam_frontend/lower.rs": "7c70eb7829fc0733c642b852e8158ad1a407e861071b9e6b0b411a4a30ecae43",
+    "src/beam_frontend/mod.rs": "40c36cb743666b92e9a58e520eb0e34930f836161c323e7f3dadfec96c228b3c",
+    "src/beam_frontend/pipeline.rs": "03ba8aa81cd735be76cdc84ee6272c4d29b15abf2a323851542584a13a065aa3",
+    "src/beam_frontend/runtime_context.rs": "5f4e2bf3defc341b639c80846d085408a4125f6c9c0c6e1f79940c7f35f31511",
+    "src/beam_frontend/stats.rs": "a0e69b29987d83a88ce9a1c89bae2aac574fe832c488a62e18df91541f29606b",
+    "src/beam_frontend/term.rs": "a65cb5977106b6b22c9953624b06069f6ee69647958e928ca694fd7dc62576a5",
+    "src/behaviour_metadata.rs": "aa344bebb9fa4ef1b28d8a76296019cc29c9e4d745a84c339571cb171e5275f7",
+    "src/behaviours.rs": "61053bd52bd7e9eb1b54c02a0f259167ea1abd14a6236d754e4b805595da6546",
+    "src/bifs/arithmetic.rs": "2aeb56e918c178ad257d052c6143733dbeaa6ae297e5e9579b83e8bc20c15b9c",
+    "src/bifs/boundary.rs": "e513b6ff29d2b847d8227d092f74d296790d3c795f2b1538cdd3fdbc98c094f8",
+    "src/bifs/callbacks.rs": "5f0e8bd3914d4732625818d78af8eea783509ebc80ac63c252541c66bc538fcf",
+    "src/bifs/list_special.rs": "69caa04161556bab0e1b5dcd5486b0cdca152ac82265f58f30dc81c61b919542",
+    "src/bifs/maps.rs": "eb43de015d7caf34447d3f98c78e9ef9f55a0e72dbeb1d747255aa1efdf0d3db",
+    "src/bifs/mod.rs": "1da2e92d8209df42412bda9bf9887b03ff91c8da3f001f576a079e7b20cee329",
+    "src/bifs/predicates.rs": "9228838acf14e356a191969a3bfd1961969add13fe184053989b9e47fe1a34ec",
+    "src/bifs/registry.rs": "4e7a86b4a9db179ef8c1a7593521233163234dcec222874c989f04ae77961301",
+    "src/bifs/structural.rs": "7925bf88772409a2c2a0d26ea109b677ed620537ceb35cd22fb7562ed5f0e959",
+    "src/bin/analysis_mode_probe.rs": "5397cbc2ffdd274c1e5feb361869936d7782c8714709a1e2e885564fcbbd3556",
+    "src/bin/arithmetic_limit_probe.rs": "c6e11384df189ac508026bdf6615794bcfa32d08429f486beef367f0dabb8082",
+    "src/bin/beam_core_bench.rs": "d177a42834ec2c6ffc1804a34a9f27aaf8685aa213cb80a22a79e343c3d67170",
+    "src/bin/beam_core_compile.rs": "a4b8bfef9b337d6f3934fdcad0f68868ad8eaf0541f153ad52a7c1455dd6801f",
+    "src/bin/beam_frontend_allocations.rs": "d87fc244c93974e6cfdd39e32f6fe5206b7dd084b2197e828676945fe294751a",
+    "src/bin/bif_probe.rs": "9a1c6b8e0204124c2ae268addedbb8243fd6f34ebbc7f7ba22a80e3e68c8640d",
+    "src/bin/binder_probe.rs": "acbad4b4e10c32dd5b19f395b2e4f8dc995c173c0a05425b672a705ff8d6aaf5",
+    "src/bin/binder_projection_probe.rs": "e173e2a71027927a9b8e6cf70959fb709307ca610a4ae1c235894c26238f5804",
+    "src/bin/body_calls_probe.rs": "cc7c362d7a4df23581332ff2312b890b964580d313163bc6eab32477b1e952e7",
+    "src/bin/body_probe.rs": "888b00b9ca6a489e1dfed67315083e5fa8c98fc312dc0d30da1a560b49a874c9",
+    "src/bin/cache_probe.rs": "1156a1f51bc598b67a88e91d015d12ca90205dffe575b0c023013295d1b08f20",
+    "src/bin/call_probe.rs": "fc4618312b95662c5bc4d82a5a6986762095f87d06c6d1b7be7f9a171e9ba0ee",
+    "src/bin/callback_probe.rs": "ecc2ea34945f3fdac82146db2c55e686ce7780f4429dde07d92a638e87539636",
+    "src/bin/captured_declaration_probe.rs": "bec2423a7dd9e6b84778c7e383b011504e6f444cd56ced3a3cd32d1ca45b8a02",
+    "src/bin/classic_checked_probe.rs": "3715863ca75cac92064bef8e3d71c3b0b937a72016639c0a84553db73ae3a2c4",
+    "src/bin/cleanup_probe.rs": "66b310a2329298269cd6d5f50fad4c04098304b839fc5ddae470dc75be7b1989",
+    "src/bin/closure_probe.rs": "d220923710fb42c8602be26ab189c654c58ce9b5e7f8f8112e30b70472872447",
+    "src/bin/compiled_analysis_probe.rs": "60318dfbe49a68929600a58119c17ad93830b839650efc8619bbd1de9dbf8ac3",
+    "src/bin/compiled_definitions_probe.rs": "c60dda476caacb615e540cdbf727ec53eadf05ba4e43909b737fe61f95f4fdec",
+    "src/bin/constraints_probe.rs": "56b84b4fe515dfa32933ce29635e5df0f3ffd7f1e9bbf532cd6f5ebc11990db9",
+    "src/bin/constructor_probe.rs": "40e25bd9c18544a57ef4c3b0446c9e2d12aa436fca733ad832d198c51442bfed",
+    "src/bin/contract_book_probe.rs": "2dc304e0091f9e26da73cee0631a70920f7b7dd35ce6f22aed934c219201fc1b",
+    "src/bin/contract_map_probe.rs": "7e936e02deadbc6159be9ac80a361e06ea947847edf8cbc2b04677ee37793755",
+    "src/bin/contract_presentation_probe.rs": "b3d977ff016eae73dc310c1046014052f8b86c21b3a4c4b04132d64a909b34dd",
+    "src/bin/core_analyze.rs": "60a4a6fb26bf159e16c62fceb7feb34a301e84e01336968e98912de8fb0ae48b",
+    "src/bin/core_cache_analyze.rs": "4f33d7139b304ad04d732f5989029d2c596ee02919ee0c0f69689ad68dd41664",
+    "src/bin/core_capture_probe.rs": "a9412e110f70c18a79480fa3badf1d32b458c9579be6198458575e96d775c1d1",
+    "src/bin/core_inspect.rs": "d998b6ce20606b9b9588a1106dc97643b3150049090603015a9f4d66149d92ea",
+    "src/bin/core_loop_probe.rs": "7d53c21af0b318a1f3bd44925d1da95a4e9fcdbdd94044a0cf6831210d73b278",
+    "src/bin/core_pipeline_probe.rs": "80023f5209b3b2efbec86354b8b59e843c487bfcd841e68802203c66f004a784",
+    "src/bin/core_storage_probe.rs": "9a1578c56fba98af0cb578c9b6488c82297a2257d793f67a6cd17602d0fa9308",
+    "src/bin/corpus_binder_probe.rs": "40b040ec40e73651549b05882518e57780a61e4b86022afd611a8a2e83afa31e",
+    "src/bin/corpus_folded_core_probe.rs": "ba200212c1a17b969afec28d8de2734fa29f2853b2eaf3b5d45091506c5c11ec",
+    "src/bin/corpus_function_state_probe.rs": "f4d490c5663ab5cb6dfd3a56be3eecb44c0f4c1f2c72c7527dfca458ba88b3ab",
+    "src/bin/corpus_printer_probe.rs": "d702ab2a389b5e1dca08acc1a423764a0657af8fbbc2f3cb8da5ae281b853971",
+    "src/bin/corpus_registry_probe.rs": "71f4dd4ad1670fdc866dcd9bfc1471f10e4f7c9ae6421c8188294be8c164dc84",
+    "src/bin/dataflow_map_probe.rs": "f10a59f8ce580891d779e42ee397c57c6df2769c3d96aad9da32152a10c76a88",
+    "src/bin/dataflow_nodes_probe.rs": "e351c1b600ffaecefba2cba1f48aa8fddaa2a375a40bcf533126e9b473e39249",
+    "src/bin/declaration_key_probe.rs": "c2abf6e3f9fb1250509e3615b892a5d4fadf89e944c9e04904ff58aabc427aa2",
+    "src/bin/dependencies_inspect.rs": "8af2625a3db7b2b7cb867c5d025a0f46fc6b073e2535e8dffcc6155339e8f5f0",
+    "src/bin/diagnostic_adapter_probe.rs": "b40ccffa4de29ce9626cb1e640e30100aa08a349ba4f66327f5b7f1d9aa9d91c",
+    "src/bin/diagnostics_probe.rs": "dc2f176d0bf30296af9eac83ff40a2862554feb05e932d9c154f6b43a529a671",
+    "src/bin/dict_atom_probe.rs": "75f94590761904bcbf3b861e85b3332446157e507e308faa6e0ed077e3445543",
+    "src/bin/doc_probe.rs": "404f533bd8e23c205de0c24bb0c0a2bd4ff89de1874d047394c8fc9c70c1eba9",
+    "src/bin/emission_probe.rs": "d170b2118c8c62aff614d7a8658dfba47766439600f6dcde8c32ba0eb98ca967",
+    "src/bin/external_term_probe.rs": "0791e2eb264b28018f4cd381d5a0724c95599efdf04774cc3b568dc0fefbffb0",
+    "src/bin/fingerprint_probe.rs": "6b729a42d682a9bbf209f2693aaedc8ecd348d46f48f0b69641fbf4831522cb2",
+    "src/bin/folded_core_probe.rs": "877e1930a629dbd21f54e90f3d14af14d7bc5af6c5f702c4d4308ba5aa9b490f",
+    "src/bin/form_io_probe.rs": "45a317d8553700e9f186a3dfaa921f46126422f3000fa9d6a3fcd45de6367753",
+    "src/bin/forms_inspect.rs": "cfa59e66cda55aa5667db624ac818213384840b13236d5b52e19b0dd142d192a",
+    "src/bin/forms_probe/compare.rs": "1bd787c9b433c8d246fc65b150d9a720d6563dfe09fe288c89dd4121ccdbb018",
+    "src/bin/forms_probe/compare_contracts.rs": "7f5f7e57e04c839010a3e19dfa953fd4f8b65245252e4bbfa77a392d1094ba04",
+    "src/bin/forms_probe/compare_validation.rs": "2d772c06e178f4c2b5fe6683ee6254b555a728106f4b8cecd347918e6c059517",
+    "src/bin/forms_probe.rs": "85f09f843851725c33bf9ce532dc6cf62add2b60fdedda6c69b686d3af6dd90d",
+    "src/bin/front_end_order_probe.rs": "d9af1c089ab194a9e375e210cb996311ea68778d9663e5f351478051a120de23",
+    "src/bin/function_state_probe.rs": "b1d0f81a9f06baad969cdbeafee3f86bef7ad72054e547c909f1962edcbfb74b",
+    "src/bin/function_warnings_probe.rs": "d113f60e25929b36e15a3300cba3ce6059d52c23fb1df13d6b5f63b89ec3bdb8",
+    "src/bin/generation_header_probe.rs": "d39022206145d17bbdc77d8fc09278ab2d449b83569256c42de4ea66999b33b7",
+    "src/bin/generation_probe.rs": "fca00aca25cc6ca80ddb2eea0ed4e5bddcf8c2b5a84b118e6217389431893375",
+    "src/bin/global_contract_finalization_probe.rs": "499306f98f7baadc9af5a470f6238a625530c9951818d941589dd4e9d5bdc50c",
+    "src/bin/graph_ets_probe.rs": "ea5618c3a8f9bf48bf7873b45a50275fdbc7e1b5f0a42b7f4c36f944378e573f",
+    "src/bin/graph_maps_probe.rs": "231033745eeaaa6f064f3f715b9bc573c2ffe8412d0cf2d79abfbe9b28c91c0a",
+    "src/bin/graph_primitives_probe.rs": "01e95023496324506aac3d72dc2a56977217f894f8c7ed6cb2c1f05b9e076517",
+    "src/bin/guard_control_probe.rs": "7b1fd5db848f327e9daaae69ddb757900f22cc6a9ad25aecd030385c18074378",
+    "src/bin/guard_corpus_probe.rs": "ffde002ae67bd4dd4534427bea5a0d12eeda3c861721f8e965bddb9cbd9b03d3",
+    "src/bin/guard_ops_probe.rs": "07a3079127b2e88a4f2b4f45bcc1955bdfe7d3cb46039471510f2c2c99c1060e",
+    "src/bin/guard_producer_probe.rs": "f4ed59fb0699a63eb3789f92373a3acee75f33b69a05e857109606703b89d0c6",
+    "src/bin/import_lifecycle_probe.rs": "2a797f18d239f44964677d11c98bc904ec0a236fc44222604e729e67ca031bed",
+    "src/bin/incremental_header_probe.rs": "6ea482f3bad2421980ca2052a91a1de97dce272b988e03ef361bbcba60bad730",
+    "src/bin/incremental_probe.rs": "fcf2a0496e1bb706550eb16b99f9df05de044d2a1910e9d35c3d09a2b3dbff34",
+    "src/bin/incremental_warning_cache_probe.rs": "bbfcbfa6f21a2f450243029e1e3596727b50a614aeec273fe048e0fa45932683",
+    "src/bin/invalidation_probe.rs": "2c993d9dd818a165a767d278ec9c9379397b2dd2a770c7cec2a9366c5635d908",
+    "src/bin/labels_probe.rs": "10df4eee2b7064e4b6a41b175f040a33d980131d189ec4495c9fa602280588f0",
+    "src/bin/layout_probe.rs": "039c9443851a6447728dd5ec64e410c190ded7307a73364ea69d0e863d58ada7",
+    "src/bin/library_contracts_probe.rs": "fab0405f31c2c803d15871538aaf3836d5dd9e4dd58b09dbe2a04a758c6c2d9e",
+    "src/bin/library_signatures_probe.rs": "8cc0df744d15699644737dd727c33c683dec184545ae75e9778636515792db21",
+    "src/bin/literal_types_probe.rs": "57c346624ea6e70b1ff26f001159303190a04874d6fa9c72ece58989a49a5ea0",
+    "src/bin/metadata_exports_probe.rs": "00e5c7ae0bdf282131d52927ac7b4c5f994ba6decde0241382a61c417b0f785e",
+    "src/bin/native_operand_probe.rs": "aef8d0638e570ac85640f9dc2f51ec8d4ac2376cc45e422c0c540d2db1f1d3f4",
+    "src/bin/opaque_operand_probe.rs": "554f6b05c654dbc166579d3adf4adcc0d86fd93a96ca53f07842da395ca54b13",
+    "src/bin/ordering_probe.rs": "8648adda7e763ff0c788a4969c379d5056ba1d50154b799c50e4c57c5832f065",
+    "src/bin/printer_probe.rs": "3aa9fa2e07de52979f35073038aed3217b0826814105f6a8febc4d4ac5793c1d",
+    "src/bin/program_inspect.rs": "240a23d2baf9eae25abaa19247ad76ce2a3c8bdb10356da8c7c11a6748fc0dd6",
+    "src/bin/publication_behaviour_probe.rs": "36a76eddd287bcd8ea8ff1326aa6830793e984922a0d929651bfd58022c9a867",
+    "src/bin/publication_probe.rs": "0b4296a9ea194e605aaccf660c6afe9177fca76344d0a68028c94235476a3e63",
+    "src/bin/rank_probe.rs": "3841a20314cb72dc146d2904c185e9f55111e20abc0922c68ffe1b1e7f939a72",
+    "src/bin/raw_callback_groups_probe.rs": "7afa83fc79cd930780659605b93a962bad20d3d74c42c2e26ffde6d0635568b5",
+    "src/bin/raw_callback_import_probe.rs": "91b645293e0bf1c94f509b2811bdcff64483723701dc28febdf039711e70d4df",
+    "src/bin/raw_classic_hash_probe.rs": "32106a6da06dd6c6fa9a8ffe20cf82a742bf77fa56952018fb45add88663266d",
+    "src/bin/raw_classic_pipeline_probe.rs": "ddcaa5f5265e621cc1e22460f887b66e3f6947f3069d76a24f9d8b1fe95287ff",
+    "src/bin/raw_declaration_public_probe.rs": "240805dbe4f4444010aa9c5f11deafd4473e1de15ae125aedaa59facea9fc12a",
+    "src/bin/raw_dependency_persistence_probe.rs": "dc9b662bae70c34da0a6d0c4aea97cdcb651a92a76dc53f4d062ecaf5d38fb10",
+    "src/bin/raw_incremental_pipeline_probe.rs": "3426dfb14e00ded480c3cca7936f54d0d831450d9fc65204c1d0db5d98cc7ad5",
+    "src/bin/raw_module_dependencies_probe.rs": "e88d88da9c84595541928e02bfbeed7fce365235051531a14699383212cc9d30",
+    "src/bin/record_argument_probe.rs": "7c7721dfdc2ef7a07f4f86c4a779cb66d17afef15fa068c169bac182bad665fa",
+    "src/bin/render_probe.rs": "79a1eafbb50859230fa5451b1d810297026040fa19370468381400379b562f4e",
+    "src/bin/rust-dialyzer.rs": "7c8ad65c00849fe1ae8f1dcf85fb15b928bf8bf1ee01c7e37211813f04239f58",
+    "src/bin/shared_warning_binder_probe.rs": "c80ef82b355b3d2e3ca6bf868c24547ad5a9d56b33948ce7eefa37cd55291586",
+    "src/bin/snapshot_check_probe.rs": "b7c6a258ed81e09aae983151eff6f43d3017239c4036d0774498a35fd5ceddae",
+    "src/bin/snapshot_file_probe.rs": "ffb7c730574cf65144d2253fad931238acff9a19141b27f2533d516f94e91b7a",
+    "src/bin/source_callgraph_probe.rs": "3303e5b062017894e1169bb09c979d2d2cd527da34477b92252fdc5d45d3ceb1",
+    "src/bin/source_graph_probe.rs": "43c80aff6dbfe69bf8cbc6e87714fabdc8b3dd72746a99a592d9f1484727119f",
+    "src/bin/source_schedule_probe.rs": "46d75ab649ad9688e12f025e4e7130eed9a26c2b285115a75044b4200ea4e70e",
+    "src/bin/state_order_probe.rs": "520fb86b26707ecabb8ce6df1aed561312cd0941e054f07dbc091837f6ab89f8",
+    "src/bin/success_phase_probe.rs": "ccc629263ff79542ff3e2a6d9ef615fb2b1eec26c4b0a6ffb00bf6ef717bf2ce",
+    "src/bin/support/generation_headers.rs": "84b3ad6a01efc18fb46539a82ff3d638cb32f4add5574d3488b437123733d7d1",
+    "src/bin/support/graph_keys.rs": "b6ca7ff3c514139369e3415843059ee6051c064342c510f1dfe950d619e56749",
+    "src/bin/target_contract_mode_probe.rs": "a83e157d5580875daffd7447fe526f862654232079c28aeed8008f2d9742dae9",
+    "src/bin/target_mode_diagnostics_probe.rs": "c7dd93d1eb538761148f193b01e0f37e34d5910ea0364da5383585e5f33c704b",
+    "src/bin/term_order_probe.rs": "0bec19a0c7fe8a52a633c1cd72935ee6188eb6134f3cc7c4f8c2a86222976586",
+    "src/bin/type_probe.rs": "3da4088b1e8d705d4fe7f2054082325cf8a91a73cf32f511eebf9b2bbd3cb953",
+    "src/bin/underapprox_probe.rs": "f7d49a9d65f56bf3a1fb1b738bd7d3224c7a9dc4996dd61901d39a5a32173646",
+    "src/bin/warning_cache_probe.rs": "337ac0acac9da0ebb14a21f85e38f017b62a3a478ffe3faf4a7edd0d37b6751a",
+    "src/bin/warning_collection_probe.rs": "ecb1bd5d1184132b88e68049563a612bacc33e1800464079c0e66582beb2b79b",
+    "src/bin/warning_policy_probe.rs": "2ae313e4c5a000936f247a940ba96d45b649f100a2cefe8307cac7eea9497de6",
+    "src/bin/warning_probe.rs": "37745d157e70f52f104ab4f01624fea5735fa364796aaba7dd8258309593f8ab",
+    "src/bin/warning_publication_probe.rs": "89d0b03eec47e4c121cbbd11dd83ff32572c40ff242dfc562e546c2e11d98507",
+    "src/bin/whole_module_corpus_probe.rs": "360241cd1d32875a021931ffc55117bbe9aee7ad3555c57f95c235cf05799a6c",
+    "src/bin/whole_module_probe.rs": "24875513fd4d6053d54f443d740de490addbbaaa20df4a3bd92a3672cffb3138",
+    "src/bin/widen_number_probe.rs": "1d4127a08685ea46cac46ec63174afd90c78e2f30bf12fc5de629cd6a0f04583",
+    "src/binder/native29.rs": "cccbe239a73837fd2bca49777221543102fafd717abf19634bc9ebe4371bc5da",
+    "src/binder/native29_tests.rs": "d39f083ed25f2927f13b3d6d248c94f605e7ff0f966d6e108863fc4e3d8612de",
+    "src/binder.rs": "0a1d4577725ac3df8f26617ceaffb0e6a41724a624e9c3ed30b0d19f43703285",
+    "src/binder_module.rs": "23c59532225734a6d88b1a263393aeb1fcfc7e57e405d387090f2aa90db6abaa",
+    "src/body_calls.rs": "b0b537c9261bf44c3b9bb7af1ffc3a6681cf01a0e2d19c14588cc4717a5ac1aa",
+    "src/body_case.rs": "cab563749421ad5f80d0e5f634df6876bf92db1b87f612ef22f8d02cac2ebb94",
+    "src/body_flow.rs": "af09f9ad87ff24875e3368743d03fcd91d2853888c65055d914090d429bb637e",
+    "src/body_function_warnings.rs": "53be90d9a6811de3168be4e7752c90c761f8645ea208867ad2c3704dd008752f",
+    "src/body_native_records.rs": "e44d64c7ce344b28461961b9c23299eabd3fc98c737c4778953c587f1ebccd3f",
+    "src/call_adapter.rs": "c18e8e37a6ff4a13828f5b30c0a7f2133d01e1dcd62a49cd0c1038da9606fc8c",
+    "src/call_transfer.rs": "385ef1b277625ccb20da14e017ae12211f6432f7cc48006345ece4038a6c269a",
+    "src/call_warning.rs": "7ec868a68da9065dcaf8687b796df0f10b097b8425dbdbed601849a083837390",
+    "src/callback_warnings.rs": "d776c956a0488843901285c039378c9ec243ea39cd3c2769ed8929f2cc85172f",
+    "src/callgraph_cleanup.rs": "c6df7799a9175411eadfcf04f68ed39df010b46d564ce16777b97db150115cc0",
+    "src/classic_checked.rs": "0359654978beae0d1a0c70c0381df1e93f387b5a968f6c57b22e0216ce291413",
+    "src/classic_persistence.rs": "082484bf9ad1292b450e5fd33650f286b8fea7a73648a75fcc8c8d21bde7e9c4",
+    "src/closure_dependencies.rs": "868777bccca14f551aecb2be6ffa581d418197e2b8ebaac29c6f47c5a6ad5f18",
+    "src/closure_dependency_tests.rs": "7bdf382f03a5d092d5b307e262e94d239ac87dd09a4d0cd6f03edf4ba931aeba",
+    "src/compiled_analysis.rs": "c513e37d92baea457d8d73a4c62ef335c1ef2d0aca88c73352d0e2cb4d0c64ea",
+    "src/compiled_definitions.rs": "519f9e75ff9ad1c3e05831cfdc81550fb7851b4e5aa025b312a4b873be33f0fc",
+    "src/compiled_probe.rs": "47bf3193bef5bf81aeb08d5aecca5d24606dccfd4dcd15d4a192482a60789709",
+    "src/constraints/analyze_scc.rs": "0a0afc74a202fdfae8268c0887d23764b55cac78d668971aa6472c44c4023c2b",
+    "src/constraints/atomic.rs": "463e891f2c9887d27800726ad1e7c04edcd4eaaf6553c2def1d62747372c64d9",
+    "src/constraints/bindings/read_view.rs": "22fc93bfacce48fe8dd8261d4b611c52c974a790605aa17ca1e084866e282c39",
+    "src/constraints/bindings.rs": "efc1392f5008d5a4db4eed3b149e7284ec7b2f529d427d70c35530e9a97c4ef7",
+    "src/constraints/closure_order.rs": "ceaaa975ae2e537d9dcb436d1876850b1f26a75009d4c7afb158e55969a0d956",
+    "src/constraints/constraint_capture.rs": "384960e7061245ff72c9bc78a9118305571f42123f916bb153d35c124bb77570",
+    "src/constraints/derived.rs": "27129feb306ac3466414d57062d611dffaa7ed84b9d84df6da97823a3887a396",
+    "src/constraints/generation.rs": "e1041794d12fe409d5585e89ca3eed22d7deb8cb981d4c5dbd24b3d23d44b613",
+    "src/constraints/generation_apply_targets.rs": "7cd57b0a391e92aec4c3cf89979438c442531e77d5227ddf5658a2edd3923953",
+    "src/constraints/generation_bifs.rs": "65ac6e00a93c65e52ddc8799a0f76908ed1b7c4e5881ab3c6eb8e9a676e1faa8",
+    "src/constraints/generation_capture_headers.rs": "d86b7ff498b9dd6f389aa8d583ebd5593efe7335f150bee85df7991231894a7c",
+    "src/constraints/generation_clauses.rs": "55832d4bcb96e84be8ae5cf8250cd2560e4b41380fb59ecb5c3ab341ed8d81bb",
+    "src/constraints/generation_maps.rs": "4e5fce1955e311b6cc42b612e3a1e61ded44f7d0850e5df916eb9dd6ef2e0301",
+    "src/constraints/generation_patterns.rs": "08a7656299363fe876f597472b506ec4b08881273213774dfbda9bf9a0aabae5",
+    "src/constraints/generation_reuse_probe.rs": "82357b819cfea7619cc55b545da9f4484c7f91a83d0f484af8726ea74bd72702",
+    "src/constraints/generation_state.rs": "69ff49cbe411212417ac06ea7165cd7373ca459bc22b0abaed182585d3cbb88c",
+    "src/constraints/generation_structural.rs": "858cc6dfae7a411fbf8da0930898533f3b2b70b5563f9e836883b95084e347a6",
+    "src/constraints/generation_try.rs": "79a423f1dd2d0aefb27269c7b721eaa05486b906318a6f08aba2765c16b58607",
+    "src/constraints/mod.rs": "6544c8cc0f01afb84ecde5eb3f52f69b0ef6488bbd96ae2bd22715d8bf2953c7",
+    "src/constraints/normalize.rs": "50962b4564111ea77d9b850bac058f95ac66ab07058edf2e97f22da6bab5a966",
+    "src/constraints/preparation.rs": "bf46fd788e47827de7f62cdf89e9bd6f321769b5eb0dd2f0c1c52ed232ca7467",
+    "src/constraints/tests.rs": "f8599d615781034931760fa1fcbce7689008ad290bdd08b6d3aa197a057aa859",
+    "src/constraints/tree.rs": "eea9ee80c261a025a0e5a947a18eb09866f27087a356f494fb08500a889850f2",
+    "src/contract_book.rs": "e6d79257de4c5d24afd8d54ab1d86315d56b5c36f5ce890257e853a3df4df302",
+    "src/contract_presentation.rs": "5d6f9da7ae3201e6e1b51a8d80e6605d37a1b6826559a7a5a406f9214ce942f8",
+    "src/contract_runtime.rs": "551b60c3d443253c181398f49aeccae1900579e96de4938b80ba5035c316f426",
+    "src/contract_warnings.rs": "cf0ba7c0a0892c3b5fa1fdbae0c3fb64ae3124bd5829f518bfd0b1b5fa7fffd4",
+    "src/contracts.rs": "2267bac1b47e758f542fe683ec08ac7865147c715984253f55d678cb2530c769",
+    "src/core/etf/native.rs": "cc57fc5f2d5e93f79edc53ac2ca5400ed5fea75fa4995c66b01d50046dd2585f",
+    "src/core/etf.rs": "8f427a3ae09ced3c7008a423bba6b778861ba868a10d42bff038e6a0a62ec092",
+    "src/core/wire.rs": "b68eb4f46d442721300069b17abf214b53ec78124e0c8f98cc6e52f5550036fc",
+    "src/core.rs": "d7c355c4631a9771aae79f16b17a620bd6378c1e2760876c768fac9553ce622b",
+    "src/core_analysis.rs": "f07803e8bf63c4402eb0fa8154ac6b85e094721657d3fb1ee97f53bfc244a0e7",
+    "src/core_capture.rs": "eccbfac70e342975e2f02aac710013c207cb60f0f5d68e77c199fdcd8bf4c7e4",
+    "src/core_phases.rs": "0881f4eb814f86e186573ecf93aa23f0f2cbdf7ae2b3e3fecf1e643f03bf0222",
+    "src/core_pipeline.rs": "768ae205aaf17ab098c135dd6ad3db492a3a537d5a775bc26fd46cb48f60dc3d",
+    "src/core_print.rs": "b1c88cdf0b1c5a968d5b39bf9abdd728729ef5232f7b991b670edc09621bb050",
+    "src/dataflow_key.rs": "e741659bc5c3321e61d3332cd984f80d44cfe2be3c0befdcaed4a23bb32c4816",
+    "src/dataflow_map.rs": "8f470aa6c987e5f3fa33edd95c866805fb5df5859ea6c08accebc6e53b3936de",
+    "src/dataflow_nodes.rs": "2b49a11ecc6f3a70187fdcc6fb9be98d421a19dafea2ea6dfaa3604e354db4b1",
+    "src/dataflow_trie.rs": "1085c239d18c0d93e52c503c3caf4218329cbbf67e47901d3ab53d90eca4917c",
+    "src/declaration_key.rs": "3bf211c6dae952201e9e22b425055949be91114621f9775bc9830ac27deeb86d",
+    "src/dependencies.rs": "48ff4da42b35f315036ac4c051d8f7d20149617096235ac4eb256c3874390f83",
+    "src/diagnostic_inputs.rs": "21bcbadc6f71086ab173e4e6f594a1a6f3e9075c0d4f0b3341b9521317285fd6",
+    "src/domain.rs": "f359e824171de6aef4c670a2706f15c050ee57d6d12743a39456d9f49e549762",
+    "src/emission.rs": "2eaafb28f5cdd40fdc01dbe6b100fddb0f3e7714d919e501779f9ad5ae6d19ef",
+    "src/engine.rs": "5e4ec72c6b15ee8f91f1c1afb70342331d04a83f336470cdcd75e3e491e0d00f",
+    "src/environment.rs": "65234ea068f4792d0f1e4ac1f1adf10229edef155cc8787910b3ab1c696a9375",
+    "src/erlang_syntax/mod.rs": "2c68539672f3da7c1414defa7a1b3e4bcde076b50df4f80a742439d652d3eb19",
+    "src/erlang_syntax/pretty.rs": "d42485db6f75f280a4536881cfa6d8e14663f9b423d6674e872f8f4d3ad572e6",
+    "src/erlang_syntax/syntax.rs": "f169dc5b1ee7cd43842a157a67f49ca82ba2e99b9190db54ee672196e5731f2e",
+    "src/external_term.rs": "a740427a2953552c8915b97cd995cc351715227bd20c4d011ab3600c051c8336",
+    "src/fast_hash.rs": "133ab3af872ef53ce65bf5b5a50708848af6e1b9342b7eaef07636c659e5d6d2",
+    "src/fingerprint.rs": "bfdb38724c1e5533e30b784b8b66b3cea87d9580717d3ab0d04293ffb2d6a31a",
+    "src/flow.rs": "6d6ec138466565dd082ac985c8a7ecb91a560d666bae63b3eb846200332adcee",
+    "src/flow_tests.rs": "dce939b0979251f51bedb2e0413dc97e632815aeace70a2cda257b5dd5772c76",
+    "src/folded_core.rs": "78fc42a87fffe14254c746b9a9a7537c7b852c42d17f62cb1d8df3f4e2d321d4",
+    "src/form_cache_wire.rs": "826c5f59b15de84071d8ff9fdb68c0ccb6a1defaa4d0b71d67c99494582791a3",
+    "src/form_context.rs": "2f923e94e873ff93720bc87ec511ef36d920e1616d481d5264458fa94c44a909",
+    "src/form_error.rs": "6505245556354f8493888393872ba36eddc016ac852435fd7c565df679f363a2",
+    "src/form_exports.rs": "f6fbadc7d905b1d8007f2fd53593af8588299f45fef2c471f888e86b7821eac3",
+    "src/forms.rs": "bfafb2c7d7281667b884a32ad26813575a620249ca4ae8b92af4ed31bab0a9b6",
+    "src/function_state.rs": "7d3ed66725f9e6f088b8130bfa7866b7dadf99de3c293be932a775b01bb0b0b5",
+    "src/function_tree.rs": "2ee4f108bd42a3351f37bba2c22ea1b155e5b4c55288292476e7d22e1259f203",
+    "src/guard_boolean.rs": "2190140594ac771c9b1c0b787d51d138d9a5c55259b4d2568ad3ea320c763784",
+    "src/guard_calls.rs": "be9a07aea5b4ea610868dd93720f83468d7256d222721bfab7f54c8dde578d21",
+    "src/guard_case.rs": "a7e3a8047f9ad61ecd5be8d44db50a276c4e083239029926673cf1b3b97ff906",
+    "src/guard_control.rs": "116a39d9faecf7397003cb31cc1bd0164d0b5557ac4fed4186b5233cc7c43912",
+    "src/guard_equality.rs": "ca06410b8066f421258b827296c46c777884c7042711eaaaa50e73880b171da1",
+    "src/guard_literals.rs": "4dace427ee23b51e6de559b2299b9e14040e971a576a5c4ddf3c25de7b2812bb",
+    "src/guard_ops.rs": "dc9d752bc6c47dba3b68443049a7f3f79fa4a2aa7182c1eea6a4e53a910bb915",
+    "src/guard_producer.rs": "99aa3dcd74a2790eb9a7a6a7db5fd71826852aba0cb35a2fe801890bd171a6a0",
+    "src/guard_shapes/native29.rs": "81addc8ea0492160e0c13bc64517492dc579014839102a17ffa91247f3d4244b",
+    "src/guard_shapes.rs": "7d66ba16a1e843e2deead9ed9bca29ddfb70d02222bcdf31d0c4899a61f3c64b",
+    "src/guard_warning.rs": "42dbf623483f5d0dfdfdfaf07f6d25bb6b80b20ecd4df4346c8d888c64688ac8",
+    "src/incremental.rs": "e2c0409961fb1adece27d8fac747b01ad5504ef800fb87827925c3ee950aa3a5",
+    "src/incremental_persistence.rs": "3edebc0052493705d98c96cddc9e061e93d8f35c8ca98e8a3585840f33138fd4",
+    "src/incremental_warning_cache.rs": "6b0a62b0ac73cad44b9bc2950d39672a8d1973446922591a5b1d6a11328002dc",
+    "src/invalidation.rs": "68dcd39b789d02e2143ae39ec2a54baa74f6e5e13385d5be1b3d4c7607a6f8f9",
+    "src/ir.rs": "a6f175d3d4883af7564cc0b20dd87a875e9924bcfca908c5773bbe250e465fc2",
+    "src/job_trace.rs": "d3b5bbf3c4759d682683920a3809c02b6d3642337fea2dbb4c2f24e1ad97cd24",
+    "src/labels.rs": "93b18ff680d43542750bfbc06db98472fdaf8086f6dacd4ed845ee115e1dbb3b",
+    "src/lattice/records.rs": "0528125715669b9a0ddc99b2cfe6c9137fde58433c2501f4fd1a51c5e5606d78",
+    "src/lattice.rs": "fb87731f4b7b1b714a86ca6cd60e8aafb5f2f58a28e8ec776963b283bcc39e99",
+    "src/letrec_types.rs": "d2243230690c44595302bdc44178a27ac28ea791b4758ecd48355fb2b8ef9a52",
+    "src/lib.rs": "e5f31796da4b9886fe429974ef03e971255b941c0572b96e6a6286ba41dd14f1",
+    "src/literal_types.rs": "11a2dfd2ca35f8873770b0d436fc87f6bb719b068d2cd9bbea7f28a81f42d5d8",
+    "src/live_bytes.rs": "aa5b68f70b9413cea4506f3900c79326845abfe6a9cf05ba0103236146fbe95f",
+    "src/main.rs": "82466723361feddf210842838499a82fba98a93be9b0ba22bab236c64c8f810a",
+    "src/module_dependencies.rs": "d2de1acab18a979dea5c1d2c1d3fd2cc4f30366cee6010d7f4843e5fbae96058",
+    "src/module_publication.rs": "d2a52ba3e42cccc869df27fe25fe785dfa43ca9095addbfd73eedebc4728f2c1",
+    "src/native_dict.rs": "d49f1fbd19aca0328a0f357ac26c5a2cde5ef4949eb6a7a61d492545f0b721d8",
+    "src/native_error.rs": "e96c7effbe2b9f3c9144c2758e91f91bb3ae0eeea8fbc3b4fabc981f91a37b09",
+    "src/native_ets_set.rs": "148f9b495edab6fe0a193e67216e82ef853dc382052ec510ddb53b2f4c3d71ca",
+    "src/native_form_environment.rs": "89ca20e610b636445185ead163e13ca45bf387449f65cda10d1e27ca3df5cdb8",
+    "src/native_form_io.rs": "f0f443d96a10f1f81afd61ec22d14d425faa49dfb031fb70c42243b56a529ae5",
+    "src/native_form_preprocessing.rs": "72d0a4677fc09bbd0fdc0661af27163adcdb912e05d6071713670037450f7351",
+    "src/native_map_order.rs": "a53df4c32e151a5d43383af44f44d9bfeae886df46093233d6a4e0e533e7e35b",
+    "src/native_order.rs": "04876d2c244a42813e1578f506d7e9cc215d0cff291181dfaad8d306b7e5ef5d",
+    "src/native_runtime_hash.rs": "72aa39acc61ffcd5e7bcab7238bf98933ad8cae750fdbc50a33990350febcdff",
+    "src/native_type_operand.rs": "419b08ca7f4e95d06bd54a2d8341f72ddd31a28a4deb97f277c04b40cef1eaf2",
+    "src/ordered_parallel.rs": "7d765040de90d14f48981170f100dd7e1706d5ef28ab218bb77cd668a52da6f0",
+    "src/patterns.rs": "15a4de27984c684b27650e04c059cd23067b3372c71b944ed935c1a673064bd6",
+    "src/phase_timings.rs": "179794a9b26cc548b9ecbcdc3f2a578f73be62a1f1afec156b651958c7137ae3",
+    "src/plt_tables.rs": "b8a4bf68b8719d7679d52dc5b401ba6e94c017f05ea545087acac189656edc67",
+    "src/portable_term_hash.rs": "2c1534bc72cf782a9809d8395e57831229234e72a1d9f31405e694a5fd4ab8ea",
+    "src/presentation.rs": "1c465c73f24c24a055cab1364c737e717b419ee21e496cfd7bb6ffad35eb457f",
+    "src/presentation_form.rs": "1e4a7c59f81e6eafb41d6695942dc67e841769dfceaa21e4c3195bc73484396f",
+    "src/program.rs": "fc2e7733b96f08734c4fa3de942fbe6e876fd68f9fd76fe7dc726345187a0a1c",
+    "src/program_metadata.rs": "ce5859ad678a4ebf55ae86a5c83781f91f76fddb27758d8bbab8deb152cb7dec",
+    "src/program_tests.rs": "e30dd7de3c8863c0ec384b841d2c6493ee9917e11bb6b905054522d21790a2c0",
+    "src/provider.rs": "3131c4fac2fef29c6308b742f14947ad0edc8237e5b39c5bdf62c2a5d880393f",
+    "src/raw_callback_library.rs": "b7dd0d100aae9803ba024e5d6869563c0cc34fddfacf20541d9cf232b0183a8c",
+    "src/raw_literal.rs": "b21a7f05b3c30f9d900a5efbee65ec78a10fbd3be3c1a91957b6ecb44d14f2b4",
+    "src/render_source.rs": "7fd1b31bddb103c1f115b6a1116a9f90ce2341451ecee82ef072812fdc1b48fe",
+    "src/resolver.rs": "1c9380113864937573d8c721ae65064a71bfbcfff932bb6fe2c7f89aefdc1a7b",
+    "src/returns.rs": "fdc9b6d7bb0a48cd76558e8d817cd12009c116eba5538d479bc002c0a769fa91",
+    "src/runtime_hash_nodes.rs": "4fa500f962e565d63f0f1d6e7162233738f9342aed14079f44effb04d8100a95",
+    "src/runtime_term.rs": "3c661329ada802297d0220a5c3249ee73cc8ca0c1c15c267ea205c471f24d4f2",
+    "src/schedule.rs": "2ca996fddd2772c83e9160aed98a2390411751b11aaca52027b6056a07050e83",
+    "src/schedule_tests.rs": "a550b627c00c5d90d8d231d51ac367e5bbdbfaca8f0efade731a61d5231c3165",
+    "src/shared_vec.rs": "ceafab0dbc5a80d8a9013bf4a9de549df31402c4e5afa6a944cb020a524d8503",
+    "src/snapshot_file.rs": "feed01ad5cfa562b9a7a22548ee726e31b1b30d639faa3e187df6057cb2ef870",
+    "src/source_callgraph.rs": "cd16eaa2a8c42af1e4b31e1ed536c5ddd578e714ba4250ed7dea67e72091b4a9",
+    "src/source_digraph.rs": "f979de1854e66fab37c1236420032a916ce74b066d26a55d1603086d595b1304",
+    "src/source_graph_algorithms.rs": "bfc44964f205fd4328c752d077272a2ca05f4ec1d48be3709980f5dd0cd46db0",
+    "src/source_schedule.rs": "b6073e24310946c05377177a777d43b0cd6be3c7e0d68194c5e6ed722b009b20",
+    "src/success_phase.rs": "117b911f2763141f2b6f8149f27b3307c0b887689cb776beae4c7c82d74c861b",
+    "src/teardown.rs": "598680cea0153913de21f5c9c8cfeebbe680269821545cb54aaa209ed68e35fb",
+    "src/temporary_contracts.rs": "e839d5f5720af0a27ece04efa7efe085de54bd0a0438b44d887637fe2a77be33",
+    "src/term_order.rs": "eb02622a0696ed33814b50ce0279e62bf8b5e1bc0d6ac233d4e07a219c5e14a3",
+    "src/type_api.rs": "9e3edd52d69d2bff9771e874e08c7cfcc496323471a52b2f096000efc7492d45",
+    "src/type_exports.rs": "3b9c6296501a5e84b626ae41a4e037d3673f909227b75989e1d79003bcd85ed4",
+    "src/types.rs": "fdbcb964cf6b7c66133ae6bbed2940ed74476efdf5ee9687fab5e4f36f515732",
+    "src/underapprox.rs": "fa55b3fc300d5f1e5db7ba56ae000e5a632181fb8ef69f26af7fe00caa8baed4",
+    "src/validation.rs": "4f4ef617edb91c8c84e74ec7b34e7ed718689690df07a77a1cb94c3edcb69f57",
+    "src/variable_integer.rs": "370c8062e9bc7a6b33ee1c6de4cbb284fb6f801c1b815e268691fde44e15dc90",
+    "src/warning_collection.rs": "7ca6e692d0d46fa9f38c72743027522b6e12f8a738e04906366a3e0bc00d8ecc",
+    "src/warning_payload.rs": "7701047172e2e85726089cba68c497666e7c33804c2a6610f338c1646b7ee45e",
+    "src/warning_policy.rs": "22b8d543e4364274589cde09b4382828d879d6d33c869c6c84ca65e6e275694f",
+    "src/warning_publication.rs": "6b33dcc23afc4f458f6c8c3d935d7472784061704f78181f0e5f93ac5b6dfe59",
+    "src/warning_render.rs": "99320b2c3a85a3c837a725465183d86b164a7508b6be591ed8511183ebf1cd92",
+    "src/warnings.rs": "2902f1cf7d2842bf5eafc05a45a2a22c5e0948e457acebeadbe7cf6574204a22",
+    "src/worklist.rs": "4dde26053c2f1440c210b6e2c506a7025c9bf2e1d57c45c4e3407e9cb8b26267"
+  },
+  "passed": true
+}

@@ -38,6 +38,8 @@ enum Container {
     Tuple,
     List,
     Map,
+    #[cfg(otp_domain = "29")]
+    Record { module: String, name: String, exported: bool, fields: Vec<String> },
 }
 enum Action {
     Read,
@@ -174,10 +176,36 @@ impl<'a> Reader<'a> {
                                 .map(|pair| (pair[0], pair[1]))
                                 .collect(),
                         ),
+                        #[cfg(otp_domain = "29")]
+                        Container::Record { module, name, exported, fields } =>
+                            ErlangTerm::Record(Box::new(crate::core::NativeRecord {
+                                module, name, exported, fields: fields.into_iter().zip(items).collect(),
+                            })),
                     };
                     self.push(term)?;
                 }
                 Action::Read => match self.byte()? {
+                    #[cfg(otp_domain = "29")]
+                    67 => {
+                        let count = self.length()?;
+                        if count > self.limits.nodes || count > self.limits.expanded {
+                            return Err(Error::ResourceLimit);
+                        }
+                        let exported = match self.byte()? { 0 => false, 1 => true, _ => return Err(Error::Invalid) };
+                        let module = self.atom()?;
+                        let name = self.atom()?;
+                        self.count_value()?;
+                        self.count_value()?;
+                        let mut fields = Vec::with_capacity(count);
+                        let mut seen = std::collections::HashSet::with_capacity(count);
+                        for _ in 0..count {
+                            let field = self.atom()?;
+                            if !seen.insert(field.clone()) { return Err(Error::Invalid); }
+                            fields.push(field);
+                            self.count_value()?;
+                        }
+                        self.container(&mut actions, Container::Record { module, name, exported, fields }, count)?;
+                    }
                     97 => {
                         let value = self.byte()?;
                         self.push_small_integer(value)?;
@@ -433,6 +461,17 @@ fn length(out: &mut Vec<u8>, value: usize) -> Result<()> {
     );
     Ok(())
 }
+#[cfg(otp_domain = "29")]
+fn record_atom(out: &mut Vec<u8>, text: &str) -> Result<()> {
+    if text.chars().count() > 255 { return Err(Error::Invalid); }
+    if text.len() <= 255 { out.extend([119, text.len() as u8]); }
+    else {
+        out.push(118);
+        out.extend(u16::try_from(text.len()).map_err(|_| Error::Invalid)?.to_be_bytes());
+    }
+    out.extend(text.as_bytes());
+    Ok(())
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapEncoding {
     Canonical,
@@ -468,6 +507,20 @@ pub fn encode_at(
             return Err(Error::ResourceLimit);
         }
         match arena.terms.get(id.0).ok_or(Error::Invalid)? {
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => {
+                out.push(67);
+                length(&mut out, record.fields.len())?;
+                out.push(u8::from(record.exported));
+                record_atom(&mut out, &record.module)?;
+                record_atom(&mut out, &record.name)?;
+                let mut names = std::collections::HashSet::new();
+                for (name, _) in &record.fields {
+                    if !names.insert(name) { return Err(Error::Invalid); }
+                    record_atom(&mut out, name)?;
+                }
+                pending.extend(record.fields.iter().rev().map(|(_, value)| *value));
+            }
             ErlangTerm::Atom(text) => {
                 if text.chars().count() > 255 {
                     return Err(Error::Invalid);
@@ -879,7 +932,7 @@ mod tests {
                 .wrapping_add(1),
             2635985511
         );
-        assert_eq!(crate::portable_term_hash::hash(&key), 3613265408);
+        assert_eq!(crate::portable_term_hash::hash(&key).unwrap(), 3613265408);
     }
     #[test]
     fn external_function_hashes_match_otp_and_require_scoped_internal_identity() {
@@ -907,7 +960,7 @@ mod tests {
                     .wrapping_add(1),
                 phash
             );
-            assert_eq!(crate::portable_term_hash::hash(&key), phash2);
+            assert_eq!(crate::portable_term_hash::hash(&key).unwrap(), phash2);
             let layout = NativeAtomLayout::parse(
                 &serde_json::json!({"version":1,"word_size":8,"scope":"test","atom_hashes":{}}),
             )

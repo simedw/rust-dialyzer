@@ -1,3 +1,11 @@
+#[cfg(any(
+    not(any(otp_domain = "28", otp_domain = "29")),
+    all(otp_domain = "28", otp_domain = "29")
+))]
+compile_error!("build exactly one fixed OTP domain through its Cargo package");
+
+pub mod domain;
+
 /// Like `serde_json::json!` for objects, but moves each value in with
 /// `Value::from` instead of re-serializing it, so nested `Value`s are not
 /// deep-copied at every level.

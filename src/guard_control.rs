@@ -475,6 +475,17 @@ impl GuardControl<'_, '_, '_> {
                 let args = args.iter().map(|id| child(*id)).collect::<Vec<_>>();
                 self.call(node, &function, &args, map, env, eval, state, depth)?
             }
+            #[cfg(otp_domain = "29")]
+            CoreExpr::Primop { name, args } => {
+                if self.atom(child(*name))? == "record_field" {
+                    let args = args.iter().map(|id| child(*id)).collect::<Vec<_>>();
+                    self.native_record_field(&args, map, env, eval, state, depth)?
+                } else {
+                    // OTP ignores the operands and Eval for all other primops,
+                    // including is_native_record and is_record_accessible.
+                    plain(Type::any())
+                }
+            }
             expression => {
                 return Err(GuardError::Unported {
                     node,

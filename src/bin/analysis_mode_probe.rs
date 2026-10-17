@@ -30,7 +30,7 @@ fn run(row: &Value, library: &str, profile: &ClosureCodeProfile) -> Result<Value
                 .ok_or("purged module must be atom name")
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let bifs = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let bifs = Registry::standard()?;
     let policy = DependencyPolicy::parse(include_str!("../../corpus/dependency_policy.json"))?;
     let warnings = WarningRegistry::load(include_str!("../../corpus/warnings.json"))?;
     let solvers: Vec<String> = row

@@ -39,6 +39,15 @@ pub struct ExternalFun {
     pub function: String,
     pub arity: u8,
 }
+#[cfg(otp_domain = "29")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NativeRecord {
+    pub module: String,
+    pub name: String,
+    pub exported: bool,
+    /// Field declaration order is part of RECORD_EXT transport.
+    pub fields: Vec<(String, TermId)>,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ErlangTerm {
     Atom(String),
@@ -57,6 +66,8 @@ pub enum ErlangTerm {
         tail: TermId,
     },
     Map(Vec<(TermId, TermId)>),
+    #[cfg(otp_domain = "29")]
+    Record(Box<NativeRecord>),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoreNode {
@@ -108,6 +119,14 @@ pub enum CoreExpr {
         key: NodeId,
         value: NodeId,
     },
+    #[cfg(otp_domain = "29")]
+    Record {
+        argument: NodeId,
+        id: NodeId,
+        pairs: Vec<NodeId>,
+    },
+    #[cfg(otp_domain = "29")]
+    RecordPair { key: NodeId, value: NodeId },
     Let {
         vars: Vec<NodeId>,
         argument: NodeId,
@@ -176,6 +195,10 @@ impl CoreExpr {
             Self::Tuple(_) => "tuple",
             Self::Map { .. } => "map",
             Self::MapPair { .. } => "map_pair",
+            #[cfg(otp_domain = "29")]
+            Self::Record { .. } => "record",
+            #[cfg(otp_domain = "29")]
+            Self::RecordPair { .. } => "record_pair",
             Self::Let { .. } => "let",
             Self::Seq { .. } => "seq",
             Self::Apply { .. } => "apply",
@@ -198,6 +221,8 @@ impl CoreExpr {
     pub fn native_children(&self) -> Vec<NodeId> {
         match self {
             Self::Map { pairs, .. } => pairs.clone(),
+            #[cfg(otp_domain = "29")]
+            Self::Record { pairs, .. } => pairs.clone(),
             _ => self.children(),
         }
     }
@@ -221,6 +246,11 @@ impl CoreExpr {
                 key,
                 value,
             } => vec![*operation, *key, *value],
+            #[cfg(otp_domain = "29")]
+            CoreExpr::Record { argument, id, pairs } => [*argument, *id]
+                .into_iter().chain(pairs.iter().copied()).collect(),
+            #[cfg(otp_domain = "29")]
+            CoreExpr::RecordPair { key, value } => vec![*key, *value],
             CoreExpr::Let {
                 vars,
                 argument,
@@ -734,6 +764,10 @@ fn parse_node(
             .collect::<Result<_>>()?,
         value: optional_index("value")?,
         map_arg: optional_index("map_arg")?,
+        #[cfg(otp_domain = "29")]
+        record_arg: optional_index("record_arg")?,
+        #[cfg(otp_domain = "29")]
+        record_id: optional_index("record_id")?,
         map_pattern: obj
             .get("map_pattern")
             .map(|v| {
@@ -752,6 +786,10 @@ pub(crate) struct RawNode<'a> {
     pub groups: Vec<Vec<u64>>,
     pub value: Option<u64>,
     pub map_arg: Option<u64>,
+    #[cfg(otp_domain = "29")]
+    pub record_arg: Option<u64>,
+    #[cfg(otp_domain = "29")]
+    pub record_id: Option<u64>,
     pub map_pattern: Option<bool>,
 }
 
@@ -781,6 +819,10 @@ pub(crate) fn build_node(
     let shape: &[Option<usize>] = match kind {
         "literal" | "var" | "opaque" => &[],
         "values" | "binary" | "tuple" | "map" => &[None],
+        #[cfg(otp_domain = "29")]
+        "record" => &[None],
+        #[cfg(otp_domain = "29")]
+        "record_pair" => &[Some(1), Some(1)],
         "bitstr" => &[Some(1), Some(1), Some(1), Some(1), Some(1)],
         "cons" | "seq" | "alias" => &[Some(1), Some(1)],
         "let" | "clause" | "receive" => &[None, Some(1), Some(1)],
@@ -889,6 +931,17 @@ pub(crate) fn build_node(
             key: one(group()),
             value: one(group()),
         },
+        #[cfg(otp_domain = "29")]
+        "record" => {
+            let pairs = group();
+            require_kinds(nodes, &pairs, "record_pair", &format_args!("{path}.groups[0]"))?;
+            let reference = |field: &str, value: Option<u64>| -> Result<NodeId> {
+                Ok(NodeId(index(value.ok_or_else(|| format!("{path}.{field}: missing field"))?, id, format_args!("{path}.{field}"))?))
+            };
+            CoreExpr::Record { argument: reference("record_arg", raw.record_arg)?, id: reference("record_id", raw.record_id)?, pairs }
+        }
+        #[cfg(otp_domain = "29")]
+        "record_pair" => CoreExpr::RecordPair { key: one(group()), value: one(group()) },
         "let" => {
             let vars = group();
             require_kinds(nodes, &vars, "var", &format_args!("{path}.groups[0]"))?;
@@ -1031,6 +1084,10 @@ pub(crate) fn build_node(
     }
     if kind != "map" && (raw.map_arg.is_some() || raw.map_pattern.is_some()) {
         return Err(format!("{path}: map metadata on {kind} node"));
+    }
+    #[cfg(otp_domain = "29")]
+    if kind != "record" && (raw.record_arg.is_some() || raw.record_id.is_some()) {
+        return Err(format!("{path}: record metadata on {kind} node"));
     }
     Ok(CoreNode {
         id: NodeId(id),
@@ -1274,6 +1331,23 @@ fn parse_term(raw: &Value, path: impl std::fmt::Display + Copy, id: usize) -> Re
                 ));
             }
             Ok(ErlangTerm::Map(pairs))
+        }
+        #[cfg(otp_domain = "29")]
+        "record" => {
+            let module = string(field(obj, "module", path)?, path)?;
+            let name = string(field(obj, "name", path)?, path)?;
+            let exported = field(obj, "exported", path)?.as_bool().ok_or_else(|| format!("{path}.exported: expected boolean"))?;
+            let mut fields = Vec::new();
+            let mut names = std::collections::BTreeSet::new();
+            for (position, value) in array(field(obj, "fields", path)?, path)?.iter().enumerate() {
+                let pair = array(value, path)?;
+                if pair.len() != 2 { return Err(format!("{path}.fields[{position}]: expected field name/value pair")); }
+                let name = string(&pair[0], path)?;
+                if name.chars().count() > 255 || !names.insert(name.clone()) { return Err(format!("{path}: invalid or duplicate record field")); }
+                fields.push((name, TermId(reference(&pair[1], id, path)?)));
+            }
+            if module.chars().count() > 255 || name.chars().count() > 255 { return Err(format!("{path}: record atom exceeds 255 characters")); }
+            Ok(ErlangTerm::Record(Box::new(NativeRecord { module, name, exported, fields })))
         }
         _ => Err(format!("{path}.kind: unsupported Erlang term kind {kind}")),
     }

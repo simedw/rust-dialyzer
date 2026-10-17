@@ -998,6 +998,8 @@ impl<B: BifProvider, C: ConstraintProvider> Context<'_, B, C> {
                 ErlangTerm::Bitstring { bits, .. } => Type::bitstring(0.into(), (*bits).into())
                     .map_err(|e| err(self.at(module, at), e))?,
                 ErlangTerm::Nil => Type::nil(),
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(_) => Type::record_any(),
                 ErlangTerm::Tuple(xs) => {
                     Type::tuple(xs.iter().map(|x| built[&x.0].clone()).collect())?
                 }

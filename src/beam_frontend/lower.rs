@@ -16,10 +16,35 @@ mod literal;
 mod matches;
 mod pattern;
 mod receive;
+#[cfg(otp_domain = "29")]
+mod record29;
 mod shadow;
 mod split;
 
-type Result<T> = std::result::Result<T, String>;
+#[derive(Debug)]
+enum Error {
+    NoMatch,
+    Unsupported(String),
+}
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Self::Unsupported(message)
+    }
+}
+impl From<&str> for Error {
+    fn from(message: &str) -> Self {
+        Self::Unsupported(message.into())
+    }
+}
+impl std::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoMatch => formatter.write_str("pattern cannot possibly match"),
+            Self::Unsupported(message) => formatter.write_str(message),
+        }
+    }
+}
+type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone)]
 struct Expr {
     value: TermId,
@@ -49,6 +74,8 @@ enum LiteralKey {
     ExternalFun(String, String, u8),
     Tuple(Vec<LiteralKey>),
     Map(Vec<(LiteralKey, LiteralKey)>),
+    #[cfg(otp_domain = "29")]
+    Record(String, String, bool, Vec<(String, LiteralKey)>),
     Nil,
     List(Vec<LiteralKey>, Box<LiteralKey>),
     Bits(Vec<u8>, u64),
@@ -80,8 +107,13 @@ struct Lower {
     source_annotations: std::collections::BTreeMap<TermId, TermId>,
     shadowed_funs: std::collections::BTreeMap<TermId, HashSet<String>>,
     export_memo: exports::ExportMemo,
+    #[cfg(otp_domain = "29")]
+    map_comprehensions: Vec<comprehension::MapHead>,
 }
-pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
+pub fn lower(forms: &ErlangTerms, module: &str) -> std::result::Result<ErlangTerms, String> {
+    lower_module(forms, module).map_err(|error| error.to_string())
+}
+fn lower_module(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
     let mut l = Lower {
         a: Arena::from_terms(forms),
         module: module.into(),
@@ -109,6 +141,8 @@ pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
         source_annotations: std::collections::BTreeMap::new(),
         shadowed_funs: std::collections::BTreeMap::new(),
         export_memo: Default::default(),
+        #[cfg(otp_domain = "29")]
+        map_comprehensions: Vec::new(),
     };
     let mut input = l.a.list_items(forms.root)?;
     input.extend(l.predefined()?);
@@ -196,7 +230,7 @@ pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
             }
             Some("function") if f.len() == 5 => definitions.push(l.function(&f)?),
             Some("eof") => (),
-            tag => return Err(format!("lower: unsupported form {tag:?}")),
+            tag => return Err(format!("lower: unsupported form {tag:?}").into()),
         }
     }
     // OTP inserts the entry marker in every function only when load_nif/2 is
@@ -228,15 +262,15 @@ pub fn lower(forms: &ErlangTerms, module: &str) -> Result<ErlangTerms> {
     Ok(l.a.finish(root))
 }
 impl Lower {
-    fn err(&self, tag: &str) -> String {
-        format!("lower {}:{}: unsupported {tag}", self.module, self.function)
+    fn err(&self, tag: &str) -> Error {
+        Error::Unsupported(format!("lower {}:{}: unsupported {tag}", self.module, self.function))
     }
     fn expression_annotation(&self, node: TermId) -> Result<TermId> {
-        self.source_annotations
+        Ok(self.source_annotations
             .get(&node)
             .copied()
             .map(Ok)
-            .unwrap_or_else(|| self.a.tuple_fields(node).map(|f| f[1]))
+            .unwrap_or_else(|| self.a.tuple_fields(node).map(|f| f[1]))?)
     }
     fn empty(&mut self) -> TermId {
         self.a.nil()
@@ -551,7 +585,7 @@ impl Lower {
         let tuple = if all_literal {
             let values = elements
                 .iter()
-                .map(|&e| self.a.tuple_fields(e).map(|f| f[2]))
+                .map(|&e| Ok(self.a.tuple_fields(e)?[2]))
                 .collect::<Result<Vec<_>>>()?;
             let value = self.a.tuple(values);
             self.literal(tuple_ann, value)
@@ -577,11 +611,36 @@ impl Lower {
         let ann = self.annotation(f[1])?;
         let outer_known = self.known_vars.clone();
         let outer_pins = std::mem::take(&mut self.pin_tests);
-        let mut pats = Vec::new();
+        let counters = (self.counter, self.fun_counter, self.goto_counter);
         let mut bound = HashSet::new();
-        for p in self.a.list_items(f[2])? {
-            pats.push(self.pattern(p, &mut bound)?);
-        }
+        let patterns = self.a.list_items(f[2])?;
+        let pats = patterns
+            .iter()
+            .map(|&pattern| self.pattern(pattern, &mut bound))
+            .collect::<Result<Vec<_>>>();
+        let pats = match pats {
+            Ok(patterns) => patterns,
+            Err(Error::NoMatch) => {
+                (self.counter, self.fun_counter, self.goto_counter) = counters;
+                self.known_vars = outer_known;
+                self.pin_tests = outer_pins;
+                let mut sanitized = Vec::with_capacity(patterns.len());
+                for pattern in patterns {
+                    sanitized.push(self.sanitize_pattern(pattern)?);
+                }
+                let location = f[1];
+                let mut clause = f;
+                clause[1] = self.generated_location(clause[1])?;
+                clause[2] = self.a.list(sanitized);
+                let falsity = self.a.atom("false");
+                let falsity = self.a.tagged("atom", vec![location, falsity]);
+                let tests = self.a.list(vec![falsity]);
+                clause[3] = self.a.list(vec![tests]);
+                let clause = self.a.tuple(clause);
+                return self.clause(clause);
+            }
+            Err(error) => return Err(error),
+        };
         let mut guard = self.guard(f[3])?;
         let pins = std::mem::take(&mut self.pin_tests);
         let (composed, allocations) =
@@ -720,6 +779,8 @@ impl Lower {
                 let pattern = self.a.atom("true");
                 Ok(self.a.tagged("c_map", vec![ann, base, pairs, pattern]))
             }
+            #[cfg(otp_domain = "29")]
+            "record" => self.raw_record_pattern(&f, ann),
             "match" => {
                 let left = self.raw_pattern(f[2])?;
                 let right = self.raw_pattern(f[3])?;
@@ -1112,6 +1173,7 @@ impl Lower {
         let name = self.a.as_atom(n[2]).unwrap_or("");
         let arity = self.a.list_items(f[4])?.len();
         Ok((name == "is_record" && matches!(arity, 2 | 3))
+            || (cfg!(otp_domain = "29") && (name, arity) == ("is_record", 1))
             || (arity == 1
                 && matches!(
                     name,
@@ -1275,7 +1337,7 @@ impl Lower {
                 if es.iter().all(|e| self.a.tag(*e) == Some("c_literal")) {
                     let values = es
                         .iter()
-                        .map(|e| self.a.tuple_fields(*e).map(|f| f[2]))
+                        .map(|e| Ok(self.a.tuple_fields(*e)?[2]))
                         .collect::<Result<Vec<_>>>()?;
                     let value = self.a.tuple(values);
                     return Ok(self.literal(fields[1], value));
@@ -1549,6 +1611,12 @@ impl Lower {
                     );
                 }
                 LiteralKey::Map(canonical.into_iter().collect())
+            }
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => {
+                let mut fields = record.fields.iter().map(|(name, value)| Ok((name.clone(), self.literal_key(*value, depth + 1)?))).collect::<Result<Vec<_>>>()?;
+                fields.sort_by(|a, b| a.0.cmp(&b.0));
+                LiteralKey::Record(record.module.clone(), record.name.clone(), record.exported, fields)
             }
         })
     }
@@ -1828,7 +1896,7 @@ impl Lower {
             "case" => {
                 let mut input = self.source_novars(f[2])?;
                 // v3_core evaluates case inputs through novars before clauses.
-                if !matches!(
+                if !(cfg!(otp_domain = "29") && self.a.tag(input.value) == Some("c_record")) && !matches!(
                     self.a.tag(input.value),
                     Some(
                         "c_apply"
@@ -1870,6 +1938,28 @@ impl Lower {
                 let base = self.literal(empty, map);
                 let expression = self.build_map_pairs(f[2], base, ann)?;
                 (expression.value, expression.pre)
+            }
+            #[cfg(otp_domain = "29")]
+            "record" if f.len() == 4 => {
+                let argument = self.atom_literal("empty");
+                let empty = self.empty();
+                let id = self.literal(empty, f[2]);
+                let full = self.full_annotation(line_ann)?;
+                return self.build_record_pairs(f[3], argument, id, full);
+            }
+            #[cfg(otp_domain = "29")]
+            "record" if f.len() == 5 => return self.record_update(&f, line_ann),
+            #[cfg(otp_domain = "29")]
+            "record_field" if f.len() == 5 => {
+                let source = self.source_safe(f[2])?;
+                let field = self.source_safe(f[4])?;
+                let mut pre = source.pre;
+                pre.extend(field.pre);
+                let name = self.atom_literal("record_field");
+                let empty = self.empty();
+                let id = self.literal(empty, f[3]);
+                let args = self.a.list(vec![source.value, id, field.value]);
+                (self.a.tagged("c_primop", vec![line_ann, name, args]), pre)
             }
             "map" if f.len() == 4 => {
                 let base = self.expr(f[2])?;

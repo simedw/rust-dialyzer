@@ -76,7 +76,7 @@ fn run(row: &Value) -> Result<Value, ProbeError> {
     )?;
     let mut graph = rust_dialyzer_poc::source_callgraph::SourceCallGraph::build(&nodes, &p,
         &deps,
-        &Registry::load(include_str!("../../corpus/bifs.json"))?,
+        &Registry::standard()?,
     )
     .map_err(ProbeError::Graph)?;
     graph

@@ -183,6 +183,33 @@ impl RawDeclaration {
     }
 }
 impl LazyFormEnvironment {
+    #[cfg(otp_domain = "29")]
+    pub fn native_record_fields(&self, module: &str, name: &str) -> Result<Option<RawFormTerm>, String> {
+        let Some(root) = self.tables.get(module) else { return Ok(None) };
+        let ErlangTerm::Map(entries) = &self.arena.terms[root.0] else { return Err("native record table not map".into()) };
+        for (key, value) in entries {
+            let Ok(k) = tuple(&self.arena, *key, 2) else { continue };
+            if atom(&self.arena, k[0]).ok() != Some("native_record") { continue }
+            let Ok(n) = tuple(&self.arena, k[1], 2) else { continue };
+            if atom(&self.arena, n[0]).ok() == Some(module) && atom(&self.arena, n[1]).ok() == Some(name) {
+                let Ok(v) = tuple(&self.arena, *value, 2) else { return Ok(None) };
+                return Ok(Some(RawFormTerm::new(self.arena.clone(), v[1])?));
+            }
+        }
+        Ok(None)
+    }
+    #[cfg(otp_domain = "29")]
+    pub fn native_record_import(&self, module: &str, name: &str) -> Result<Option<String>, String> {
+        let Some(root) = self.tables.get(module) else { return Ok(None) };
+        let ErlangTerm::Map(entries) = &self.arena.terms[root.0] else { return Err("native record table not map".into()) };
+        for (key, value) in entries {
+            let Ok(k) = tuple(&self.arena, *key, 2) else { continue };
+            if atom(&self.arena, k[0]).ok() == Some("import_record") && atom(&self.arena, k[1]).ok() == Some(name) {
+                return Ok(Some(atom(&self.arena, *value)?.into()));
+            }
+        }
+        Ok(None)
+    }
     pub fn record_fields(&self, module: &str, name: &str) -> Result<Option<RawFormTerm>, String> {
         let Some(root) = self.tables.get(module) else {
             return Ok(None);
@@ -286,6 +313,8 @@ pub enum NativeSiteKind {
     Spec,
     Type,
     Record,
+    #[cfg(otp_domain = "29")]
+    NativeRecord,
     Check,
 }
 #[derive(Clone, Debug)]
@@ -334,6 +363,8 @@ impl NativeFormSite {
             NativeSiteKind::Spec => crate::resolver::Site::Spec,
             NativeSiteKind::Type => crate::resolver::Site::Type(self.scope.named().clone()),
             NativeSiteKind::Record => crate::resolver::Site::Record,
+            #[cfg(otp_domain = "29")]
+            NativeSiteKind::NativeRecord => crate::resolver::Site::NativeRecord,
             NativeSiteKind::Check => crate::resolver::Site::Check,
         }
     }
@@ -357,6 +388,10 @@ impl ExternalTypeEvent {
         let file = b.copy(&self.site.file);
         let loc = b.copy(&self.location);
         let origin = match &self.site.scope {
+            #[cfg(otp_domain = "29")]
+            NativeFormScope::Named(name) if matches!(self.site.kind, NativeSiteKind::NativeRecord) => {
+                let module=b.atom(&name.module);let name=b.atom(&name.name);b.tuple(vec![module,name])
+            }
             NativeFormScope::Named(name) => mfa(name, &mut b),
             NativeFormScope::Contract(key) => b.copy(key.raw()),
         };

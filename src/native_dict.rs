@@ -167,18 +167,35 @@ impl<K: PinnedPhashKey + Eq + Clone> NativeDictOrder<K> {
 pub fn pinned_hash_key(
     key: &crate::native_runtime_hash::NativeHashKey,
 ) -> Result<u32, crate::native_runtime_hash::RuntimeHashError> {
+    hash_key_in(key, None, 0)
+}
+pub fn pinned_hash_key_with_layout(
+    key: &crate::native_runtime_hash::NativeHashKey,
+    layout: &crate::native_runtime_hash::NativeAtomLayout,
+) -> Result<u32, crate::native_runtime_hash::RuntimeHashError> {
+    hash_key_in(key, Some(layout), 0)
+}
+fn hash_key_in(
+    key: &crate::native_runtime_hash::NativeHashKey,
+    layout: Option<&crate::native_runtime_hash::NativeAtomLayout>,
+    seed: u32,
+) -> Result<u32, crate::native_runtime_hash::RuntimeHashError> {
     use crate::native_runtime_hash::NativeHashKey as K;
     enum Work<'a> {
         Key(&'a K),
         Tuple(usize),
+        #[cfg(otp_domain = "29")]
+        Record(usize),
         Tail,
         Cdr(&'a K),
     }
     let mut work = vec![Work::Key(key)];
-    let mut h = 0u32;
+    let mut h = seed;
     while let Some(next) = work.pop() {
         match next {
             Work::Tuple(n) => h = h.wrapping_mul(268439627).wrapping_add(n as u32),
+            #[cfg(otp_domain = "29")]
+            Work::Record(n) => h = h.wrapping_mul(268440629).wrapping_add(n as u32),
             Work::Tail => h = h.wrapping_mul(268437511),
             Work::Cdr(key) => {
                 if !matches!(key, K::Cons(..)) {
@@ -187,6 +204,25 @@ pub fn pinned_hash_key(
                 work.push(Work::Key(key));
             }
             Work::Key(key) => match key {
+                #[cfg(otp_domain = "29")]
+                K::Record { module,name,exported,fields } => {
+                    let layout = layout.ok_or(crate::native_runtime_hash::RuntimeHashError::UnavailableAtomLayout)?;
+                    let mut fields_in_order = fields.iter().enumerate().map(|(index,(key,value))|
+                        Ok((layout.atom_identity(key)?,index,key,value)))
+                        .collect::<Result<Vec<_>,crate::native_runtime_hash::RuntimeHashError>>()?;
+                    fields_in_order.sort_by_key(|(identity,_,_,_)| *identity);
+                    let mut order = vec![K::Nil; fields.len()];
+                    for (sorted,(_,original,_,_)) in fields_in_order.iter().enumerate() {
+                        order[*original] = K::Integer(sorted.into());
+                    }
+                    let mut definition = vec![K::Tuple(order),K::Integer(
+                        crate::portable_term_hash::record_definition_hash(module,name,*exported,fields).into()),
+                        K::Atom(module.clone()),K::Atom(name.clone()),K::Atom(exported.to_string())];
+                    definition.extend(fields_in_order.iter().map(|(_,_,key,_)| K::Atom((*key).clone())));
+                    h = hash_key_in(&K::Tuple(definition),Some(layout),h)?;
+                    work.push(Work::Record(fields.len()+1));
+                    work.extend(fields_in_order.into_iter().rev().map(|(_,_,_,value)| Work::Key(value)));
+                }
                 K::ExternalFun {
                     module,
                     function,
@@ -259,7 +295,10 @@ pub fn pinned_hash_key(
                     h = h
                         .wrapping_mul(268440593)
                         .wrapping_add(268440611)
-                        .wrapping_add(crate::portable_term_hash::hash(key))
+                        .wrapping_add(match layout {
+                            Some(layout) => crate::portable_term_hash::hash_with_layout(key,layout)?,
+                            None => crate::portable_term_hash::hash(key)?,
+                        })
                 }
             },
         }

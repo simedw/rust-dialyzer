@@ -14,7 +14,7 @@ fn main() -> Result<(), String> {
         let raw = RawFormTerm::new(arena.clone(), arena.root)?;
         let key = NativeHashKey::from_raw(&raw).map_err(|e| e.to_string())?;
         let hash = pinned_hash_key(&key).map_err(|e| e.to_string())?;
-        let hash2 = portable_term_hash::hash(&key);
+        let hash2 = portable_term_hash::hash(&key).map_err(|e| e.to_string())?;
         println!(
             "{}",
             serde_json::json!({"id":row["id"],"hash":hash,"hash2":hash2,"exact":row["expected"]==hash && row["phash2"]==hash2})

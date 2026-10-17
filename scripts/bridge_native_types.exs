@@ -57,6 +57,19 @@ defmodule RustBridgeTypeWire do
       "values" => Enum.flat_map(groups, fn {_, ts} -> Enum.map(ts, &encode/1) end)
     }
 
+  def encode({:c, :record, {identity, fields}, _}) do
+    name = case identity do
+      nil -> :null
+      {module, name} -> %{"module" => Atom.to_string(module), "name" => Atom.to_string(name)}
+      name when is_atom(name) -> Atom.to_string(name)
+    end
+    %{"kind" => "record", "name" => name, "fields" => fields |> Enum.sort() |> Enum.map(fn
+      {key, :missing} -> %{"key" => Atom.to_string(key), "presence" => "missing"}
+      {key, {:present, value}} -> %{"key" => Atom.to_string(key), "presence" => "present", "value" => encode(value)}
+    end)}
+  end
+  def encode({:c, :record_set, records, _}), do: %{"kind" => "record_set", "values" => Enum.map(records, &encode/1)}
+
   def encode({:c, :map, {pairs, dk, dv}, _}),
     do: %{
       "kind" => "map",

@@ -14,7 +14,7 @@ fn run(row: &Value, raw: &str) -> Result<Value, String> {
     let core = CoreProgram::parse(&row["core"].to_string())?;
     let labels = Labels::build(&core, CoreLabel(0))?;
     let program = Program::build(&core)?;
-    let registry = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let registry = Registry::standard()?;
     let closures = ClosureDependencies::analyze(
         &core,
         &program,

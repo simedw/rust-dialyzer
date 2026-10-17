@@ -28,6 +28,9 @@ impl From<LatticeError> for NativeTransferError {
             LatticeError::BadGenerators(payload) => Self::BadGenerators(payload),
             LatticeError::BadGenerator(payload) => Self::BadGenerator(payload),
             LatticeError::NativeNonTerminating => Self::NativeNonTerminating,
+            #[cfg(otp_domain = "29")]
+            LatticeError::RecordIterationOrderRequired => Self::Detail(
+                "native record unification requires an authenticated field iteration order".into()),
         }
     }
 }

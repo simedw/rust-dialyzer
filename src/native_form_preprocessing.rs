@@ -127,7 +127,10 @@ pub(crate) fn massage(raw: &RawFormTerm, definitions: &BTreeSet<(String, usize)>
                     continue;
                 }
                 if atom(a, t[2])
-                    .is_some_and(|name| definitions.contains(&(name.into(), args.len())))
+                    .is_some_and(|name| definitions.contains(&(name.into(), args.len())) && {
+                        #[cfg(otp_domain = "29")] { is_builtin_type(name, args.len()) }
+                        #[cfg(not(otp_domain = "29"))] { true }
+                    })
                 {
                     let user = b.atom("user_type");
                     let updated = b.tuple(vec![user, t[1], t[2], t[3]]);
@@ -223,4 +226,9 @@ mod compact_source_tests {
             {"kind":"tuple","items":[0,1,2,5]}]})
         );
     }
+}
+
+#[cfg(otp_domain = "29")]
+pub(crate) fn is_builtin_type(name: &str, arity: usize) -> bool {
+    matches!((name, arity), ("any", 0) | ("arity", 0) | ("atom", 0) | ("binary", 0) | ("bitstring", 0) | ("bool", 0) | ("boolean", 0) | ("byte", 0) | ("char", 0) | ("dynamic", 0) | ("float", 0) | ("function", 0) | ("identifier", 0) | ("integer", 0) | ("iodata", 0) | ("iolist", 0) | ("list", 0) | ("list", 1) | ("map", 0) | ("maybe_improper_list", 0) | ("maybe_improper_list", 2) | ("mfa", 0) | ("module", 0) | ("neg_integer", 0) | ("nil", 0) | ("no_return", 0) | ("node", 0) | ("non_neg_integer", 0) | ("none", 0) | ("nonempty_binary", 0) | ("nonempty_bitstring", 0) | ("nonempty_improper_list", 2) | ("nonempty_list", 0) | ("nonempty_list", 1) | ("nonempty_maybe_improper_list", 0) | ("nonempty_maybe_improper_list", 2) | ("nonempty_string", 0) | ("number", 0) | ("pid", 0) | ("port", 0) | ("pos_integer", 0) | ("record", 0) | ("reference", 0) | ("string", 0) | ("term", 0) | ("timeout", 0) | ("tuple", 0))
 }

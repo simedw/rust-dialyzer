@@ -47,6 +47,10 @@ fn node_children_bytes(expr: &CoreExpr) -> usize {
     match expr {
         CoreExpr::Values(v) | CoreExpr::Binary(v) | CoreExpr::Tuple(v) => ids(v),
         CoreExpr::Map { pairs: v, .. } => ids(v),
+        #[cfg(otp_domain = "29")]
+        CoreExpr::Record { pairs: v, .. } => ids(v),
+        #[cfg(otp_domain = "29")]
+        CoreExpr::RecordPair { .. } => 0,
         CoreExpr::Let { vars, .. } => ids(vars),
         CoreExpr::Apply { args, .. }
         | CoreExpr::Call { args, .. }

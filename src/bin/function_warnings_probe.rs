@@ -59,7 +59,7 @@ fn run(r: &Value) -> Result<Value, String> {
     let program = Program::build(&core)?;
     let labels = Labels::build(&core, CoreLabel(0))?;
     let nodes = DataflowNodes::build(&core, &labels)?;
-    let registry = Registry::load(include_str!("../../corpus/bifs.json"))?;
+    let registry = Registry::standard()?;
     let deps = ClosureDependencies::analyze(
         &core,
         &program,

@@ -9,6 +9,7 @@ defmodule ScalarOracle do
       "nil" -> []
       "tuple" -> v["values"] |> Enum.map(&native_value/1) |> List.to_tuple()
       "list" -> Enum.map(v["values"],&native_value/1)
+      "map" -> Map.new(v["entries"] || v["pairs"],fn [k,v] -> {native_value(k),native_value(v)} end)
     end
   end
   def getter_value(v) do
@@ -66,6 +67,12 @@ defmodule ScalarOracle do
   def expected(command) do
     a = type(command["a"])
     case command["op"] do
+      "record_constructor" -> :erl_types.t_record(native_value(command["name"]),Enum.map(command["fields"],fn f -> {native_value(f["key"]),type(f["value"])} end))
+      "record_get" -> :erl_types.t_record_get(String.to_atom(command["key"]),a)
+      "record_replace" -> selector=if command["selector"] in [nil,:null], do: [], else: TypeCodec.record_name(command["selector"]); :erl_types.t_record_replace(Enum.map(command["updates"],fn f -> {String.to_atom(f["key"]),type(f["value"])} end),selector,a)
+      "record_test" -> result=apply(:erl_types,:t_is_record,[a|Enum.map(command["args"],&native_value/1)]); if result == :unknown, do: "unknown", else: result
+      "native_record_field_diffs" -> :erl_types.native_record_field_diffs(a,type(command["b"])) |> :lists.flatten() |> List.to_string()
+      "abstract_records" -> :erl_types.t_abstract_records(a,records(command))
       "substitute_all_variables" -> :erl_types.subst_all_vars_to_any(a)
       "meet_lists" -> :erl_types.t_inf_lists(Enum.map(command["left"],&type/1),Enum.map(command["right"],&type/1))
       "map_pairs" -> :erl_types.t_map(Enum.map(command["pairs"],fn [k,v]->{type(k),type(v)} end))
@@ -147,6 +154,7 @@ defmodule ScalarOracle do
           {:ok, expected} ->
             Process.put(:native_values,Process.get(:native_values)+1)
             actual = cond do
+              is_map(output["ok"]) and Map.has_key?(output["ok"],"native") -> native_value(output["ok"]["native"])
               command["op"] == "record_field_diffs" -> output["ok"]
               command["op"] in ["getter","endpoint_min","endpoint_max","map_pairwise_merge"] -> getter_value(output["ok"])
               command["op"] == "unify" -> Map.new(output["ok"],fn e->{if(e["id"]["atom"],do: String.to_atom(e["id"]["atom"]),else: integer(e["id"]["integer"])),type(e["type"])} end)
@@ -156,6 +164,7 @@ defmodule ScalarOracle do
               true -> type(output["ok"])
             end
             same = cond do
+              command["native_output"] == true -> actual == expected
               is_list(expected) -> is_list(actual) and length(actual)==length(expected) and Enum.all?(Enum.zip(actual,expected),fn {x,y}->:erl_types.t_is_equal(x,y) end)
               is_boolean(expected) or is_binary(expected) or is_map(expected) -> actual==expected
               true -> :erl_types.t_is_equal(actual,expected)

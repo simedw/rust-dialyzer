@@ -37,11 +37,9 @@ fn atoms(input: &ErlangTerms) -> FastHashSet<String> {
             ErlangTerm::Atom(a) => {
                 names.insert(a.clone());
             }
-            ErlangTerm::ExternalFun {
-                module, function, ..
-            } => {
-                names.insert(module.clone());
-                names.insert(function.clone());
+            ErlangTerm::ExternalFun(fun) => {
+                names.insert(fun.module.clone());
+                names.insert(fun.function.clone());
             }
             ErlangTerm::Tuple(items) => pending.extend(items.iter().copied()),
             ErlangTerm::List { items, tail } => {

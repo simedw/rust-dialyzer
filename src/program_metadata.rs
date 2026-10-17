@@ -21,6 +21,10 @@ impl Program {
                 "spec" => MetadataKind::Spec,
                 "callback" => MetadataKind::Callback,
                 "record" => MetadataKind::Record,
+                #[cfg(otp_domain = "29")]
+                "native_record" => MetadataKind::NativeRecord,
+                #[cfg(otp_domain = "29")]
+                "import_record" => MetadataKind::ImportRecord,
                 "behaviour" | "behavior" => MetadataKind::Behaviour,
                 "export_type" => MetadataKind::ExportType,
                 "optional_callbacks" => MetadataKind::OptionalCallbacks,
@@ -76,7 +80,10 @@ impl Program {
                     }
                 }
                 MetadataKind::Spec | MetadataKind::Callback => {}
-                MetadataKind::Record => {
+                ref kind if matches!(kind, MetadataKind::Record) || {
+                    #[cfg(otp_domain = "29")] { matches!(kind, MetadataKind::NativeRecord) }
+                    #[cfg(not(otp_domain = "29"))] { false }
+                } => {
                     for item in list(module, raw)? {
                         let fields = tuple(module, item).ok_or_else(|| {
                             format!(
@@ -150,7 +157,10 @@ impl Program {
                     | MetadataKind::Opaque
                     | MetadataKind::Nominal
                     | MetadataKind::Record
-            ) {
+            ) || {
+                #[cfg(otp_domain = "29")] { matches!(kind, MetadataKind::NativeRecord) }
+                #[cfg(not(otp_domain = "29"))] { false }
+            } {
                 for target in remote_types(module, raw)? {
                     self.type_dependencies.insert(TypeDependency {
                         module: mid,

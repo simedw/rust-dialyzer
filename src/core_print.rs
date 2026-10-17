@@ -544,6 +544,24 @@ impl Planner<'_, '_, '_> {
         let out = match self.patterns.shape(pat)? {
             Shape::Literal(lit) => self.literal(lit, depth + 1, hook)?,
             Shape::Variable { original, .. } => self.var(original, strip)?,
+            #[cfg(otp_domain = "29")]
+            Shape::Record { identity, pairs } => {
+                use crate::patterns::NativeRecordIdentity;
+                let prefix = if let PatternRef::Core(node) = pat {
+                    let CoreExpr::Record { argument, .. } = self.patterns.nodes.expression(node)? else { return Err(PlanError::Boundary("record shape node".into())); };
+                    let CoreExpr::Literal(term) = self.patterns.nodes.expression(NodeRef { module: node.module, node: argument.0 })? else { return Err(PlanError::Unsupported("cerl_prettypr record update argument".into())); };
+                    if matches!(self.patterns.term(node.module, *term)?, ErlangTerm::Atom(name) if name == "ok") { Doc::text("") }
+                    else { child(p(*argument, node.module))? }
+                } else { Doc::text("") };
+                let identity = match identity {
+                    NativeRecordIdentity::Any => Doc::text("[]"),
+                    NativeRecordIdentity::Local(name) => Doc::text(quoted(&name, '\'')),
+                    NativeRecordIdentity::Qualified { module, name } => Doc::comma(vec![Doc::text(quoted(&module, '\'')), Doc::text(quoted(&name, '\''))]).surround("{", "}"),
+                };
+                prefix.beside(Doc::text("#")).beside(identity).beside(Doc::comma(pairs.into_iter().map(child).collect::<Result<Vec<_>, _>>()?).surround("{", "}"))
+            }
+            #[cfg(otp_domain = "29")]
+            Shape::RecordPair { key, value } => child(key)?.beside(Doc::text(" =")).beside(child(value)?),
             Shape::Alias { variable, pattern } => child(variable)?
                 .beside(Doc::text(" ="))
                 .follow_at(child(pattern)?, 4),
@@ -717,6 +735,20 @@ impl Planner<'_, '_, '_> {
                     return Err(PlanError::Unsupported("synthetic expression".into()));
                 };
                 match self.patterns.nodes.expression(node)? {
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::Record { argument, id, pairs } => {
+                        // cerl_prettypr calls concrete(Arg), so a nonliteral
+                        // update argument follows its unsupported branch.
+                        let CoreExpr::Literal(term) = self.patterns.nodes.expression(NodeRef { module: node.module, node: argument.0 })? else {
+                            return Err(PlanError::Unsupported("cerl_prettypr record update argument".into()));
+                        };
+                        let prefix = if matches!(self.patterns.term(node.module, *term)?, ErlangTerm::Atom(name) if name == "ok") { Doc::text("") }
+                            else { child(p(*argument, node.module))? };
+                        let fields = pairs.iter().map(|&id| child(p(id, node.module))).collect::<Result<Vec<_>, _>>()?;
+                        prefix.beside(Doc::text("#")).beside(child(p(*id, node.module))?).beside(Doc::comma(fields).surround("{", "}"))
+                    }
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::RecordPair { key, value } => child(p(*key, node.module))?.beside(Doc::text(" =")).beside(child(p(*value, node.module))?),
                     CoreExpr::Let {
                         vars,
                         argument,
@@ -1119,6 +1151,8 @@ impl Planner<'_, '_, '_> {
                     "cerl_prettypr external function literal".into(),
                 ));
             }
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(_) => return Err(PlanError::Unsupported("cerl_prettypr native record literal".into())),
             ErlangTerm::Atom(s) => Doc::text(quoted(s, '\'')),
             ErlangTerm::Integer(n) => Doc::text(n),
             ErlangTerm::Float(bits) => Doc::text(core_float(*bits)?),

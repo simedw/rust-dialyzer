@@ -113,6 +113,8 @@ impl Arena<'_> {
                         .ok_or(ExportError::FunctionClause)?;
                     match (tag, t.len()) {
                         ("var" | "atom" | "integer" | "char", 3) | ("op", 4 | 5) => {}
+                        #[cfg(otp_domain = "29")]
+                        ("tuple", 3) => {}
                         ("ann_type", 3) => {
                             let a = self.list(t[2])?;
                             if a.len() != 2 {
@@ -502,6 +504,10 @@ pub fn module_type_deps_of_type_defs_in(
     // Arena maps retain native maps:to_list order at the interop boundary.
     for (key, value) in entries {
         let key = arena.tuple(*key)?;
+        #[cfg(otp_domain = "29")]
+        if key.len() == 2 && arena.atom(key[0]) == Some("import_record") {
+            continue;
+        }
         let value = arena.tuple(*value)?;
         let forms = match (
             key.first().and_then(|id| arena.atom(*id)),
@@ -514,6 +520,22 @@ pub fn module_type_deps_of_type_defs_in(
                     return Err(ExportError::FunctionClause);
                 }
                 vec![definition[2]]
+            }
+            #[cfg(otp_domain = "29")]
+            (Some("native_record"), 2, 2) => {
+                // OTP applies the old size/fields comprehension here too. Native
+                // field triples do not match its two-element pattern.
+                let mut fields = Vec::new();
+                for size in arena.list(value[1])? {
+                    let Ok(size) = arena.tuple(size) else { continue };
+                    if size.len() != 2 { continue; }
+                    for field in arena.list(size[1])? {
+                        if let Ok(field) = arena.tuple(field) && field.len() == 3 {
+                            fields.push(field[1]);
+                        }
+                    }
+                }
+                fields
             }
             (Some("record"), 2, 2) => {
                 let mut fields = Vec::new();
@@ -555,6 +577,8 @@ pub fn reachable_term_ids(terms: &crate::shared_vec::SharedVec<ErlangTerm>, root
             continue;
         }
         match &terms[id.0] {
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => work.extend(record.fields.iter().map(|(_, value)| *value)),
             ErlangTerm::Tuple(ids) => work.extend(ids),
             ErlangTerm::List { items, tail } => {
                 work.extend(items);
@@ -582,6 +606,12 @@ pub fn compact_arena(arena: &ErlangTerms) -> ErlangTerms {
     let terms = reachable
         .iter()
         .map(|id| match &arena.terms[*id] {
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => {
+                let mut record = record.clone();
+                record.fields.iter_mut().for_each(|(_, value)| *value = at(*value));
+                ErlangTerm::Record(record)
+            }
             ErlangTerm::Tuple(v) => ErlangTerm::Tuple(v.iter().map(|v| at(*v)).collect()),
             ErlangTerm::List { items, tail } => ErlangTerm::List {
                 items: items.iter().map(|v| at(*v)).collect(),
@@ -600,6 +630,9 @@ pub fn compact_arena(arena: &ErlangTerms) -> ErlangTerms {
 }
 pub fn term_to_value(term: &ErlangTerm, at: impl Fn(TermId) -> usize) -> Value {
     match term {
+        #[cfg(otp_domain = "29")]
+        ErlangTerm::Record(r) => json!({"kind":"record","module":r.module,"name":r.name,"exported":r.exported,
+            "fields":r.fields.iter().map(|(k,v)|json!([k,at(*v)])).collect::<Vec<_>>()}),
         ErlangTerm::ExternalFun(external_fun_payload) => {
             let crate::core::ExternalFun {
                 module,
@@ -679,6 +712,11 @@ pub fn native_type_term(
                 .iter()
                 .map(|id| native_type_term(arena, *id))
                 .collect::<std::result::Result<_, _>>()?,
+        },
+        #[cfg(otp_domain = "29")]
+        ErlangTerm::Map(entries) => NativeTerm::Map {
+            entries: entries.iter().map(|(k,v)| Ok((native_type_term(arena,*k)?,native_type_term(arena,*v)?)))
+                .collect::<std::result::Result<_, String>>()?,
         },
         ErlangTerm::List { items, tail } => NativeTerm::List {
             items: items

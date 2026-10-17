@@ -22,11 +22,9 @@ fn atoms(arena: &ErlangTerms) -> BTreeSet<String> {
             ErlangTerm::Atom(name) => {
                 result.insert(name.clone());
             }
-            ErlangTerm::ExternalFun {
-                module, function, ..
-            } => {
-                result.insert(module.clone());
-                result.insert(function.clone());
+            ErlangTerm::ExternalFun(fun) => {
+                result.insert(fun.module.clone());
+                result.insert(fun.function.clone());
             }
             ErlangTerm::Tuple(children) => pending.extend(children.iter().copied()),
             ErlangTerm::List { items, tail } => {

@@ -107,6 +107,38 @@ fn ask(program: &str, args: &[&str]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
 }
 
+fn select_backend(major: &str) {
+    #[cfg(otp_domain = "28")]
+    if major == "29" {
+        let executable = std::env::current_exe().unwrap_or_else(|e| fail(e));
+        let worker = executable.parent().unwrap().join("rust-dialyzer-otp29");
+        if !worker.is_file() {
+            fail("OTP 29 Rust worker missing; build it with `cargo build --release -p rust-dialyzer-otp29 --bin rust-dialyzer-otp29`");
+        }
+        let mut command = Command::new(worker);
+        command.args(std::env::args_os().skip(1));
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            fail(command.exec());
+        }
+        #[cfg(not(unix))]
+        exit(command.status().unwrap_or_else(|e|fail(e)).code().unwrap_or(1));
+    }
+    rust_dialyzer_poc::domain::check_major(major).unwrap_or_else(|e|fail(e));
+}
+
+fn empty_prior() -> String {
+    #[cfg(otp_domain = "28")]
+    return EMPTY_PRIOR.to_owned();
+    #[cfg(otp_domain = "29")]
+    {
+        let mut prior: Value = serde_json::from_str(EMPTY_PRIOR).expect("empty prior template");
+        prior["profile"] = rust_dialyzer_poc::beam_frontend::runtime_context::pinned_profile();
+        prior.to_string()
+    }
+}
+
 /// The list under `{key, [...]}` in an `.app` file.
 fn app_list(text: &str, key: &str) -> Vec<String> {
     let Some(start) = text.find(&format!("{{{key},")) else {
@@ -203,6 +235,14 @@ fn main() {
         &["-noshell", "-eval", "io:format(\"~s\",[code:lib_dir(dialyzer)]),halt()."],
     )
     .join("ebin");
+    let read = |name: &str| {
+        let path = dialyzer.join(name);
+        std::fs::read(&path).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())))
+    };
+    let (typesig, contracts) = (read("dialyzer_typesig.beam"), read("dialyzer_contracts.beam"));
+    let major = rust_dialyzer_poc::beam_frontend::runtime_context::runtime_major(&typesig,&contracts)
+        .unwrap_or_else(|e|fail(e));
+    select_backend(major);
     let elixir = ask(
         "elixir",
         &["-e", "IO.write(Path.dirname(to_string(:code.lib_dir(:elixir))))"],
@@ -248,11 +288,6 @@ fn main() {
         selected.len(),
         own.join(", ")
     );
-    let read = |name: &str| {
-        let path = dialyzer.join(name);
-        std::fs::read(&path).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())))
-    };
-    let (typesig, contracts) = (read("dialyzer_typesig.beam"), read("dialyzer_contracts.beam"));
     let options = json!({
         "id": project.file_name().map(|n| n.to_string_lossy().into_owned()),
         "location": "column", "legal_warnings": WARNINGS, "purged_modules": [],
@@ -272,14 +307,14 @@ fn main() {
                 },
                 Emission::Fused,
             )
-            .map_err(|e| format!("{e}\n(the analyzer supports BEAM files compiled with OTP 28 and Elixir 1.19)"))?;
+            .map_err(|e| format!("OTP {} frontend: {e}",rust_dialyzer_poc::domain::MAJOR))?;
             let load = started.elapsed().as_secs_f64();
             rust_dialyzer_poc::teardown::skip_drops_at_exit();
             let started = Instant::now();
             let mut projected = rust_dialyzer_poc::compiled_probe::analyze_warnings(
                 &loaded.core,
                 &options,
-                EMPTY_PRIOR,
+                &empty_prior(),
                 &loaded.closure_profile,
             )?;
             eprintln!(

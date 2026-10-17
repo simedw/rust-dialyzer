@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn broader_failure_range_is_evaluated_only_for_failing_call() {
         use crate::bifs::registry::{Mfa, Registry, TransferError};
-        let registry = Registry::load(include_str!("../corpus/bifs.json")).unwrap();
+        let registry = Registry::standard().unwrap();
         let mfa = Mfa {
             module: "erlang".into(),
             function: "is_record".into(),

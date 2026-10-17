@@ -122,6 +122,10 @@ fn original_for_module<W: std::fmt::Debug>(
         translated_files: translated_files.into(),
         letrec: BTreeMap::new().into(),
         records: records.into(),
+        #[cfg(otp_domain = "29")]
+        native_records: BTreeMap::new().into(),
+        #[cfg(otp_domain = "29")]
+        native_record_imports: BTreeMap::new().into(),
         warnings: WarningState {
             warning_mode,
             warnings: Vec::new(),

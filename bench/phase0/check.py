@@ -58,9 +58,14 @@ def main():
         w = subprocess.run([sys.executable, HERE / "compare_warnings.py",
                             args.oracle / "otp-warnings.json", result_path],
                            capture_output=True, text=True)
-        s = subprocess.run([sys.executable, REPO / "reports/real-projects/fixes/inferred-signatures/compare.py",
-                            args.out / "sigs.jsonl", args.oracle / "otp-full-signatures.json",
+        oracle_signatures = args.oracle / "otp-full-signatures.json"
+        if not oracle_signatures.exists():
+            oracle_signatures = oracle_signatures.with_suffix(".json.gz")
+        s = subprocess.run([sys.executable, HERE / "compare_signatures.py",
+                            args.out / "sigs.jsonl", oracle_signatures,
                             "--out", args.out / "sig-comparison.json"], capture_output=True, text=True)
+        if not s.stdout.strip():
+            raise RuntimeError(f"Signature comparison failed: {s.stderr.strip()}")
         sig = json.loads(s.stdout.strip().splitlines()[-1])
         summary["warnings"] = w.stdout.splitlines()[0]
         summary["signatures"] = f'{sig["exact_matches"]}/{sig["otp_signature_count"]} exact, ' \

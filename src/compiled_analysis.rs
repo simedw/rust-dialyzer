@@ -58,6 +58,7 @@ pub struct AnalysisOutput {
 }
 
 pub fn analyze(input: AnalysisInput<'_>) -> Result<AnalysisOutput, String> {
+    crate::domain::check_major(&input.core.profile.otp)?;
     let mut phase = "labels_and_dataflow";
     analyze_phases(input, &mut phase).map_err(|error| format!("analysis phase {phase}: {error}"))
 }

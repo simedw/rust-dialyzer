@@ -198,7 +198,8 @@ defmodule ProperGate do
 
     report = %{
       properties: reports,
-      otp_sha: "ab489c0b260c637a9487f8753909ea94dacbbec2",
+      property_source: Path.expand(source),
+      property_source_sha256: Base.encode16(:crypto.hash(:sha256, File.read!(source)), case: :lower),
       proper_tag: "v1.5.0",
       proper_sha: "5640d0715d4b346676267504d8e84398e2a29f75",
       proper_app_version: "1.4.0",

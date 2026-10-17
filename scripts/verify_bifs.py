@@ -1,12 +1,27 @@
 import hashlib
 import json
 import subprocess
+import argparse
+import os
 from pathlib import Path
 from itertools import product
 
 WORKSPACE = Path(__file__).resolve().parents[1]
-ROOT = WORKSPACE / ".cache/bifs"
+parser = argparse.ArgumentParser(description="Compare Rust BIF transfers with the selected OTP oracle.")
+parser.add_argument("--otp", choices=["28", "29"], default="28")
+parser.add_argument("--otp-install", type=Path)
+parser.add_argument("--binary", type=Path, help="Use an existing probe instead of building one.")
+parser.add_argument("--out", type=Path)
+config = parser.parse_args()
+ROOT = (config.out or WORKSPACE / (".cache/bifs" if config.otp == "28" else ".cache/bifs-otp29")).resolve()
 ROOT.mkdir(parents=True, exist_ok=True)
+if config.otp_install:
+    os.environ["PATH"] = str(config.otp_install.resolve() / "bin") + os.pathsep + os.environ["PATH"]
+os.environ.setdefault("ERL_FLAGS", "+S 2:2")
+actual = subprocess.check_output(["erl", "-noshell", "-eval", 'io:format("~s",[erlang:system_info(otp_release)]),halt().'], text=True).strip()
+if actual != config.otp:
+    parser.error(f"requested OTP {config.otp}, but erl on PATH reports {actual}")
+CATALOGUE = WORKSPACE / ("corpus/bifs.json" if config.otp == "28" else "corpus/bifs-otp29.json")
 proof_files = [
         WORKSPACE / "src/lattice.rs",
         WORKSPACE / "src/type_api.rs",
@@ -19,19 +34,19 @@ proof_files = [
         WORKSPACE / "src/native_error.rs",
         *sorted((WORKSPACE / "src/bifs").glob("*.rs")),
         WORKSPACE / "src/bin/bif_probe.rs",
-        WORKSPACE / "corpus/bifs.json",
+        CATALOGUE,
+        *sorted((WORKSPACE / "src/lattice").glob("*.rs")),
         WORKSPACE / "scripts/native_types.exs",
         WORKSPACE / "scripts/bif_oracle.exs",
         Path(__file__).resolve(),
     ]
 initial_hashes = {str(p.relative_to(WORKSPACE)): hashlib.sha256(p.read_bytes()).hexdigest() for p in proof_files}
-subprocess.run(
-    ["cargo", "build", "--release", "--offline", "--bin", "bif_probe"],
-    cwd=WORKSPACE,
-    check=True,
-)
+if not config.binary:
+    package = "rust-dialyzer-poc" if config.otp == "28" else "rust-dialyzer-otp29"
+    target = "bif_probe" if config.otp == "28" else "bif_probe_otp29"
+    subprocess.run(["cargo", "build", "--release", "--offline", "-p", package, "--bin", target], cwd=WORKSPACE, check=True)
 ORACLE = WORKSPACE / "scripts/bif_oracle.exs"
-BINARY = WORKSPACE / "target/release/bif_probe"
+BINARY = config.binary.resolve() if config.binary else WORKSPACE / "target/release" / ("bif_probe" if config.otp == "28" else "bif_probe_otp29")
 ctor = lambda name, *args: dict(constructor=name, arguments=list(args))
 atom = lambda x: dict(atom=x)
 integer = lambda x: dict(integer=str(x))
@@ -162,7 +177,17 @@ pool += [
     ctor("t_list", ctor("t_nominal", atom("pair"), ctor("t_tuple", dict(list=[I, A])))),
 ]
 
-catalogue = json.loads((WORKSPACE / "corpus/bifs.json").read_text())
+if config.otp == "29":
+    records = [ctor("t_record"), ctor("t_record", dict(tuple=[atom("m"), atom("r")]))]
+    for name in ["r", "s"]:
+        for value in [I, A, ctor("t_any"), ctor("t_var", atom("field"))]:
+            records.append(ctor("t_record", dict(tuple=[atom("m"), atom(name)]),
+                                dict(list=[dict(tuple=[atom("a"), value])])) )
+    records.append(ctor("t_sup", dict(list=records[1:3] + [ctor("t_record", dict(tuple=[atom("m"), atom("s")]))])))
+    pool += records
+    pool += [ctor("t_sup", dict(list=[r, base])) for r in records[:3] for base in [I, A, ctor("t_tuple")]]
+
+catalogue = json.loads(CATALOGUE.read_text())
 supported = json.loads(subprocess.check_output([BINARY, "--supported"], text=True))
 entries = {
     (e["mfa"]["module"], e["mfa"]["function"], e["mfa"]["arity"]): e
@@ -321,6 +346,8 @@ failures = [
 (ROOT / "failures.json").write_text(json.dumps(failures, indent=2))
 (ROOT / "native_errors.json").write_text(json.dumps(native_errors, indent=2))
 summary = dict(
+    otp=config.otp,
+    binary_sha256=hashlib.sha256(BINARY.read_bytes()).hexdigest(),
     supported_mfas=len(supported),
     requested=len(rows),
     native_error_count=len(native_errors),

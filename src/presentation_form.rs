@@ -371,6 +371,9 @@ impl FormPrinter<'_> {
                 )
             }
             ErlangTerm::Atom(a) => self.context.atom_latin1(a),
+            #[cfg(otp_domain = "29")]
+            ErlangTerm::Record(record) => format!("#{}:{}{{{}}}", self.context.atom_latin1(&record.module), self.context.atom_latin1(&record.name),
+                record.fields.iter().map(|(name, value)| Ok(format!("{} = {}", self.context.atom_latin1(name), self.term_string(*value)?))).collect::<Result<Vec<_>, LatticeError>>()?.join(",")),
             ErlangTerm::Integer(n) => n.clone(),
             ErlangTerm::Float(bits) => {
                 let f = f64::from_bits(*bits);

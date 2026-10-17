@@ -1,7 +1,8 @@
 [root,commands,out]=System.argv()
+expected_otp=System.get_env("RUST_DIALYZER_CONSTRAINTS_OTP") || "28"; ^expected_otp=List.to_string(:erlang.system_info(:otp_release))
 Code.require_file(Path.join(root,"scripts/type_codec.exs"))
 Code.require_file(Path.join(root,"scripts/type_wire.exs"))
-src=Path.join(root,".cache/upstream/otp/lib/dialyzer/src/dialyzer_typesig.erl")
+src=System.get_env("RUST_DIALYZER_CONSTRAINTS_SOURCE_FILE") || Path.join(root,".cache/upstream/otp/lib/dialyzer/src/dialyzer_typesig.erl")
 copy=Path.join(Path.dirname(out),"native_typesig_tree_probe.erl")
 helper="""
 probe_bif_rhs(MFA,Lhs) ->

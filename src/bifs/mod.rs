@@ -16,7 +16,7 @@ mod transfer_checks {
         lattice::Type,
     };
     fn registry() -> Registry {
-        Registry::load(include_str!("../../corpus/bifs.json")).unwrap()
+        Registry::standard().unwrap()
     }
     fn mfa(name: &str, arity: usize) -> Mfa {
         Mfa {

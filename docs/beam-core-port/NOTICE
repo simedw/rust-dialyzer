@@ -5,13 +5,14 @@ The algorithms in src/beam_frontend/elixir.rs, elixir_for.rs and elixir_try.rs a
 Copyright Elixir contributors. Licensed under Apache License, Version 2.0.
 
 The algorithms in src/beam_frontend/lower.rs, lower/, clean.rs, erl_prepare.rs,
-erl_records.rs and erl_bifs.rs are adapted from Erlang/OTP 28.3, compiler 9.0.4 and dialyzer 5.4
-(v3_core, erl_internal, erl_expand_records and dialyzer_clean_core). Copyright Ericsson AB 1999-2025 and contributors.
+erl_records.rs, erl_records/ and erl_bifs.rs are adapted from Erlang/OTP 28.3
+and OTP 29.1.2, including v3_core, erl_internal, erl_expand_records
+and dialyzer_clean_core. Copyright Ericsson AB 1999-2026 and contributors.
 Licensed under Apache License, Version 2.0.
 
 These Rust files are modified ports, not original upstream source files.
 See LICENSE-APACHE-2.0 in this directory. Source hashes and the compatibility
-profile are recorded in source-profile.json.
+profiles are recorded in source-profile.json and source-profile-otp29.json.
 
 The stored OTP BEAM fixtures, including the original Dialyzer runtime-context
 binaries, are from the pinned OTP distribution and carry the same license.

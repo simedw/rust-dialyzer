@@ -2,6 +2,11 @@
 //! Qualifiers are prepared before recursive loop emission to retain OTP's
 //! variable/function numbering, evaluation order, and strict-match failures.
 use super::*;
+#[cfg(otp_domain = "29")]
+#[path = "comprehension/otp29.rs"]
+mod otp29;
+#[cfg(otp_domain = "29")]
+pub(super) use otp29::MapHead;
 #[derive(Clone)]
 struct Generator {
     known_before: HashSet<String>,
@@ -68,19 +73,39 @@ impl Lower {
             self.literal(ann, nil)
         };
         let mut value = f[2];
+        #[cfg(not(otp_domain = "29"))]
         if kind == "mc" {
             let p = self.a.tuple_fields(value)?.to_vec();
             let es = self.a.list(vec![p[2], p[3]]);
             value = self.a.tagged("tuple", vec![p[1], es]);
         }
-        let mut result = self.comp_emit(f[1], value, &qs, more, kind == "bc")?;
+        #[cfg(otp_domain = "29")]
+        if kind == "mc" { self.comp29_begin_map(value, &qs)?; }
+        let emitted = self.comp_emit(f[1], value, &qs, more, kind == "bc");
+        let mut result = match emitted {
+            Ok(result) => result,
+            Err(error) => {
+                #[cfg(otp_domain = "29")]
+                if kind == "mc" { self.map_comprehensions.pop(); }
+                return Err(error);
+            }
+        };
+        #[cfg(otp_domain = "29")]
+        let optimization = if kind == "mc" { Some(self.comp29_end_map()?) } else { None };
         prefix.append(&mut result.pre);
         result.pre = prefix;
         if kind == "mc" {
             let empty = self.empty();
             let var = self.fresh(empty);
             result.pre.push(Pre::Set(var, result.value));
-            result.value = self.comp_call(empty, "maps", "from_list", vec![var], false);
+            #[cfg(not(otp_domain = "29"))]
+            { result.value = self.comp_call(empty, "maps", "from_list", vec![var], false); }
+            #[cfg(otp_domain = "29")]
+            {
+                let (name, mut args) = optimization.unwrap();
+                args.insert(0, var);
+                result.value = self.comp_call(ann, "maps", name, args, false);
+            }
         }
         self.known_vars = known;
         Ok(result)
@@ -225,6 +250,10 @@ impl Lower {
         };
         match self.a.tag(node) {
             Some("var" | "atom" | "char" | "integer" | "float" | "string" | "nil") => true,
+            #[cfg(otp_domain = "29")]
+            Some("record") if f.len() == 4 => self.a.list_items(f[3]).is_ok_and(|pairs| pairs.into_iter().all(|pair| self.comp_is_guard(pair))),
+            #[cfg(otp_domain = "29")]
+            Some("record_field") => if f.len() == 4 { self.comp_is_guard(f[3]) } else { self.comp_is_guard(f[2]) && self.comp_is_guard(f[4]) },
             Some("tuple") => self
                 .a
                 .list_items(f[2])
@@ -474,6 +503,24 @@ impl Lower {
         guards: &[TermId],
         strict_names: &BTreeSet<String>,
     ) -> Result<Generator> {
+        #[cfg(otp_domain = "29")]
+        if self.a.tag(node) == Some("match") {
+            let mut fields = self.a.tuple_fields(node)?.to_vec();
+            let mut pattern = fields[2];
+            let mut value = fields[3];
+            while self.a.tag(value) == Some("match") {
+                let nested = self.a.tuple_fields(value)?.to_vec();
+                pattern = self.a.tagged("match", vec![nested[1], pattern, nested[2]]);
+                value = nested[3];
+            }
+            let nil = self.a.tagged("nil", vec![fields[1]]);
+            let singleton = self.a.tagged("cons", vec![fields[1], value, nil]);
+            fields[2] = pattern;
+            fields[3] = singleton;
+            fields[0] = self.a.atom("generate_strict");
+            let generator = self.a.tuple(fields);
+            return self.comp_generator(line, generator, guards, strict_names);
+        }
         let f = self.a.tuple_fields(node)?.to_vec();
         let known_before = self.known_vars.clone();
         let mut names = BTreeSet::new();
@@ -694,7 +741,10 @@ impl Lower {
             if binary {
                 return self.comp_binary_build(line, value, more);
             }
+            #[cfg(not(otp_domain = "29"))]
             let (vs, mut pre) = self.safe_list(vec![value])?;
+            #[cfg(otp_domain = "29")]
+            let (vs, mut pre) = self.comp29_values(value)?;
             let mut tail = more;
             if !matches!(
                 self.a.tag(tail),
@@ -705,7 +755,11 @@ impl Lower {
                 pre.push(Pre::Set(v, tail));
                 tail = v;
             }
+            #[cfg(not(otp_domain = "29"))]
             let an = self.comp_mark(la, &["compiler_generated"])?;
+            #[cfg(otp_domain = "29")]
+            let an = { let generated = self.generated_location(line)?; self.annotation(generated)? };
+            #[cfg(not(otp_domain = "29"))]
             let value = if self.a.tag(vs[0]) == Some("c_literal")
                 && self.a.tag(tail) == Some("c_literal")
             {
@@ -718,6 +772,11 @@ impl Lower {
                 self.literal(an, literal)
             } else {
                 self.a.tagged("c_cons", vec![an, vs[0], tail])
+            };
+            #[cfg(otp_domain = "29")]
+            let value = {
+                for value in vs.into_iter().rev() { tail = self.ann_c_cons(an, value, tail)?; }
+                tail
             };
             return Ok(Expr { value, pre });
         };
@@ -1049,6 +1108,7 @@ impl Lower {
     }
 }
 fn is_generator(tag: &str) -> bool {
+    if cfg!(otp_domain = "29") && tag == "match" { return true; }
     matches!(
         tag,
         "generate"
@@ -1092,6 +1152,7 @@ fn guard_op(n: &str, a: usize) -> bool {
     }
 }
 fn guard_bif(n: &str, a: usize) -> bool {
+    if cfg!(otp_domain = "29") && matches!((n, a), ("is_record", 1) | ("is_integer", 3)) { return true; }
     matches!(
         (n, a),
         ("abs", 1)

@@ -1,11 +1,12 @@
 import json,random,subprocess
 from pathlib import Path
-WORKSPACE=Path(__file__).resolve().parents[2];root=WORKSPACE/".cache/types";r=random.Random(28309)
+from probe_config import configuration, read_commands
+WORKSPACE=Path(__file__).resolve().parents[2];CONFIG=configuration(WORKSPACE);root=CONFIG.out;r=random.Random(28309)
 preds='any none none_or_unit unit impossible atom boolean binary bitstring function identifier pid port reference number float integer byte char cons nil list maybe_improper_list string map tuple non_negative_integer variable singleton opaque'.split()
 ctors='any none unit atom binary nonempty_binary bitstring nonempty_bitstring boolean byte char function identifier pid port reference number float integer positive_integer non_negative_integer negative_integer fixnum positive_fixnum non_negative_fixnum cons nil list nonempty_list string nonempty_string maybe_improper_list map tuple arity mfa module node iolist iodata bitstring_list timeout'.split()
 values={}
 for file in ['nominal_commands.jsonl','raw_commands.jsonl','subst_commands.jsonl']:
- for line in (root/file).open():
+ for line in read_commands(root/file, CONFIG):
   c=json.loads(line);a=c['a'];values[json.dumps(a,sort_keys=True)]=a
 pool=list(values.values());types=r.sample(pool,min(2500,len(pool)))
 # Scalar and range boundaries covered even if not chosen from random nesting.
@@ -25,5 +26,5 @@ for _ in range(2500):
 commands += [dict(op='widen_to_number',a=a)for a in types]
 commands += [dict(op='native_order',a=r.choice(types),b=r.choice(types))for _ in range(15000)]
 p=root/'api_commands.jsonl';out=root/'api_results.jsonl';p.write_text(''.join(json.dumps(c)+'\n'for c in commands))
-with p.open('rb')as src,out.open('wb')as dest:subprocess.run([str(WORKSPACE/'target/release/type_probe')],stdin=src,stdout=dest,check=True)
+with p.open('rb')as src,out.open('wb')as dest:subprocess.run([str(CONFIG.binary)],stdin=src,stdout=dest,check=True)
 subprocess.run(['elixir',str(WORKSPACE/'scripts/type_oracle.exs'),str(p),str(out)],check=True)

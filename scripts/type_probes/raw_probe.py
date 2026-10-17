@@ -1,8 +1,10 @@
 import json, itertools, subprocess
 from pathlib import Path
+from probe_config import configuration
 
 WORKSPACE = Path(__file__).resolve().parents[2]
-root = WORKSPACE / ".cache/types"
+CONFIG = configuration(WORKSPACE)
+root = CONFIG.out
 root.mkdir(parents=True, exist_ok=True)
 k = lambda kind, **kw: dict(kind=kind, **kw)
 none = k("none")
@@ -19,9 +21,11 @@ slots = [
     k("tuple", elements=[anyt]),
     k("map_any"),
 ]
+if CONFIG.otp == "29":
+    slots.append(k("record", name=None, fields=[]))
 types = [none, anyt, unit, opaque] + slots
-for size in [0, 1, 2, 8]:
-    for indices in itertools.combinations(range(8), size):
+for size in [0, 1, 2, CONFIG.union_arity]:
+    for indices in itertools.combinations(range(CONFIG.union_arity), size):
         types.append(
             k(
                 "union_raw",
@@ -74,6 +78,13 @@ types += [
         ],
     )
 ]
+if CONFIG.otp == "29":
+    # Keep the original ordered pool for downstream seeded probes. Expanded
+    # ninth-family combinations remain covered by this gate's full matrix.
+    baseline = [t for t in types if t["kind"] != "record" and (
+        t["kind"] != "union_raw" or t["values"][-1] == none or all(v != none for v in t["values"]))]
+    assert len(baseline) == 64
+    (root / "raw_baseline_pool.jsonl").write_text("".join(json.dumps(dict(op="canonical", a=t)) + "\n" for t in baseline))
 commands = [
     dict(op=op, a=x, b=y)
     for x in types
@@ -93,7 +104,7 @@ out = root / "raw_results.jsonl"
 p.write_text("".join(json.dumps(c) + "\n" for c in commands))
 with p.open("rb") as src, out.open("wb") as dest:
     subprocess.run(
-        [str(WORKSPACE / "target/release/type_probe")],
+        [str(CONFIG.binary)],
         stdin=src,
         stdout=dest,
         check=True,

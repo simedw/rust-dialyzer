@@ -38,9 +38,7 @@ fn run(row: &Value, derive_graph: bool) -> Result<Value, String> {
         )?;
         let graph = rust_dialyzer_poc::source_callgraph::SourceCallGraph::build(&nodes, &program,
             &dependencies,
-            &rust_dialyzer_poc::bifs::registry::Registry::load(include_str!(
-                "../../corpus/bifs.json"
-            ))?,
+            &rust_dialyzer_poc::bifs::registry::Registry::standard()?,
         )
         .map_err(|e| e.to_string())?;
         Some((program, graph))

@@ -104,6 +104,10 @@ impl Cleaner {
             "c_try" => (&[2, 4, 6], &[]),
             "c_tuple" | "c_values" => (&[], &[2]),
             "c_map_pair" => (&[3, 4], &[]),
+            #[cfg(otp_domain = "29")]
+            "c_record_pair" => (&[2, 3], &[]),
+            #[cfg(otp_domain = "29")]
+            "c_record" => (&[2, 3], &[4]),
             "c_case" => {
                 f[2] = self.node(f[2])?;
                 f[3] = self.clauses(f[3])?;

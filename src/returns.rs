@@ -126,6 +126,8 @@ pub fn classify(
             | CoreExpr::Clause { body, .. }
             | CoreExpr::Seq { body, .. } => pending.push(*body),
             CoreExpr::Primop { .. } => {}
+            #[cfg(otp_domain = "29")]
+            CoreExpr::Record { .. } => normal = true,
             CoreExpr::Apply { .. }
             | CoreExpr::Binary(_)
             | CoreExpr::Bitstr { .. }

@@ -21,6 +21,10 @@ impl CoreExpr {
             ],
             Self::Cons { head, tail } => vec![vec![*head], vec![*tail]],
             Self::Map { pairs, .. } => vec![pairs.clone()],
+            #[cfg(otp_domain = "29")]
+            Self::Record { pairs, .. } => vec![pairs.clone()],
+            #[cfg(otp_domain = "29")]
+            Self::RecordPair { key, value } => vec![vec![*key], vec![*value]],
             Self::MapPair {
                 operation,
                 key,
@@ -101,6 +105,8 @@ impl CoreModule {
             match &node.expr {
                 CoreExpr::Literal(t)|CoreExpr::Var(t)|CoreExpr::Opaque(t) => value["value"]=json!(t.0),
                 CoreExpr::Map {base,pattern,..} => { value["map_arg"]=json!(base.0);value["map_pattern"]=json!(pattern); },
+                #[cfg(otp_domain = "29")]
+                CoreExpr::Record {argument,id,..} => { value["record_arg"]=json!(argument.0);value["record_id"]=json!(id.0); },
                 _=>{}
             }
             value
@@ -157,6 +163,15 @@ impl CoreModule {
                     for (j, (k, v)) in v.iter().enumerate() {
                         checked(k.0, i, format_args!("{at}.entries[{j}][0]"))?;
                         checked(v.0, i, format_args!("{at}.entries[{j}][1]"))?;
+                    }
+                }
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(record) => {
+                    if record.module.chars().count() > 255 || record.name.chars().count() > 255 { return Err(format!("{at}: record atom exceeds 255 characters")); }
+                    let mut names = std::collections::BTreeSet::new();
+                    for (name, value) in &record.fields {
+                        if name.chars().count() > 255 || !names.insert(name) { return Err(format!("{at}: invalid or duplicate record field")); }
+                        checked(value.0, i, format_args!("{at}.record_field"))?;
                     }
                 }
                 ErlangTerm::Integer(n) => {
@@ -284,6 +299,12 @@ impl CoreModule {
                 CoreExpr::Map { base, pairs, .. } => {
                     require_kinds(prior, pairs, "map_pair", format_args!("{at}.groups[0]"))?;
                     checked(base.0, i, format_args!("{at}.map_arg"))?;
+                }
+                #[cfg(otp_domain = "29")]
+                CoreExpr::Record { argument, id, pairs } => {
+                    require_kinds(prior, pairs, "record_pair", format_args!("{at}.groups[0]"))?;
+                    checked(argument.0, i, format_args!("{at}.record_arg"))?;
+                    checked(id.0, i, format_args!("{at}.record_id"))?;
                 }
                 CoreExpr::Let { vars, .. } | CoreExpr::Fun { params: vars, .. } => {
                     require_kinds(prior, vars, "var", format_args!("{at}.groups[0]"))?

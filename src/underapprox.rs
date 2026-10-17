@@ -380,6 +380,8 @@ impl<'a> SafeUnderapprox<'a> {
                         );
                     }
                     CoreExpr::Binary(_) => return Err(Failure::DontKnow),
+                    #[cfg(otp_domain = "29")]
+                    CoreExpr::Record { .. } => return Err(Failure::DontKnow),
                     _ => {
                         return Err(UnderapproxError::NativeCaseClauseAtom(
                             m.nodes[node.0].expr.kind().into(),

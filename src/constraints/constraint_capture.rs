@@ -49,6 +49,8 @@ pub fn native_value(terms: &mut Vec<CaptureTerm>, value: &NativeValue) -> Captur
         Visit(&'a NativeValue),
         Tuple(usize),
         List(usize),
+        #[cfg(otp_domain = "29")]
+        Map(usize),
     }
     let mut todo = vec![Frame::Visit(value)];
     let mut built = Vec::new();
@@ -64,10 +66,21 @@ pub fn native_value(terms: &mut Vec<CaptureTerm>, value: &NativeValue) -> Captur
                 todo.extend(items.iter().rev().map(Frame::Visit));
                 continue;
             }
+            #[cfg(otp_domain = "29")]
+            Frame::Visit(NativeValue::Map(entries)) => {
+                todo.push(Frame::Map(entries.len()));
+                todo.extend(entries.iter().rev().flat_map(|(k,v)| [Frame::Visit(v),Frame::Visit(k)]));
+                continue;
+            }
             Frame::Visit(NativeValue::Integer(n)) => CaptureTerm::Integer(n.to_string()),
             Frame::Visit(NativeValue::Atom(a)) => CaptureTerm::Atom(a.clone()),
             Frame::Visit(NativeValue::Nil) => CaptureTerm::Nil,
             Frame::Tuple(count) => CaptureTerm::Tuple(built.split_off(built.len() - count)),
+            #[cfg(otp_domain = "29")]
+            Frame::Map(count) => {
+                let children = built.split_off(built.len() - count * 2);
+                CaptureTerm::Map(children.chunks_exact(2).map(|p| (p[0],p[1])).collect())
+            }
             Frame::List(count) => {
                 let tail = push(terms, CaptureTerm::Nil);
                 CaptureTerm::List {

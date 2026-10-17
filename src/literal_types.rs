@@ -266,6 +266,8 @@ impl LiteralTypes {
                     .ok_or_else(|| "literal child must precede its parent".to_owned())
             };
             let typ = match term {
+                #[cfg(otp_domain = "29")]
+                ErlangTerm::Record(_) => Type::record_any(),
                 ErlangTerm::ExternalFun(external_fun_payload) => {
                     let crate::core::ExternalFun { arity, .. } = external_fun_payload.as_ref();
 
